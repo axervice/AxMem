@@ -1,0 +1,18 @@
+{
+  "id": "single-consumer-throw-file-empty",
+  "category": "single-consumer-throw",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (单消费者 throw)",
+  "description": "Reuses the existing read-only fixture ../index-emit-file-empty (B4, 补遗一第 10 条①) — its decisions.md is 0 bytes, the other 6 ALL_FILES are well-formed. pmm-index-emit.cjs has a DEDICATED fileFaults() structural check that fires before parseAll() and degrades with file-empty:decisions.md. pmm-hook.cjs has NO such check: core.snapshot('worktree') treats a 0-byte file as present-but-empty (missing=false), core.analyze() parses it as a file with zero entries, and the hook proceeds normally with isMemory=true and no degraded field. Empirically confirmed via isolated probe before writing this fixture (see builder report). This is the concrete demonstration of '单消费者 throw': the SAME fault input degrades exactly one of the two consumers.",
+  "corpusRef": "../index-emit-file-empty",
+  "targetFile": "decisions.md",
+  "consumers": ["hook", "index-emit"],
+  "hook": {
+    "expectDegraded": false,
+    "expectIsMemory": true
+  },
+  "indexEmit": {
+    "mode": "dir",
+    "expectRcNonZero": true,
+    "expectStdoutContains": "PMM-DEGRADED file-empty:decisions.md"
+  }
+}

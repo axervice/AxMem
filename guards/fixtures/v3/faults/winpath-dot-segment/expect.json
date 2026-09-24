@@ -1,0 +1,12 @@
+{
+  "id": "winpath-dot-segment",
+  "category": "windows-path-variant",
+  "variant": "dot-segment",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (Windows 路径变体 /./ ) — KNOWN-PROBLEMS.md P8/E7",
+  "description": "file_path spelled with a redundant /./ segment immediately before the leaf filename (e.g. .../memory/./decisions.md). Only the shadow hook is a relevant consumer -- pmm-index-emit.cjs never receives a single file path, only a --dir. Expect: a shadow log line is appended for the event (never silent -- no line would mean the event was dropped before appendShadowLine), and isMemory resolves true (correct judgment) despite the non-canonical spelling, proving core.matchCanonical()'s path.win32.normalize()-based pipeline collapses the /./ segment correctly. Empirically confirmed via isolated probe before committing this fixture.",
+  "consumers": ["hook"],
+  "hook": {
+    "expectIsMemory": true,
+    "expectNoCrash": true
+  }
+}

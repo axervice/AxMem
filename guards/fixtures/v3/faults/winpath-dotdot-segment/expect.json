@@ -1,0 +1,12 @@
+{
+  "id": "winpath-dotdot-segment",
+  "category": "windows-path-variant",
+  "variant": "dotdot-segment",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (Windows 路径变体 /../ ) — KNOWN-PROBLEMS.md P8/E7",
+  "description": "file_path spelled with a /../ traversal that walks up to an EXISTING real directory (.../memory/../memory/decisions.md, traversing up out of memory into .claude which is real, then back down into memory) so fs.realpathSync.native() can actually resolve the intermediate segment rather than ENOENT on a synthetic subdir. Only the shadow hook is a relevant consumer. Expect: a shadow log line is appended (never silent) and isMemory resolves true (correct judgment) despite the traversal segment. Empirically confirmed via isolated probe before committing this fixture.",
+  "consumers": ["hook"],
+  "hook": {
+    "expectIsMemory": true,
+    "expectNoCrash": true
+  }
+}

@@ -1,0 +1,4 @@
+# This corpus is byte-exact by design (BOM, CRLF, no-trailing-newline fixtures are load-bearing —
+# see pmm-core-selftest.cjs). Disable any line-ending / encoding normalization so git never rewrites
+# these bytes on checkout or commit, on any machine or core.autocrlf setting.
+* -text

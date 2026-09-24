@@ -1,0 +1,11 @@
+{
+  "contract": "c48bfc7b09d50f7039ab145b64297f2cb59a28d7",
+  "conformance": "7a176504053a01b6739c81f493c024a193196380",
+  "runner": "df1c4d9913e8b752d7567f136feb292098acd96c",
+  "mutants": {
+    "null": "7422a522235377d3e159f4660a7f645cf218bdd1",
+    "always": "d248b859d241b3c8a6a1d875b43c03219b487a54",
+    "blind-parser": "cfe4537e8a09f9fe5bc376264c131286916127a0",
+    "di-intervene": "9cfe2307f60e911c763e431b6c1b3dfc0356e74f"
+  }
+}

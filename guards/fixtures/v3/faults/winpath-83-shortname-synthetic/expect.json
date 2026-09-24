@@ -1,0 +1,13 @@
+{
+  "id": "winpath-83-shortname-synthetic",
+  "category": "windows-path-variant",
+  "variant": "short-name-synthetic",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (Windows 路径变体 8.3 短名) — KNOWN-PROBLEMS.md P8/E7",
+  "knownLimitation": "8.3 short-filename generation is DISABLED on this machine's volume (verified read-only: `fsutil 8dot3name query C:\\` and on the user profile dir both returned Access Denied without elevation, which this builder must not grant/change per the system/security-settings prohibition; a `cmd /c dir /x` probe on a >8-char-basename fixture file inside a fresh temp dir showed NO distinct short-name column at all, confirming generation is off rather than merely unqueryable). A genuine OS-recognized DOS alias therefore cannot be constructed or exercised here. This fixture instead builds a SYNTHETIC short-name-SHAPED leaf (DECISI~1.MD) that does not actually resolve via realpath to the real file -- it exercises a DIFFERENT, still-spec-relevant branch: PMM-V3-FINAL-SPEC.md §4's default-failure-direction ('原串含 memory/claude~ 而 realpath 失败 ⇒ 按 memory'), since the raw string still contains 'memory' even though realpath cannot confirm it. It is NOT a proof that a real OS-issued 8.3 alias round-trips through matchCanonical()'s realpath step; that would require a volume with 8dot3name generation enabled, which this builder is not permitted to turn on.",
+  "description": "file_path = <memDir>/DECISI~1.MD (synthetic short-name-shaped leaf, real file is decisions.md, not aliased on disk). Only the shadow hook is a relevant consumer. Expect: a shadow log line is appended (never silent) and isMemory resolves true via the default-failure-direction fallback (correct judgment despite the string not resolving via realpath). Empirically confirmed via isolated probe before committing this fixture.",
+  "consumers": ["hook"],
+  "hook": {
+    "expectIsMemory": true,
+    "expectNoCrash": true
+  }
+}

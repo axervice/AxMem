@@ -1,0 +1,12 @@
+{
+  "id": "winpath-case-variant",
+  "category": "windows-path-variant",
+  "variant": "case-variant",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (Windows 路径变体 大小写) — KNOWN-PROBLEMS.md P8/E7",
+  "description": "file_path is the entire real path upper-cased (drive letter, every directory segment, and the filename -- e.g. C:/USERS/.../.CLAUDE/MEMORY/DECISIONS.MD). NTFS is case-insensitive (case-preserving), so fs.realpathSync.native() resolves this back to the real file regardless of the input casing. Only the shadow hook is a relevant consumer. Expect: a shadow log line is appended (never silent) and isMemory resolves true (correct judgment) despite the casing. Empirically confirmed via isolated probe before committing this fixture.",
+  "consumers": ["hook"],
+  "hook": {
+    "expectIsMemory": true,
+    "expectNoCrash": true
+  }
+}

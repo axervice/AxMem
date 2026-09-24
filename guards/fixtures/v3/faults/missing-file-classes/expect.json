@@ -1,0 +1,18 @@
+{
+  "id": "missing-file-classes",
+  "category": "missing-file",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (缺文件)",
+  "description": "classes.md is entirely absent (not present, not empty) from an otherwise-complete 7-file corpus; the other 6 core.ALL_FILES are present but empty (content is irrelevant to a presence/absence fault). For pmm-index-emit.cjs (`--dir` uses snapshotDir(dir,{requireAll:false})), runEmit's own missing.length check fires FIRST (before fileFaults()) and returns the dedicated missing-file:classes.md code. For pmm-hook.cjs, core.snapshot('worktree') always runs with the default requireAll=true, so ANY missing file throws a generic PmmCoreError -- but its message still names the missing file, so the hook's degraded field is not silent about which file is missing even though it takes the generic core-throw shaped path rather than a dedicated per-file code. Empirically confirmed via isolated probe before committing this fixture.",
+  "corpus": { "omit": ["classes.md"], "presentFilesEmpty": true },
+  "targetFile": "decisions.md",
+  "consumers": ["hook", "index-emit"],
+  "hook": {
+    "expectDegraded": true,
+    "expectDegradedContains": "classes.md"
+  },
+  "indexEmit": {
+    "mode": "dir",
+    "expectRcNonZero": true,
+    "expectStdoutContains": "PMM-DEGRADED missing-file:classes.md"
+  }
+}

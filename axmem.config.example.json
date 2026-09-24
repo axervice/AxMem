@@ -1,0 +1,22 @@
+{
+  "$schema_version": 1,
+  "$comment": "memory_dir/state_dir default to $AXMEM_HOME/memory and /state — set them ONLY to relocate storage. A '~' prefix expands to $HOME (not AXMEM_HOME).",
+  "gates": {
+    "entry_limit": 900,
+    "active_dashboard_limit": 3000
+  },
+  "repos": [
+    { "id": "home", "roots": ["~"] },
+    { "id": "my-app", "roots": ["~/projects/my-app"] }
+  ],
+  "adapters": {
+    "claude_code": { "enabled": true, "settings_json": "~/.claude/settings.json" },
+    "codex": { "enabled": false, "agents_md": "~/.codex/AGENTS.md" },
+    "hermes": { "enabled": false, "config_yaml": "", "$comment": "memory_md is RETIRED (P1 D1, 2026-09-16) — AxMem never reads/writes Hermes MEMORY.md/USER.md/SOUL.md (single-writer rule). config_yaml is Hermes's own cli-config.yaml. Leave EMPTY (not '~/.hermes/config.yaml') — unlike codex/claude-code, Hermes's real home is platform- AND env-var-dependent (HERMES_HOME, else %LOCALAPPDATA%\\hermes on native Windows, else ~/.hermes — see adapters/hermes/wire.cjs's defaultHermesHome()); a hardcoded '~/...' example value here would silently override that logic and target the wrong file the moment `axmem init` copies this file verbatim into a real config.json. Set this explicitly only if your Hermes install's config.yaml is somewhere non-standard." },
+    "generic": { "enabled": true, "instruction_file": "", "$comment": "path to the target agent's own instruction file — wire.sh appends a marker-fenced section there. Empty = none configured; enforcement=convention always (D4)." }
+  },
+  "semantic": {
+    "enabled": false,
+    "$comment": "optional locator backend; the text channel is always authoritative"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "core-throw",
+  "category": "core-throw",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (core throw)",
+  "description": "No corpus at all under the isolated root: for the shadow hook, core.snapshot('worktree') always runs with requireAll=true and every one of the 7 ALL_FILES is unreadable, so it throws PmmCoreError inside pmm-hook.cjs's own try/catch, which then records a degraded row instead of proceeding. For pmm-index-emit.cjs, invoked WITHOUT --dir (its default path calls core.snapshot('HEAD')), the isolated root has no git repository at all so `git rev-parse HEAD:.claude/memory` fails, treeOid() returns null, and snapshot() itself throws — caught by runEmit's own outer try/catch into degraded('core-throw', ...). Both consumers hit a genuine throw from core.cjs itself (not a structural 'file present but empty/missing' diagnostic), via two different call paths, which is the point of this example.",
+  "setup": { "createMemoryDir": false, "createGitRepo": false },
+  "consumers": ["hook", "index-emit"],
+  "hook": {
+    "expectDegraded": true,
+    "expectDegradedContains": "PMM-DEGRADED"
+  },
+  "indexEmit": {
+    "mode": "no-dir",
+    "expectRcNonZero": true,
+    "expectStdoutContains": "PMM-DEGRADED core-throw"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "id": "winpath-unc-admin-share",
+  "category": "windows-path-variant",
+  "variant": "unc-admin-share",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (Windows 路径变体 UNC) — KNOWN-PROBLEMS.md P8/E7",
+  "description": "file_path spelled as \\\\localhost\\<DriveLetter>$\\<rest>\\decisions.md -- the local-machine administrative-share UNC form of the same drive-letter path, built at runtime from the isolated root's own drive letter. core.cjs's normalizeWin32UncAdminShare()/isLocalHost('localhost') pipeline is designed to recognize this as the same local file. Only the shadow hook is a relevant consumer. Expect: a shadow log line is appended (never silent) and isMemory resolves true (correct judgment). KNOWN DEFECT discovered empirically (reported, not fixed, per this builder's mandate): resolveRepoRel() in pmm-hook.cjs does a naive backslash-to-slash + exact-prefix `lower.startsWith(HOME.toLowerCase()+'/')` comparison that does NOT recognize the UNC form as being under HOME, so rel/repo both come back null even though classifyMemory() (via the more robust core.matchCanonical()) still correctly resolves isMemory=true. Net effect: gate-blocking-list filtering and push-candidate computation are silently skipped for a UNC-spelled event even though the event is correctly classified as memory and is still logged (not a 0-output/rc-0 'silent' failure by the strict definition, but a partial-functionality gap). This fixture asserts only the isMemory contract the spec requires (correct judgment or DEGRADED); it does not assert repo/rel correctness.",
+  "consumers": ["hook"],
+  "hook": {
+    "expectIsMemory": true,
+    "expectNoCrash": true
+  }
+}

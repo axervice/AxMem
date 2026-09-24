@@ -1,0 +1,12 @@
+{
+  "id": "winpath-forward-slash-drive",
+  "category": "windows-path-variant",
+  "variant": "forward-slash-drive",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (Windows 路径变体 正斜杠盘符) — KNOWN-PROBLEMS.md P8/E7",
+  "description": "file_path spelled with a drive letter immediately followed by a forward slash and forward slashes throughout (C:/Users/.../decisions.md, zero backslash characters anywhere). This is already hook.cjs's own internal normalized form for most of its pipeline, but it is listed explicitly in KNOWN-PROBLEMS P8/E7 as one of the concrete spellings a naive fast-path string match has historically let slip through unclassified, so it is kept in the matrix as a regression guard rather than assumed safe by construction. Only the shadow hook is a relevant consumer. Expect: a shadow log line is appended (never silent) and isMemory resolves true (correct judgment). Empirically confirmed via isolated probe before committing this fixture.",
+  "consumers": ["hook"],
+  "hook": {
+    "expectIsMemory": true,
+    "expectNoCrash": true
+  }
+}

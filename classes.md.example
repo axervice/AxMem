@@ -1,0 +1,75 @@
+# Lesson Classes
+
+<!-- Mechanism file, copied to AXMEM_MEMORY_DIR/classes.md by `axmem init` if
+     one doesn't exist yet. Turns "is this the same kind of mistake as
+     before?" from a mid-session guess into a machine check.
+     Rules (enforced by manifest.cjs --check, invariant B6):
+       1. Every live lesson may carry at most one `Class: [[class:<id>]]`
+          line. From AXMEM_CLASS_REQUIRED_FROM on (default 2026-09-15 — a
+          fresh install should set this to its own install date via env),
+          a new lesson with no Class line is BLOCKED at write time; older
+          unclassified lessons are only reported, never blocked.
+       2. A class hub is an ordinary entry in THIS file: a header (the date
+          matters — every parser here only recognises a `**20...**`
+          header), one criterion sentence, and optionally the trigger(s)
+          this class shares (a file-path anchor). The push channel matches
+          a hub against an edit exactly like it matches any other entry:
+          hit a hub's trigger -> it pushes the hub plus its newest live
+          members; hit a member's own trigger -> it reports "same class N
+          more" instead of spending an extra recall slot.
+       3. No class fits? Add one in the SAME change (title + one criterion
+          sentence). Classes are a controlled vocabulary, not a free-form
+          tag — don't force a lesson into the nearest-but-wrong class.
+       4. A class answers "what KIND of mistake was this", never "which
+          project" (that's the repo's own LESSONS.md) or "how severe"
+          (that's the canary).
+     Query: grep -B3 'Class: \[\[class:<id>\]\]' AXMEM_MEMORY_DIR/lessons.md
+     lists every member of a class.
+
+     Example trigger syntax (this line is prose, not a live trigger — a real
+     one is a `<!-- trigger: ... -->` comment INSIDE a class entry below,
+     exactly like the ones lessons.md/decisions.md use):
+       tool=Edit|Write; repo=<your-repo-id>; path=<repo-relative-glob-or-prefix*>
+-->
+
+## Entries
+
+**2026-09-14 — Class: tool-channel byte rewriting** [class:tooling-escaping]
+Criterion: the error comes from a shell/tool channel silently rewriting
+bytes or meaning — halved backslashes, escape sequences, here-strings,
+multi-word quoting, a pipe swallowing an exit code, CRLF, non-ASCII. The
+symptom is "the code looks right, but what landed on disk / ran isn't what
+was written." Fix: get the value from a real producer and read the bytes
+back to verify, never hand-type the escaped form.
+
+**2026-09-14 — Class: guard design is itself a defect surface** [class:guard-design]
+Criterion: the error is IN the guard/gate/check layer — a guardrail that
+never failed yet, a new gate introducing the same hole it closes elsewhere,
+a judgment-style check that should have been a bounded count, "report only"
+that quietly never became a gate, a self-test that can't prove red AND
+green.
+
+**2026-09-14 — Class: trust the instrument before the verdict** [class:instrument-validity]
+Criterion: a number or a "passed" came from a measurement or verification
+tool whose own correctness was never established — three lines failing at
+once suggests the instrument, not the subject; a confound needs leveling
+and a rerun before a conclusion; bundled changes can reverse a measured
+direction. Prove the instrument first, then trust the causal story.
+
+**2026-09-14 — Class: who reviews, how, and what counts as reviewed** [class:review-discipline]
+Criterion: the error is in the review process itself — a prior conclusion
+treated as evidence, a reviewer who never ran the primary path, a
+same-model blind spot (builder = reviewer), a finding accepted without
+reproducing it against the real code first.
+
+**2026-09-14 — Class: shared state needs an explicit owner** [class:concurrency-and-sharing]
+Criterion: the error comes from two writers touching the same resource
+without anyone asking "who else writes this?" — a shared database, a shared
+working tree, a rewrite that silently absorbs a concurrent write, a counter
+that assumes exclusive access it doesn't have.
+
+**2026-09-14 — Class: "works here" is not "works in the target environment"** [class:environment-parity]
+Criterion: the error comes from treating two environments as one — a local
+simulation that isn't faithful to CI/production, a config or dependency
+version that differs by environment, a test that passed against a mock but
+never against the real path.

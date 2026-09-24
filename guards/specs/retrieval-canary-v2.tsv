@@ -1,0 +1,53 @@
+# PMM 检索基线题库 v2(C05-BUILD-SPEC.md 补遗三第 30 条改写版;spec 审
+# audits/OPUS-2026-09-24-c05-addendum3-spec-review.md 第 30 节 MEDIUM-4 的修法)。
+# 格式(4 列,TAB 分隔): type<TAB>query<TAB>expected_ids(逗号分隔,任一命中即算)<TAB>note
+# **不改** memory/_local-config/canary-set.tsv(其消费者 pmm-canary.sh 按 3 列 `read -r type target
+# query` 读,加一列会把期望 id 并进 query;未知 type 落 else 分支被记 FAIL)——本文件完全独立,
+# 消费者是 guards/pmm-search-v2.cjs 的 runBaselineV2/--baseline,不是 pmm-canary.sh。负例天然不会
+# 被 pmm-canary.sh 误记 FAIL,因为它根本看不到这个文件。
+#
+# type=text:由 canary-set.tsv 的 17 道 text 题转写(wave3-review.md MEDIUM「基线 text 行以 query
+#   作身份」的修法:身份 = 目标条目 id,不是裸 query 字符串——对 text 类两者数值相同,因为
+#   canary-set 的 text 题设计上 query 列本身就是被测条目的 tag;expected_ids 在这里等于
+#   normId(query),转写时已算好写死,不再由运行期重算,避免两处口径分裂)。
+# type=graph:head/superseded 题。query = 被取代条目的标题词;expected_ids = 该链当前解析到的
+#   head id;判据 = head 排 rank1。5 条取自活体 decisions.md/lessons.md 里真实存在的合法
+#   `Supersedes: [[...]]` 双方括号边(单方括号是 B23 散文引用,不是图边,不能用)。
+# type=negative:词表外乱码 / 离域短语。expected_ids 留空;判据 = 0 命中;命中即误命中,计入报告
+#   negative.falseHits,不算 R@1(负例这个维度本来就没有「排名」的概念)。
+#
+# --- text(17 题,逐字转写自 canary-set.tsv 的 text 行;target 列见 note) ---
+text	axervice:payments-strategy	axervice:payments-strategy	canary-set text#1 target=decisions
+text	axervice:m8-design-v2	axervice:m8-design-v2	canary-set text#2 target=decisions
+text	axervice:one-phone-one-customer	axervice:one-phone-one-customer	canary-set text#3 target=decisions
+text	memory:upgrade-deferred	memory:upgrade-deferred	canary-set text#4 target=decisions
+text	memory:phase4-gbrain-locator	memory:phase4-gbrain-locator	canary-set text#5 target=decisions
+text	xiaod:portal-only	xiaod:portal-only	canary-set text#6 target=decisions
+text	dee:new-product-gate	dee:new-product-gate	canary-set text#7 target=decisions
+text	rag:pre-sell-gate-b5-full-fix	rag:pre-sell-gate-b5-full-fix	canary-set text#8 target=decisions
+text	SQL_ROUTE	sql_route	canary-set text#9 target=decisions(短语题,非字面 tag——历史基线已知 0-hit,如实转写不代做语义消歧)
+text	xiaod:obfuscated-email-extraction-adversarial	xiaod:obfuscated-email-extraction-adversarial	canary-set text#10 target=lessons
+text	process:codex-underutilized-header-only-routing	process:codex-underutilized-header-only-routing	canary-set text#11 target=lessons
+text	tooling:codex-windows-sandbox	tooling:codex-windows-sandbox	canary-set text#12 target=lessons
+text	Square-import	square-import	canary-set text#13 target=lessons(短语题,非字面 tag——历史基线已知 0-hit,如实转写不代做语义消歧)
+text	pmm:canonical-home-only	pmm:canonical-home-only	canary-set text#14 target=standing
+text	pmm:retrieval-first	pmm:retrieval-first	canary-set text#15 target=standing
+text	M14.1	m14.1	canary-set text#16 target=timeline(短语题,非字面 tag——历史基线已知 0-hit,如实转写不代做语义消歧)
+text	[pmm:retrieval-first]	pmm:retrieval-first	canary-set text#17(29 行,与 #15 同 id,方括号写法,canary-set 原文重复项)
+#
+# --- graph(5 题,活体真实 Supersedes 链;query = 被取代条目标题词的子集——取短语而非整句转写,
+#     整句转写会让被取代条目自身的独有词把 title 字段分优势拉得过大、盖过 head+2/superseded-5 的
+#     图重排力度,不是这道题要测的东西;这里的每个词都逐字取自被取代条目自己的标题) ---
+graph	M13 薪酬	axervice:m13-comp-stacking	target=[axervice:m13-comp-model](decisions.md:1174「M13 薪酬模型锁定」) head=axervice:m13-comp-stacking(decisions.md:1179 Supersedes)
+graph	M12	axervice:m12-sms-transactional-only	target=[axervice:m12-channel-strategy](decisions.md:1194「M12 渠道策略」) head=axervice:m12-sms-transactional-only(decisions.md:1191 Supersedes)
+graph	M8 设计	axervice:m8-design-v2	target=[axervice:m8-design](decisions.md:1239「M8 设计锁」) head=axervice:m8-design-v2(decisions.md:1228 Supersedes)
+graph	GSD	axervice:gsd-paused	target=[axervice:gsd-adoption](decisions.md:1260「采用 GSD 作为项目主干」) head=axervice:gsd-paused(decisions.md:1234 Supersedes)
+graph	IRS 线上 EIN 身份	process:irs-ein-online-identity-retry-succeeds	target=[process:irs-ein-online-identity-rejection](lessons.md:1656「IRS 线上 EIN 身份校验…」) head=process:irs-ein-online-identity-retry-succeeds(lessons.md:1663 Supersedes)
+#
+# --- negative(6 题,词表外乱码 / 离域短语,判据 = 0 命中) ---
+negative	zxqvbnmkjhgfdsapoiuytrewq1234567890		ASCII 乱码(随机字符,含数字)
+negative	qwzxjklvbnmasdfghjklqwertyuiopzxcvb		ASCII 乱码(键盘随机行)
+negative	麒麟鹦鹉螺旋桨潜水艇火箭发射台仙人掌		离域中文短语(动物/机械/植物无关堆砌,不含任何本仓语料词表)
+negative	telescope banana lighthouse marmalade kangaroo		离域英文短语(无关名词堆砌)
+negative	قطة صغيرة تلعب في الحديقة الخلفية		离域阿拉伯语短语(词表外文字系统,规避拉丁/CJK 分词巧合命中)
+negative	непонятное слово абракадабра случайный текст		离域西里尔字母短语(词表外文字系统)

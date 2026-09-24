@@ -1,0 +1,18 @@
+{
+  "id": "stale-lkg-old-file-served",
+  "category": "stale-lkg",
+  "spec": "C05-BUILD-SPEC.md 交付物 8 (stale LKG: sourceOids 变了,不得把另一份 sourceOids 的旧 LKG 冒充当前故障的兜底) + 交付物 5 'LKG 命中路径要实测一次'",
+  "description": "Two-step orchestration under the SAME isolated root T (LKG_DIR must be shared across both runs): (1) prime — a successful `--dir <corpus-whole>` run writes a real LKG file keyed by sha(sourceOids_A={view:dir,dir:corpus-whole}, schemaVersion). (2) degrade — a run against a DIFFERENT --dir (the read-only ../index-emit-file-empty fixture; different dir string => different sourceOids_B => different LKG key) hits the dedicated file-empty diagnostic. W3-D (f9a8acf, Opus M3, guards/audits/OPUS-2026-09-24-c05-wave2-review.md) removed the old mtime-latest LKG bucket fallback that used to serve corpus-A's now-stale LKG file on a key miss (FINAL-SPEC §4: 'LKG 只在 key 命中才用'). New semantics: sourceOids_B's exact-key lookup misses (no file at that key) and degraded() goes straight to the title-only dead end -- no LKG-FALLBACK line at all, no stale content served. Empirically confirmed via isolated matrix run (builder report) after the semantics update: step 2's stdout is exactly 'PMM-DEGRADED file-empty:decisions.md\\n' (no second line).",
+  "primeDir": "../../corpus-whole",
+  "degradeCorpusRef": "../index-emit-file-empty",
+  "asOf": "2026-09-24",
+  "consumers": ["index-emit"],
+  "indexEmit": {
+    "primeExpectRcZero": true,
+    "primeExpectStdoutContains": "PMM-INDEX-EMIT",
+    "primeExpectLkgHitFalse": true,
+    "degradeExpectRcNonZero": true,
+    "degradeExpectStdoutContains": "PMM-DEGRADED file-empty:decisions.md",
+    "degradeExpectNoLkgFallback": true
+  }
+}
