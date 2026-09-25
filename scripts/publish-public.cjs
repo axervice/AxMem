@@ -29,7 +29,21 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const MANIFEST_PATH = path.join(REPO_ROOT, 'publish.manifest.json');
 
 function log(msg) { process.stdout.write('[publish-public] ' + msg + '\n'); }
-function die(msg) { process.stderr.write('[publish-public] FATAL: ' + msg + '\n'); process.exit(1); }
+// MED fix (review OPUS-2026-09-25-c05-w5-w10-review.md §7, crash safety): this used to call
+// process.exit(1) directly, which -- unlike throwing -- does NOT run pending try/finally blocks. Every
+// gate failure in main() goes through die(), so main()'s own `finally { rmrf(exportDir) }` (now
+// rmrfRetrying, see below) was being skipped on every single one of those paths; confirmed in practice
+// during this fix (2 of 7 stale `axmem-publish-src-*` directories found on this machine still held the
+// full un-excluded `.__archive.tar`, i.e. died before step2 could even run, let alone cleanup).
+// die() now throws a tagged Error instead; main() is invoked through a thin wrapper at the bottom of
+// this file that lets the throw unwind through main()'s try/finally (running cleanup) before setting
+// the process exit code.
+function die(msg) {
+  process.stderr.write('[publish-public] FATAL: ' + msg + '\n');
+  const err = new Error(msg);
+  err.__axmemDie = true;
+  throw err;
+}
 
 function readManifest() {
   const raw = fs.readFileSync(MANIFEST_PATH, 'utf8');
@@ -84,7 +98,45 @@ function walk(dir, base, out) {
 }
 
 function rmrf(p) {
+  // Best-effort, single-attempt cleanup for this script's OWN internal throwaway temp dirs (gate2's
+  // tempHome, gate3's tempHome, treeHashOfDir's index dir) -- none of these ever hold excluded/
+  // paid-tier content (gate2/gate3 copy only the ALREADY-filtered exportDir's guards/ or run npm
+  // against the already-filtered exportDir tree), so a rare leftover from one of these is not a
+  // sensitive-data leak, just tmpdir clutter. The two crash-safety-sensitive sites -- step0's startup
+  // sweep and main()'s final cleanup of exportDir itself, the one directory that (pre-fix) briefly
+  // held un-excluded content -- use rmrfRetrying below instead.
   fs.rmSync(p, { recursive: true, force: true });
+}
+
+const TEMP_PREFIX = 'axmem-publish-';
+
+function syncSleepMs(ms) {
+  // Synchronous backoff between cleanup retries. main() is otherwise entirely synchronous (no promises/
+  // timers in flight), so a blocking wait here is simpler and safer than restructuring the whole script
+  // around async retry logic just for this.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// MED fix (review §7): a bare fs.rmSync({force:true}) swallows ENOENT but NOT a Windows EPERM/EBUSY
+// (e.g. an antivirus scanner or another process still has a handle open under the directory just
+// extracted here) -- on failure the exportDir, which briefly held the exported tree, was simply left
+// on disk with no retry and no clear signal. Retries with a short backoff, and returns a result object
+// instead of throwing, so the caller can report cleanup success/failure SEPARATELY from export
+// success/failure rather than letting one clobber the other in the exit code / log output.
+function rmrfRetrying(p, maxAttempts) {
+  maxAttempts = maxAttempts || 3;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      fs.rmSync(p, { recursive: true, force: true });
+      if (!fs.existsSync(p)) return { ok: true, attempts: attempt };
+      lastErr = new Error('path still present after rmSync reported success: ' + p);
+    } catch (e) {
+      lastErr = e;
+    }
+    if (attempt < maxAttempts) syncSleepMs(attempt * 500); // 500ms, then 1000ms
+  }
+  return { ok: false, attempts: maxAttempts, error: lastErr };
 }
 
 function isProbablyText(buf) {
@@ -94,12 +146,80 @@ function isProbablyText(buf) {
 }
 
 // ---------------------------------------------------------------------------------------------
-function step1_archiveMainToTemp() {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-publish-src-'));
+// MED fix (review §7): startup crash-safety sweep. An interrupted prior run (killed process, die()'s
+// old process.exit() path which used to bypass try/finally entirely -- see die()'s comment above --
+// a Windows EPERM on cleanup, ...) can leave an `axmem-publish-*` mkdtemp directory behind under
+// os.tmpdir(). Confirmed in practice on this machine while investigating this fix: 7 leftover
+// `axmem-publish-src-*` directories, 2 of which still held `.__archive.tar` -- the FULL un-excluded
+// private tree (paid-tier source, NORTH-STAR.md, real usernames), because the old step1 archived
+// everything and excluded only after extraction. step1 below now archives an already-filtered file
+// list so a fresh run's own directory never holds excluded content even transiently, but leftovers
+// from OLDER (pre-fix) interrupted runs can still be sitting on disk. Sweep them on every startup so
+// they do not accumulate indefinitely. Scope is deliberately narrow: only entries directly under
+// os.tmpdir() whose name starts with THIS script's own mkdtemp prefix (never a generic temp wipe), and
+// only ones at least 10 minutes old, so a genuinely concurrent sibling invocation's own in-progress
+// directory is never touched.
+function step0_cleanupStaleTemp() {
+  const root = os.tmpdir();
+  let entries = [];
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return; }
+  const STALE_MS = 10 * 60 * 1000;
+  const now = Date.now();
+  let removed = 0, failed = 0;
+  for (const entry of entries) {
+    if (entry.name.indexOf(TEMP_PREFIX) !== 0) continue;
+    const abs = path.join(root, entry.name);
+    let st = null;
+    try { st = fs.statSync(abs); } catch { continue; } // vanished between readdir and stat -- fine
+    if (now - st.mtimeMs < STALE_MS) continue; // too fresh -- may be a sibling run in progress
+    const res = rmrfRetrying(abs, 3);
+    if (res.ok) removed++;
+    else { failed++; log('WARNING: startup cleanup could not remove stale temp entry ' + abs + ' -- ' + (res.error && res.error.message)); }
+  }
+  if (removed || failed) {
+    log('startup cleanup: removed ' + removed + ' stale `' + TEMP_PREFIX + '*` temp entr(ies)' + (failed ? (', ' + failed + ' FAILED (see warnings above -- remove by hand)') : '') + ' from ' + root);
+  }
+}
+
+function excludeConfig(manifest) {
+  return {
+    patterns: (manifest.exclude || []).filter((p) => !isCommentEntry(p)),
+    exceptions: (manifest.excludeExceptions || []).filter((p) => !isCommentEntry(p)),
+  };
+}
+
+function step1_archiveMainToTemp(manifest) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), TEMP_PREFIX + 'src-'));
   log('exporting `main` tree via git archive -> ' + tmp);
-  // git archive main | tar -x -C tmp   (no shell:true -- pipe two spawnSync'd processes ourselves)
+  // MED fix (review §7): archive ONLY the files that will survive step2's exclude filter -- computed
+  // here via `git ls-tree` plus the EXACT SAME matchesAny(exclude)/matchesAny(excludeExceptions) logic
+  // step2 applies, via the shared excludeConfig() helper -- instead of archiving the full private tree
+  // (including paid-tier/excluded source) and excluding only after extraction. Previously, excluded
+  // content existed in plaintext on disk (inside `.__archive.tar`, and then as real extracted files)
+  // for the whole window between this function and step2; a process death in that window left the
+  // plaintext paid-tier content behind in a leftover temp dir (see step0's comment for the confirmed
+  // evidence). Filtering at archive time means the tar this script ever writes to disk never contains
+  // excluded content in the first place, so an interruption at ANY point after this function returns
+  // cannot leak it. step2 still runs afterward as a redundant safety net (it should now always report
+  // removed=0) rather than being deleted outright, so a bug in this filter fails closed -- ships
+  // nothing extra rather than silently sending paid-tier files to `public` -- instead of failing open.
+  //
+  // (Tried first and rejected: `git archive -- . ':(exclude,glob)<pattern>' ...`, i.e. pathspec
+  // exclusion at the git-archive call itself. Verified empirically that git pathspec exclude/include
+  // sets do NOT support "re-including" a single file inside an otherwise-excluded glob regardless of
+  // pathspec order -- manifest.excludeExceptions' one entry, guards/fixtures/v3/trigger-write-gate-
+  // probe.cjs, was dropped by every pathspec ordering tried. Resolving the file list in JS first, via
+  // the shared exclude/exception matcher, then handing `git archive` a literal list of exact paths
+  // (no glob semantics needed at the git layer at all) avoids that gap entirely and was verified
+  // byte-for-byte identical to the old archive-then-exclude file set.)
+  const { patterns, exceptions } = excludeConfig(manifest);
+  const lsOut = git(['ls-tree', '-r', '--name-only', '-z', 'main']);
+  const allFiles = lsOut.split('\0').filter(Boolean);
+  const keep = allFiles.filter((rel) => !(matchesAny(rel, patterns) && !matchesAny(rel, exceptions)));
+  log('archive file list: ' + keep.length + ' of ' + allFiles.length + ' tracked file(s) pass the exclude filter (filtered before archiving, not after)');
+
   const archiveTar = path.join(tmp, '.__archive.tar');
-  const out = git(['archive', '--format=tar', 'main'], { encoding: 'buffer', maxBuffer: 1024 * 1024 * 512 });
+  const out = git(['archive', '--format=tar', 'main', '--'].concat(keep), { encoding: 'buffer', maxBuffer: 1024 * 1024 * 512 });
   fs.writeFileSync(archiveTar, out);
   // --force-local: bsdtar/Windows tar otherwise reads a "C:\..." archive path as a "host:file" remote
   // spec because of the drive-letter colon. Forward-slash form additionally sidesteps MSYS's own
@@ -112,8 +232,7 @@ function step1_archiveMainToTemp() {
 }
 
 function step2_applyExclude(exportDir, manifest) {
-  const patterns = (manifest.exclude || []).filter((p) => !isCommentEntry(p));
-  const exceptions = (manifest.excludeExceptions || []).filter((p) => !isCommentEntry(p));
+  const { patterns, exceptions } = excludeConfig(manifest);
   const files = [];
   walk(exportDir, '', files);
   let removed = 0;
@@ -125,7 +244,9 @@ function step2_applyExclude(exportDir, manifest) {
   }
   // prune now-empty directories
   pruneEmptyDirs(exportDir);
-  log('exclude: removed ' + removed + ' file(s) matching ' + patterns.length + ' pattern(s)');
+  // step1 now pre-filters at archive time (see its comment), so `removed` should always be 0 here --
+  // this pass is kept as a redundant safety net, not the primary exclude mechanism anymore.
+  log('exclude: removed ' + removed + ' file(s) matching ' + patterns.length + ' pattern(s)' + (removed > 0 ? ' -- UNEXPECTED: step1 should have pre-filtered these already, investigate the archive file list logic' : ' (expected 0 -- step1 already pre-filtered)'));
 }
 
 function pruneEmptyDirs(dir) {
@@ -397,14 +518,28 @@ function ensurePublicRemote(manifest) {
   return dedicated;
 }
 
+// Fresh `git ls-remote <remote> <ref>` lookup, used ONLY to build a --force-with-lease expected-value
+// argument immediately before the push call (never cached/reused across a run) so the lease is checked
+// against the remote's actual current state, not a value that may have gone stale earlier in the run.
+// Returns '' when the ref does not exist on the remote yet (first-ever publish to a brand-new repo) --
+// git's own --force-with-lease=<ref>:<expect> syntax treats an empty <expect> as "must not already
+// exist", so callers can pass this straight through without a separate branch.
+function getRemoteRefSha(remoteName, ref) {
+  let out = '';
+  try { out = git(['ls-remote', '--exit-code', remoteName, ref]); } catch { out = ''; }
+  const line = out.split('\n').find((l) => l.trim().length > 0);
+  return line ? line.split('\t')[0].trim() : '';
+}
+
 function main() {
+  step0_cleanupStaleTemp();
   const push = process.argv.includes('--push');
   const manifest = readManifest();
   const orphan = process.argv.includes('--orphan') || manifest.history === 'orphan';
   const privateShortSha = git(['rev-parse', '--short', 'main']).trim();
   log('source: main @ ' + privateShortSha + (orphan ? ' (orphan history mode)' : ''));
 
-  const exportDir = step1_archiveMainToTemp();
+  const exportDir = step1_archiveMainToTemp(manifest);
   try {
     step2_applyExclude(exportDir, manifest);
     step3_applyAddFiles(exportDir, manifest);
@@ -425,16 +560,57 @@ function main() {
 
     if (push) {
       const remoteName = ensurePublicRemote(manifest);
-      log('pushing public -> ' + remoteName + ' main');
-      git(['push', remoteName, 'public:main'], { stdio: 'inherit' });
+      if (orphan) {
+        // HIGH fix (review OPUS-2026-09-25-c05-w5-w10-review.md §7): orphan mode makes a fresh,
+        // parentless commit on EVERY run (see commitOntoPublic's `orphan` branch above), so the
+        // remote's current `main` is never an ancestor of the commit we are about to push -- a plain
+        // `git push` would be rejected as non-fast-forward on every publish after the first. A blind
+        // `--force` would "fix" that but would also silently blow away a genuine concurrent push (CI
+        // and a manual dispatch racing, or a third party with push access). `--force-with-lease`
+        // instead pins the push to the remote ref's value we just observed via ls-remote (fetched
+        // fresh, immediately before the push -- never a cached/earlier-in-the-run value) and lets git
+        // itself atomically re-check that value at push time: if anything else moved `main` in
+        // between, the push is rejected instead of clobbering it.
+        const expect = getRemoteRefSha(remoteName, 'main');
+        const leaseArg = '--force-with-lease=main:' + expect;
+        log('pushing public -> ' + remoteName + ' main (orphan mode, ' + leaseArg + (expect ? '' : ' -- expecting remote main to not exist yet') + ')');
+        git(['push', leaseArg, remoteName, 'public:main'], { stdio: 'inherit' });
+      } else {
+        log('pushing public -> ' + remoteName + ' main');
+        git(['push', remoteName, 'public:main'], { stdio: 'inherit' });
+      }
     } else {
       log('--push not set: local `public` branch updated, origin NOT touched');
     }
     log('EXPORT_TREE=' + result.tree);
     log('DONE');
   } finally {
-    rmrf(exportDir);
+    // MED fix (review §7): retry-with-backoff + explicit separate reporting, so a cleanup failure
+    // never masquerades as (or gets masked by) the export's own success/failure. This finally block
+    // now actually runs on every die() path too -- see die()'s comment -- which it did not before.
+    const cleanup = rmrfRetrying(exportDir, 3);
+    if (cleanup.ok) {
+      log('cleanup: removed export dir ' + exportDir + (cleanup.attempts > 1 ? (' (attempt ' + cleanup.attempts + ')') : ''));
+    } else {
+      process.stderr.write('[publish-public] CLEANUP FAILED after ' + cleanup.attempts + ' attempt(s): could not remove ' + exportDir + ' -- ' + (cleanup.error && cleanup.error.message) + '\n');
+      process.stderr.write('[publish-public] Remove this directory by hand. (Contents are the filtered export tree only -- excluded/paid-tier files were never archived into it, per step1 -- but it should not be left on disk.)\n');
+      // Reported and flagged separately from EXPORT_TREE/DONE above: if the export itself succeeded,
+      // those log lines already printed and remain true. This only marks the OVERALL run non-clean.
+      process.exitCode = 1;
+    }
   }
 }
 
-main();
+// Thin wrapper so die()'s throw unwinds through main()'s try/finally (running the cleanup above)
+// before the process exit code is set, instead of die() calling process.exit() directly and skipping
+// that finally block entirely (see die()'s comment). A non-die() exception (a real bug) is also caught
+// here so it gets the same treatment rather than an unhandled-rejection-style crash that bypasses
+// cleanup.
+try {
+  main();
+} catch (err) {
+  if (!err || !err.__axmemDie) {
+    process.stderr.write('[publish-public] UNCAUGHT: ' + ((err && err.stack) || err) + '\n');
+  }
+  process.exitCode = 1;
+}
