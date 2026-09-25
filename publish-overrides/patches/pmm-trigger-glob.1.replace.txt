@@ -1,0 +1,50 @@
+// ── trigger-LINE grammar (2026-09-24 open-core cut extraction) ───────────────────────────────────
+// classifyTriggerLine() + its regex/set constants used to live in guards/pmm-core.cjs (the causal
+// shadow-memory engine, moved to AxMem Pro / a commercial license, not part of this open-core repo).
+// This file already owns the trigger-PATH grammar (compileTriggerPath/checkTriggerPathB5, above) and
+// classifyTriggerLine's path-form branch calls checkTriggerPathB5 right here, so the trigger-LINE
+// grammar moved into this same leaf module rather than being removed along with the rest of
+// pmm-core.cjs — guards/pmm-trigger-recall.cjs (kept, base tier) needs it for the SAME fence-aware,
+// authoritative trigger-line classification the write gate uses. Extracted verbatim (byte-identical),
+// no behavior change.
+const FENCE_RE = /^ {0,3}(```|~~~)/;
+const TRIG_P_RE = /^<!--\s*trigger:\s*tool=((?:Edit|Write|MultiEdit|NotebookEdit)(?:\|(?:Edit|Write|MultiEdit|NotebookEdit))*);\s*repo=([a-z0-9-]+);\s*path=(\S+)\s*-->$/;
+const TRIG_C_RE = /^<!--\s*trigger:\s*tool=Bash;\s*repo=([a-z0-9-]+|\*);\s*cmd=([a-z0-9._-]+)(?:\s([a-z0-9._:-]+))?\s*-->$/;
+const TRIG_NONE_RE = /^<!--\s*trigger:\s*none;\s*理由=(.*?)\s*-->$/;
+const TRIGGERISH_RE = /^<!--\s*trigger:/i;
+// B5 repo=* exe denylist (§1.2a TRIG_C constraint)
+const CMD_DENYLIST = new Set(['git', 'npm', 'npx', 'node', 'bash', 'sh', 'pwsh', 'powershell', 'python', 'py', 'cd', 'ls', 'cat', 'echo', 'rm', 'cp', 'mv']);
+
+// Returns null if `text` is not trigger-comment-shaped at all (caller falls through to its other
+// field-line checks); otherwise `{ ok: true, trigger: {...} }` or `{ ok: false, reason: string }`.
+function classifyTriggerLine(text) {
+  let m;
+  if ((m = TRIG_P_RE.exec(text))) {
+    const tools = m[1], repo = m[2], p = m[3];
+    const b5 = checkTriggerPathB5(p);
+    if (b5.ok) return { ok: true, trigger: { kind: 'path', tools: tools.split('|'), repo, path: p } };
+    return { ok: false, reason: b5.reason };
+  }
+  if ((m = TRIG_C_RE.exec(text))) {
+    const repo = m[1], exe = m[2], sub = m[3] || null;
+    if (repo === '*' && CMD_DENYLIST.has(exe)) {
+      return { ok: false, reason: `repo=* 禁配常用 exe=${exe}` };
+    }
+    return { ok: true, trigger: { kind: 'cmd', tools: ['Bash'], repo, exe, sub } };
+  }
+  if ((m = TRIG_NONE_RE.exec(text))) {
+    const reason = m[1].trim();
+    if (reason === '') return { ok: false, reason: 'trigger: none 的理由不得为空(占位式 none 仍算非法 trigger)' };
+    return { ok: true, trigger: { kind: 'none', reason } };
+  }
+  if (TRIGGERISH_RE.test(text)) {
+    return { ok: false, reason: 'trigger 注释不合 tool=;repo=;path=|cmd=|none;理由= 形态' };
+  }
+  return null;
+}
+
+module.exports = {
+  TriggerPatternError, compileTriggerPath, checkTriggerPathB5, testTriggerPath,
+  MAX_CANDIDATE_PATH_LEN, validateTriggerPathContract,
+  FENCE_RE, TRIG_P_RE, TRIG_C_RE, TRIG_NONE_RE, TRIGGERISH_RE, CMD_DENYLIST, classifyTriggerLine,
+};

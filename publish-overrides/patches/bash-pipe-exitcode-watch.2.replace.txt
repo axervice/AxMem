@@ -1,0 +1,1 @@
+    report('snippet contains no username (jax-x stripped from the C:/Users/ path)', snippet.indexOf('jax-x') < 0, JSON.stringify(snippet));

@@ -1,0 +1,1 @@
+      try { trigRes = classifyTriggerLine(line); } catch { trigRes = null; }

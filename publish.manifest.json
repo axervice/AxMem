@@ -1,0 +1,142 @@
+{
+  "$schema": "internal: consumed only by scripts/publish-public.cjs",
+  "version": 1,
+  "auto": false,
+  "publicRepo": "axervice/AxMem",
+  "publicBranch": "public",
+  "sourceBranch": "main",
+  "_comment_source": "Reverse-engineered 2026-09-24 from the diff between public origin/main (592c4c3) and pre-cut-release (b862900). Every path below either appears as an add-only ('A') entry in `git diff --name-status 592c4c3 pre-cut-release` (exclude list) or as a modified ('M') / deleted-from-592c4c3 ('D', i.e. add-back) entry that needed a transform to reproduce 592c4c3's exact content.",
+
+  "exclude": [
+    "publish.manifest.json",
+    "scripts/**",
+    ".github/workflows/publish-public.yml",
+    "README.public.md",
+    "README.zh.public.md",
+    "publish-overrides/**",
+    "docs/P2-CC-PERFECT-SPEC.md",
+    "_comment_P2: 2026-09-24 Jax ruling -- this internal build spec (private product roadmap, mentions the paid-tier causal-memory core cluster) is not free-tier material, excluded outright not just sanitized. KNOWN INTENTIONAL divergence from today's origin/main (592c4c3), which still ships an older, unexcluded copy of this file -- byte-diff gate special-cases it, see knownDivergencesFromCurrentOriginMain below.",
+
+    "guards/pmm-core.cjs",
+    "guards/pmm-core.sh",
+    "guards/pmm-core-selftest.cjs",
+    "guards/pmm-core-high4b-probe.cjs",
+    "pmm-hook.cjs",
+    "guards/pmm-shadow-compare.cjs",
+    "guards/pmm-shadow-compare.sh",
+    "guards/pmm-shadow-replay.cjs",
+    "guards/pmm-shadow-replay.sh",
+    "guards/pmm-precommit-shadow-replay.cjs",
+    "guards/pmm-precommit-shadow-replay.sh",
+    "guards/pmm-index-emit.cjs",
+    "guards/pmm-index-emit.sh",
+    "guards/pmm-search-v2.cjs",
+    "guards/pmm-search-v2.sh",
+    "guards/vendor/minisearch/**",
+    "guards/pmm-fault-matrix.cjs",
+    "guards/pmm-fault-matrix.sh",
+    "guards/pmm-migrate-v3.cjs",
+    "guards/pmm-migrate-v3.sh",
+    "guards/pmm-verify-assertions.cjs",
+    "guards/pmm-trigger-compat-replay.cjs",
+    "guards/pmm-c0-canary-check.sh",
+    "guards/pmm-manifest.cjs",
+    "guards/pmm-manifest.sh",
+    "guards/pmm-manifest-v2.cjs",
+    "guards/pmm-manifest-shadow.cjs",
+    "guards/pmm-manifest-shadow.sh",
+    "guards/docs/PMM-V3.md",
+    "guards/specs/C0-BUILD-SPEC.md",
+    "guards/specs/C05-BUILD-SPEC.md",
+    "guards/specs/D1-NAMING.md",
+    "guards/specs/M0-BUILD-BRIEF.md",
+    "guards/specs/OPTIMAL-DIRECTION.md",
+    "guards/specs/PMM-V3-FINAL-SPEC.md",
+    "guards/specs/QUEUE-DRAIN-BRIEF.PAUSED.md",
+    "guards/specs/RECALL-LOOP-M-SPEC-v2.md",
+    "guards/specs/ROUND14-SCHEMA-SPEC-v2.PAUSED.md",
+    "guards/specs/TARGET-SPEC-V3.md",
+    "guards/specs/retrieval-canary-v2.tsv",
+    "guards/fixtures/v3/**"
+  ],
+  "excludeExceptions": [
+    "guards/fixtures/v3/trigger-write-gate-probe.cjs"
+  ],
+
+  "addFiles": {
+    "_comment": "Present ONLY in 592c4c3 (public), absent from pre-cut-release -- pmm-isolation-gate.cjs's open-core cut extracted two pure Win32 filename-safety helpers out of the excluded pmm-core.cjs into this new leaf file so the gate stays self-contained.",
+    "guards/pmm-win32-path-safety.cjs": "publish-overrides/guards/pmm-win32-path-safety.cjs"
+  },
+
+  "overlays": {
+    "_comment": "Full-content replace. Used where the private->public difference is a hand-curated narrative (README) or a dense, coupled data-file edit (guard-canary.sh's roster/EXPECTED arithmetic; isolation-gate-contract.json's allow_prod roster remap + 3 report_only downgrades + mutation-set trim) that is safer to snapshot than to re-derive mechanically. TRADEOFF (see report): these 4 files will need a manual overlay refresh whenever their private source gains new content for KEPT (non-excluded) guards -- the script does not auto-detect staleness.",
+    "README.md": "README.public.md",
+    "README.zh.md": "README.zh.public.md",
+    "guards/guard-canary.sh": "publish-overrides/guards/guard-canary.sh",
+    "guards/specs/isolation-gate-contract.json": "publish-overrides/guards/specs/isolation-gate-contract.json"
+  },
+
+  "replacements": [
+    "_comment: each {file, findFile, replaceFile} pair does an exact, literal, whole-substring find/replace of findFile's content with replaceFile's content inside the exported copy of `file`. required=true (default) fails the export loudly if findFile's exact text is not found -- this is the forcing function that catches upstream drift instead of silently missing it.",
+
+    { "file": "guards/bash-pipe-exitcode-watch.cjs", "findFile": "publish-overrides/patches/bash-pipe-exitcode-watch.1.find.txt", "replaceFile": "publish-overrides/patches/bash-pipe-exitcode-watch.1.replace.txt" },
+    { "file": "guards/bash-pipe-exitcode-watch.cjs", "findFile": "publish-overrides/patches/bash-pipe-exitcode-watch.2.find.txt", "replaceFile": "publish-overrides/patches/bash-pipe-exitcode-watch.2.replace.txt" },
+    { "file": "guards/bash-pipe-exitcode-watch.cjs", "findFile": "publish-overrides/patches/bash-pipe-exitcode-watch.3.find.txt", "replaceFile": "publish-overrides/patches/bash-pipe-exitcode-watch.3.replace.txt" },
+    { "file": "guards/bash-pipe-exitcode-watch.cjs", "findFile": "publish-overrides/patches/bash-pipe-exitcode-watch.4.find.txt", "replaceFile": "publish-overrides/patches/bash-pipe-exitcode-watch.4.replace.txt" },
+
+    { "file": "guards/pipe-gate-v2-acceptance.cjs", "findFile": "publish-overrides/patches/pipe-gate-v2-acceptance.1.find.txt", "replaceFile": "publish-overrides/patches/pipe-gate-v2-acceptance.1.replace.txt" },
+    { "file": "guards/pipe-gate-v2-acceptance.cjs", "findFile": "publish-overrides/patches/pipe-gate-v2-acceptance.2.find.txt", "replaceFile": "publish-overrides/patches/pipe-gate-v2-acceptance.2.replace.txt" },
+    { "file": "guards/pipe-gate-v2-acceptance.cjs", "findFile": "publish-overrides/patches/pipe-gate-v2-acceptance.3.find.txt", "replaceFile": "publish-overrides/patches/pipe-gate-v2-acceptance.3.replace.txt" },
+    { "file": "guards/pipe-gate-v2-acceptance.cjs", "findFile": "publish-overrides/patches/pipe-gate-v2-acceptance.4.find.txt", "replaceFile": "publish-overrides/patches/pipe-gate-v2-acceptance.4.replace.txt" },
+
+    { "file": "guards/pmm-bash-impression.cjs", "findFile": "publish-overrides/patches/pmm-bash-impression.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-bash-impression.1.replace.txt" },
+    { "file": "guards/pmm-bash-impression.cjs", "findFile": "publish-overrides/patches/pmm-bash-impression.2.find.txt", "replaceFile": "publish-overrides/patches/pmm-bash-impression.2.replace.txt" },
+    { "file": "guards/pmm-bash-impression.cjs", "findFile": "publish-overrides/patches/pmm-bash-impression.3.find.txt", "replaceFile": "publish-overrides/patches/pmm-bash-impression.3.replace.txt" },
+
+    { "file": "guards/pmm-isolation-gate.cjs", "findFile": "publish-overrides/patches/pmm-isolation-gate.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-isolation-gate.1.replace.txt" },
+    { "file": "guards/pmm-isolation-gate.cjs", "findFile": "publish-overrides/patches/pmm-isolation-gate.2.find.txt", "replaceFile": "publish-overrides/patches/pmm-isolation-gate.2.replace.txt" },
+
+    { "file": "guards/pmm-trigger-glob.cjs", "findFile": "publish-overrides/patches/pmm-trigger-glob.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-trigger-glob.1.replace.txt" },
+
+    { "file": "guards/pmm-trigger-recall.cjs", "findFile": "publish-overrides/patches/pmm-trigger-recall.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-trigger-recall.1.replace.txt" },
+    { "file": "guards/pmm-trigger-recall.cjs", "findFile": "publish-overrides/patches/pmm-trigger-recall.2.find.txt", "replaceFile": "publish-overrides/patches/pmm-trigger-recall.2.replace.txt" },
+    { "file": "guards/pmm-trigger-recall.cjs", "findFile": "publish-overrides/patches/pmm-trigger-recall.3.find.txt", "replaceFile": "publish-overrides/patches/pmm-trigger-recall.3.replace.txt" },
+
+    { "file": "guards/vendor/VENDOR.md", "findFile": "publish-overrides/patches/vendor-md.1.find.txt", "replaceFile": "publish-overrides/patches/vendor-md.1.replace.txt" },
+
+    { "file": "package.json", "findFile": "publish-overrides/patches/package-json.1.find.txt", "replaceFile": "publish-overrides/patches/package-json.1.replace.txt" },
+    { "file": "package.json", "findFile": "publish-overrides/patches/package-json.2.find.txt", "replaceFile": "publish-overrides/patches/package-json.2.replace.txt" }
+  ],
+
+  "sanitize": {
+    "_comment": "Defense-in-depth regex scrub applied to every exported text file (not just the ones covered by replacements/overlays above), driven dynamically from the running machine's os.userInfo().username / os.hostname() -- never a hardcoded literal in this manifest or the script, so it stays correct if run from a different machine.",
+    "rules": [
+      { "id": "home-username-path", "description": "C:/Users/<realuser>/ or /Users/<realuser>/ or /c/Users/<realuser>/ -> <user>/", "kind": "username-path" },
+      { "id": "bare-username", "description": "the real OS username as a bare word (e.g. inside a JS string literal or comment) -> <user>", "kind": "username-bare" },
+      { "id": "hostname", "description": "the real machine hostname -> <mach>", "kind": "hostname" },
+      { "id": "lan-ip", "pattern": "192\\.168\\.1\\.151", "flags": "g", "replace": "10.0.0.1" },
+      { "id": "d-rag-path", "pattern": "D:[\\\\/]RAG", "flags": "gi", "replace": "D:/example-project" },
+      { "id": "desktop-axervice-booking-real-path", "description": "Desktop\\axervice-booking or Desktop/axervice-booking, ONLY when immediately preceded by a real absolute-path username segment (not a $VAR reference and not an already-redacted <user> placeholder) -- deliberately scoped so it does NOT touch the pre-existing, already-public $HOMEW/Desktop/axervice-booking test fixtures in guards/pmm-trigger-recall.sh or the already-<user>-redacted mention in docs/audits/SURVEY-2026-09-17-live-vs-product.md (both byte-identical to today's origin/main; touching them would break the byte-identity gate over content Jax already accepted as public).", "kind": "desktop-axervice-booking-scoped" }
+    ]
+  },
+
+  "gates": {
+    "residualScanPatterns": ["home-username-path", "bare-username", "hostname", "lan-ip", "d-rag-path", "desktop-axervice-booking-real-path"],
+    "installLayoutSelfTest": {
+      "guard": "pmm-isolation-gate.cjs",
+      "args": ["--self-test", "--contract", "specs/isolation-gate-contract.json"],
+      "expectFail": 0,
+      "expectMutants": 2,
+      "expectAllMutantsMatch": true
+    },
+    "npmSelftest": {
+      "command": "npm run selftest",
+      "expectFailed": 0
+    }
+  },
+
+  "knownDivergencesFromCurrentOriginMain": [
+    "docs/P2-CC-PERFECT-SPEC.md (now excluded per 2026-09-24 Jax ruling; current origin/main still ships an older, unexcluded copy -- see exclude[] comment above)",
+    "lib/msys-path.cjs, lib/atomic-write.cjs, adapters/claude-code/merge-hooks.cjs, lib/VENDOR.md (W7 fixes on pre-cut-release not yet in origin/main -- see build report for whether these are new-vs-592c4c3 or already-identical)"
+  ]
+}

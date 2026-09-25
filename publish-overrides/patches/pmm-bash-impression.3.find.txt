@@ -1,0 +1,1 @@
+    return s.indexOf(os.userInfo().username) === -1 && s.length <= 120;

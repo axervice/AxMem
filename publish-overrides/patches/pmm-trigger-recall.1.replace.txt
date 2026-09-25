@@ -1,0 +1,16 @@
+// policy used to be DEFINED in this file, which is exactly why pmm-core.cjs (which needed
+// checkTriggerPathB5 for classifyTriggerLine) had to require THIS file — creating a one-directional
+// dependency that made it impossible for this file to require pmm-core.cjs back (for
+// classifyTriggerLine/FENCE_RE) without a genuine require() cycle. Extracted to the leaf module
+// pmm-trigger-glob.cjs (zero dependency on either file); re-exported below unchanged so every existing
+// require('./pmm-trigger-recall.cjs') caller (pmm-manifest.cjs, the self-tests) keeps working without
+// modification.
+// 2026-09-24 open-core cut: pmm-core.cjs (the causal shadow-memory engine) moved to AxMem Pro / a
+// commercial license and is no longer part of this repo. classifyTriggerLine/FENCE_RE — the SAME
+// fence-aware, authoritative trigger-line grammar the write gate uses — moved into pmm-trigger-glob.cjs
+// alongside the trigger-path grammar it already owned (see that file's own header), rather than being
+// removed along with the rest of pmm-core.cjs; this file now imports both from there instead.
+const {
+  TriggerPatternError, compileTriggerPath, checkTriggerPathB5, testTriggerPath, MAX_CANDIDATE_PATH_LEN,
+  FENCE_RE, classifyTriggerLine,
+} = require('./pmm-trigger-glob.cjs');

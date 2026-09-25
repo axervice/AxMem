@@ -1,0 +1,1 @@
+  "description": "Deterministic guardrails + causal shadow memory for Claude Code.",

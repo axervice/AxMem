@@ -1,0 +1,14 @@
+// policy used to be DEFINED in this file, which is exactly why pmm-core.cjs (which needs
+// checkTriggerPathB5 for classifyTriggerLine) had to require THIS file — creating a one-directional
+// dependency that made it impossible for this file to require pmm-core.cjs back (for
+// classifyTriggerLine/FENCE_RE) without a genuine require() cycle. Extracted to the leaf module
+// pmm-trigger-glob.cjs (zero dependency on either file); re-exported below unchanged so every existing
+// require('./pmm-trigger-recall.cjs') caller (pmm-manifest.cjs, pmm-trigger-compat-replay.cjs, the
+// self-tests) keeps working without modification.
+const {
+  TriggerPatternError, compileTriggerPath, checkTriggerPathB5, testTriggerPath, MAX_CANDIDATE_PATH_LEN,
+} = require('./pmm-trigger-glob.cjs');
+// With the cycle gone (pmm-core.cjs no longer requires this file — see pmm-trigger-glob.cjs's header),
+// this file can now safely require pmm-core.cjs for the SAME fence-aware, authoritative trigger-line
+// grammar parseFile()/the write gate use, instead of maintaining a third, driftable regex here.
+const core = require('./pmm-core.cjs');

@@ -1,0 +1,1 @@
+    return s.indexOf('jax-x') === -1 && s.length <= 120;

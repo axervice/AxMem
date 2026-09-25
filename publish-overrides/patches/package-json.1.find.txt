@@ -1,0 +1,1 @@
+  "description": "Deterministic guardrails for AI coding agents (Claude Code first).",

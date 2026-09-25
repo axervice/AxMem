@@ -1,0 +1,3171 @@
+{
+ "contract": "isolation-gate-contract",
+ "version": "1.5",
+ "authored_by": "Sonnet builder W5-A (2026-09-24), item 0 of the W5 fix-wave brief (authority: guards/audits/OPUS-2026-09-24-c05-wave4-review.md HIGH-1 + LOW). DRAFT staged in scratchpad only (isolation-gate-contract-v1.4-draft.json), NOT copied into specs/isolation-gate-contract.json. 主脑 must register/pin (or amend) this draft before items 1-3 (classifySourceSegment stdin-tracing fix, judge() recursion-depth cap, mirror sync + self-test) proceed -- builder stops after item 0 per brief. Base = registered v1.3 (155 cases, specs/isolation-gate-contract.json, commit 7d9e8a5 area / current HEAD per guards/CHANGELOG.md 09-24 W4-A entry, blob unchanged by this draft).",
+ "scope": "guards/pmm-isolation-gate.{cjs,sh} only (PreToolUse Bash). PowerShell tool out of scope (KNOWN-GAP, spec 审 K5). Not part of pipe-gate-v2-test-contract.json; the pipe-gate runner does not execute this file",
+ "v1_1_addendum": {
+  "status": "DRAFT -- staged in scratchpad only, not yet copied into specs/isolation-gate-contract.json; builder (F2 task) must not treat this file as pre-registered until the orchestrating session copies/pins it and hands back a blob hash",
+  "authored_by": "Sonnet builder, C0.5 F2 task (2026-09-24), gate-side false-positive repair wave",
+  "source": [
+   "guards/audits/OPUS-2026-09-24-c05-batch-review.md §1.1 M-7, §8 E-1/E-2",
+   "guards/specs/C05-BUILD-SPEC.md 补遗二 第21条"
+  ],
+  "purpose": "pin the exact false-positive/false-negative shapes M-7 and E-1/E-2 named, so the code fix in this task's item 1 has a red-before/green-after harness: heredoc bodies, command-substitution/backtick blocks whose only invoked command is a read-only inspector (cat/grep/sed -n/head/tail/ls/diff), and git commit -m text (literal or assembled via the standard Claude Code $(cat <<'EOF' ... EOF) form, with or without a trailing pathspec) must NOT be scanned by rule (d) for DUT basenames purely because the substring appears in inert text; DUT basename comparison must stay case-folded (K4) so an upper/mixed-case invocation without full redirect still denies",
+  "method": "every new case below was replayed through the real wired entry (bash guards/pmm-isolation-gate.sh, structured hook JSON on stdin per the existing conventions block) under gate_process_env isolation (HOME=USERPROFILE=PMM_HOME=<mkdtemp>, everything else identical to the v1.0 executor contract), against live HEAD badd16c (2026-09-24, unmodified) -- not against a hypothetical parse. Segment shapes were independently cross-checked with pmm-cmd-parse.cjs's own parseCommand() output on the same HEAD",
+  "precheck_v1_1": {
+   "note": "pre-fix (HEAD badd16c) observed decisions for the new cases, captured today before any code in this task was touched. A22 and A26 already allow today (no literal DUT basename ever appears as a substring in their source text, since A22 uses a glob and A26's target is outside the DUT set entirely) -- they are included as regression locks, not as bug evidence. A21/A23/A24/A25 all currently deny via iso-reason=unsupported-structure segments=0, which is the M-7/E-1 bug this task's item 1 must fix. D24 already correctly denies via iso-reason=missing-redirect (K4 case-fold already works in the code; it was simply never pinned by an actual deny case, per E-2) and must keep denying after the fix",
+   "A21": {
+    "observed_pre_fix_decision": "deny",
+    "observed_pre_fix_reason_code": "unsupported-structure"
+   },
+   "A22": {
+    "observed_pre_fix_decision": "allow",
+    "observed_pre_fix_reason_code": null
+   },
+   "A23": {
+    "observed_pre_fix_decision": "deny",
+    "observed_pre_fix_reason_code": "unsupported-structure"
+   },
+   "A24": {
+    "observed_pre_fix_decision": "deny",
+    "observed_pre_fix_reason_code": "unsupported-structure"
+   },
+   "A25": {
+    "observed_pre_fix_decision": "deny",
+    "observed_pre_fix_reason_code": "unsupported-structure"
+   },
+   "A26": {
+    "observed_pre_fix_decision": "allow",
+    "observed_pre_fix_reason_code": null
+   },
+   "D24": {
+    "observed_pre_fix_decision": "deny",
+    "observed_pre_fix_reason_code": "missing-redirect"
+   }
+  },
+  "non_dut_text_contexts": "v1.1 extension of conventions.non_dut: rule (d)'s source_span scan must NOT treat a DUT basename as present when the only occurrence is (i) inside a heredoc body consumed by a read-only inspector -- cat/grep/sed -n/head/tail/ls/diff -- A21; (ii) inside for/while/if keyword-split chunks that only ever hand a glob or literal guard path to a read-only inspector -- A22, A26; (iii) inside a $(...) or backtick command substitution whose only invoked command is a read-only inspector -- A23; (iv) inside a git commit -m argument's text, whether literal (existing A13, v1.0) or assembled via $(cat <<'EOF' ... EOF) (A24, A25), including any pathspec trailing a bare -- in the same commit invocation. This does not touch DUT segments that genuinely execute a guard (node/bash/sh + DUT basename, or the DUT script run directly) even when written inside a for/if/subshell -- those still deny on incomplete redirect exactly as v1.0's D01-D23 pin. Basename comparison stays case-folded (K4, unchanged): D24 pins that an upper/mixed-case DUT invocation without full redirect still denies."
+ },
+ "v1_2_addendum": {
+  "status": "DRAFT -- staged in scratchpad only (isolation-gate-contract-v1.2-draft.json), not yet copied into specs/isolation-gate-contract.json; builder (W3-A) must not treat this file as pre-registered until the orchestrating session copies/pins it and hands back a blob hash",
+  "authored_by": "Sonnet builder, W3-A H3-rework task (2026-09-24)",
+  "source": [
+   "guards/audits/OPUS-2026-09-24-c05-wave2-review.md H3 (阻塞 C1) + 勘误候选 (D25-D28 named ids)",
+   "scratchpad w/esc-cases.json (reviewer’s 13-case repro set, E1-E13, all folded in)"
+  ],
+  "purpose": "pin the exact escape shapes H3 named (a DUT basename appearing after a heredoc/pipe/&&/;/process-substitution/eval-substitution boundary that v1.1’s narrowed rule (d) wrongly treats as inert because the HEREDOC’S OWN CONSUMER -- cat/sed/ls/head, whichever precedes <<DELIM -- happens to be a read-only inspector, even though the segment’s captured source span also contains a REAL trailing invocation) so item 1’s rework has a red-before(v11)/green-after(v1.2 code)/still-green(v1.0) harness, PLUS a broad set of regression-lock cases (git-commit-message chains, case/subshell/function/while/if/brace forms, non-heredoc && and ; chains, a non-inspector heredoc consumer) that already deny correctly today under BOTH the reverted v1.0 code and the reverted-away v1.1 narrowing -- these must stay denying after the rework touches rule (d) again.",
+  "method": "every new case was replayed through the real wired entry (bash pmm-isolation-gate.sh, structured hook JSON on stdin, HOME=USERPROFILE=PMM_HOME=<fresh mkdtemp> isolation, fresh mkdtemp per run) against TWO byte-verified gate mirrors, both full copies of the live guards/ dir (so DUT-set enumeration and sibling requires are identical) with only pmm-isolation-gate.cjs swapped: (1) v0 = the file at commit 196d84e^ -- cmp-verified byte-identical to the CURRENT live .claude/guards/pmm-isolation-gate.cjs and its memory/_local-config mirror, since the main brain’s revert (commit b4d9328) landed before this task started; (2) v11 = git show 196d84e:.claude/guards/pmm-isolation-gate.cjs, the reverted-away rule-(d) narrowing H3 reviewed. Scripts: scratchpad/w3a/setup-mirrors.cjs (mirror construction, cmp-verified), scratchpad/w3a/run-precheck.cjs (replay), scratchpad/w3a/candidate-cases.json (24 candidate commands), scratchpad/w3a/precheck-results.json (raw per-mirror decision/reason_code/segments/missing for all 24).",
+  "precheck_v1_2": {
+   "note": "observed decision for every new case under BOTH mirrors, captured before any code in item 1 is touched. 9 cases (D25-D33, D38) empirically ALLOW under v11 and DENY under v0 -- these are the confirmed H3 escapes. The remaining 15 (D34-D37, D39-D48) already DENY under BOTH v0 and v11 -- these are regression locks (git-commit-chain forms whose trailing segment denies via ordinary missing-redirect once split at &&/;, a printf heredoc that is correctly NOT exempted because printf is not in READONLY_INSPECTORS, plain non-heredoc &&/; chains, bash -c, case/subshell/function/while/if/brace keyword forms, and a for-loop over a LITERAL guard basename which correctly denies -- contrast A22’s glob form, which correctly allows).",
+   "escapes_confirmed_v11_allows": [
+    "D25",
+    "D26",
+    "D27",
+    "D28",
+    "D29",
+    "D30",
+    "D31",
+    "D32",
+    "D38"
+   ],
+   "regression_locks_v11_already_denies": [
+    "D33",
+    "D34",
+    "D35",
+    "D36",
+    "D37",
+    "D39",
+    "D40",
+    "D41",
+    "D42",
+    "D43",
+    "D44",
+    "D45",
+    "D46",
+    "D47",
+    "D48"
+   ],
+   "per_case": {
+    "D25": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D26": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D27": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D28": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D29": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D30": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D31": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D32": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D33": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     }
+    },
+    "D34": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     }
+    },
+    "D35": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     }
+    },
+    "D36": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     }
+    },
+    "D37": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     }
+    },
+    "D38": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "allow",
+      "reasonCode": null,
+      "segments": null,
+      "missing": null
+     }
+    },
+    "D39": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       3
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       3
+      ],
+      "missing": null
+     }
+    },
+    "D40": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       1
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       1
+      ],
+      "missing": null
+     }
+    },
+    "D41": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       1
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       1
+      ],
+      "missing": null
+     }
+    },
+    "D42": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       0
+      ],
+      "missing": null
+     }
+    },
+    "D43": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       1
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       1
+      ],
+      "missing": null
+     }
+    },
+    "D44": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       3
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       3
+      ],
+      "missing": null
+     }
+    },
+    "D45": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       2
+      ],
+      "missing": null
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "unsupported-structure",
+      "segments": [
+       2
+      ],
+      "missing": null
+     }
+    },
+    "D46": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     }
+    },
+    "D47": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     }
+    },
+    "D48": {
+     "v0_196d84e_parent": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     },
+     "v11_196d84e_reverted_narrowing": {
+      "decision": "deny",
+      "reasonCode": "missing-redirect",
+      "segments": [
+       1
+      ],
+      "missing": [
+       "HOME",
+       "USERPROFILE",
+       "PMM_HOME"
+      ]
+     }
+    }
+   }
+  }
+ },
+ "v1_3_addendum": {
+  "status": "DRAFT -- staged in scratchpad only (isolation-gate-contract-v1.3-draft.json), not registered. Builder (W4-A) must not treat this file as pre-registered until 主脑 copies/pins it (or returns corrections) and hands back a blob hash. Per brief: builder stops after this draft; items 1-5 (code rework, self-test, alternative-writing-table proof, live=mirror cmp, commit) do not proceed until then.",
+  "authored_by": "Sonnet builder W4-A (2026-09-24)",
+  "source": [
+   "guards/specs/C05-BUILD-SPEC.md 补遗三 第27条 (landed 2026-09-24, Opus spec 审改写版; lines 238-260)",
+   "guards/audits/OPUS-2026-09-24-c05-addendum3-spec-review.md 第27节 (closed-set NON_EXEC_EXE list, N-normalization rules, contradiction list, 误拦替代写法表)",
+   "scratchpad/r3/esc5.json + esc5.out (30-case + 25-case escape/regression probe, replayed live/v1.0/v1.1/v1.2)",
+   "scratchpad/r3/esc6.json + r4/esc6.out (10-case basename-normalization probe, replayed live/v1.0/v1.1/v1.2)",
+   "scratchpad/w4probe.cjs, w4probe2.cjs (source of X1-X8; this task adds only X4/X6/X7/X8 per brief)"
+  ],
+  "purpose": "Task 0 of brief-W4A-gate-v13.md: draft the v1.3 contract (classification changes to A21-A26 + ~69 new cases) for 主脑 registration BEFORE item 1 (the actual pmm-isolation-gate.cjs rework) begins, so item 1 has a pinned red-before/green-after target instead of the builder inventing expectations mid-implementation.",
+  "method": "Every precheck value below (v1.0/v1.2 columns) was captured by replaying the case command as PreToolUse hook JSON on stdin against REAL gate copies (bash pmm-isolation-gate.sh, never requiring/executing the module in-process for judging) via scratchpad/r4/gaterun.cjs, under HOME=USERPROFILE=PMM_HOME=<fresh mkdtemp> isolation, three gate copies: live=C:/Users/<user>/.claude/guards (current v1.2), v10=scratchpad/r4/gates/g10 (v1.0 mirror), v12=scratchpad/r4/gates/g12 (v1.2 mirror, cmp-verified against live by the prior W3-A task). No probed command was ever actually executed -- only fed to the gate's own stdin as hook JSON, matching the contract's existing executor convention. Segment/parse_status/source_span introspection (used to derive denied_segments and reason_code for new cases) used pmm-cmd-parse.cjs's parseCommand() directly, a pure function, also under the same env-isolation discipline (HOME=USERPROFILE=PMM_HOME=scratchpad/T5), real root never written.",
+  "unresolved": [
+   {
+    "id": "GAP-r4-25",
+    "text": "简报第0条要求新增「r4 的 25 个 v1.2 放行变体」，但穷尽检索 scratchpad/r4/ 全目录（ctrl.json 及其重放、esc5-live-now.out、esc6.out、gates/、mut6/、r2b/、rp200/、lc/、gr-*.md/、trunc.cjs、zero.cjs、canrows.cjs、blk.cjs、gib.cjs、rpaudit.out、fallback.out、r2burn.out、archtrig.out、h3real.out、h4bad.out 等全部文件）未找到与该描述精确匹配的 25 项产物。ctrl.json（31 例，CT-A20..A26+CT-D25..D48，对现有 77 例契约的活体重放）今日重放后 live 下仅 7 例 allow（CT-A20..A26），D25-D48 段已在 v1.2 全部修复为 deny，不构成新的「v1.2 放行变体」。r4/ 目录内其余文件经核实均属另一任务（影子写闸维度/recall 精度探针，服务第28/29条），与隔离闸第27条无关。本草稿未新增此 25 例，按纪律停下报告，不自行杜撰用例。需要主脑指出具体源文件，或说明此 25 例是否已被 esc5/esc6/X 系列覆盖、可从本次任务范围移除。"
+   },
+   {
+    "id": "GAP-W04-xargs",
+    "text": "本审发现的次要缺口（见 case D77 = W04-xargs 的 note）：第27条闭集正文对 \"xargs\" 等 catch-all exe 没有像 node/bash/sh 那样的「上游段/stdin 跨段」条款，echo(DUT) | xargs node 这类形态在闭集正文字面意义上不会被判 DUT 段。已按简报指示仍标 deny，但请主脑裁定是否需要在正文补一条跨段规则，或改列为已知缺口 allow。"
+   }
+  ],
+  "resolved_by_coordinator": {
+   "GAP-r4-25": "= esc5 中 v1.0 拒/v1.2 放的 25 例(D49–D73),无缺口",
+   "GAP-W04-xargs": "operand 扫描命中,判 deny",
+   "P01-P03": "deny,第 27 条覆盖第 21 条"
+  }
+ },
+ "v1_4_addendum": {
+  "status": "REGISTERED by coordinator: commit ae89a1e (blob 48a0e777df7eef6c8be53eae298402e6bff67288); D113-D119 authoritative.",
+  "authored_by": "Sonnet builder W5-A (2026-09-24)",
+  "source": [
+   "guards/audits/OPUS-2026-09-24-c05-wave4-review.md HIGH-1 (source/. stdin-device-operand escape, 6 forms all ALLOW) and LOW (judge() RangeError on ~10000-deep $() nesting, fail-opens)",
+   "W5-A brief (this task): \"契约 v1.4 草稿 = v1.3 纯追加:审者 HIGH-1 的 6 个形态(...)全 deny,每例 precheck 记现闸(8bc93b4)现状;再加 1 例「万层嵌套命令替换」期望 deny(不得 fail-open)。变异集重算。\"",
+   "scratchpad/w5a/precheck.cjs, precheck-wired.cjs, precheck-wired-all.cjs, segprobe.cjs, build-v14-draft.cjs (this script) -- all empirical replay/introspection for the 7 new cases below, against the live guards/pmm-isolation-gate.{cjs,sh} at commit 8bc93b4 (HIGH-1/LOW still unfixed, as expected for a pre-item-1/2 precheck)"
+  ],
+  "purpose": "Task 0 of the W5-A brief: draft the v1.4 contract (7 new cases: the 6 HIGH-1 escape forms + 1 nesting-too-deep regression lock) for 主脑 registration BEFORE items 1-2 (the actual code rework) begin, so those items have a pinned red-before/green-after target instead of the builder inventing expectations mid-implementation -- same discipline the v1.3 draft used for its own item 0.",
+  "method": "precheck method (2026-09-24, W5-A item 0): every case below was replayed through the REAL wired production entry -- `bash pmm-isolation-gate.sh` (same `|| { echo ...; exit 0; }` fail-open fallback settings.json itself uses), fed structured PreToolUse hook JSON on stdin, under env isolation via selftest-iso.cjs's isoEnv() into a fresh mkdtemp per case (HOME=USERPROFILE=PMM_HOME=<mkdtemp>; this session's own guard-invocation discipline additionally ran the wrapping node process itself under HOME=USERPROFILE=PMM_HOME=<scratchpad T5>). No DUT was ever executed -- the gate only ever receives the command STRING as hook_json.tool_input.command and judges it via its own pure judge()/parseCommand(). Scripts: scratchpad/w5a/precheck.cjs (direct judge()-call probe, used for segment/mutant introspection without the ledger/denial-log side effect runHook() has on deny), scratchpad/w5a/precheck-wired-all.cjs (full wired-entry replay: exact stdout/stderr/rc per case), scratchpad/w5a/segprobe.cjs (parseCommand() segment introspection for the two pipe-shaped cases). Gate HEAD replayed: commit 8bc93b4 (current live).",
+  "interpretation_flagged_for_coordinator": [
+   {
+    "id": "FLAG-6-forms-shape",
+    "text": "The brief describes the 6 HIGH-1 forms as \"source/. 的 operand 为 stdin 设备形态;DUT 经 < 重定向喂给 source;DUT 经管道上游喂给 source;各含 heredoc 与文件两种\" -- read literally this could mean 3 conceptual categories x 2 content-forms (heredoc/file) = 6, OR (matching the audit's own HIGH-1 prose, \"operand 是 stdin 设备形态(/dev/stdin、/dev/fd/0、/proc/self/fd/0)、DUT 经 < 重定向或管道上游喂入 -- 6 例全 ALLOW\") 3 stdin-device spellings x 2 delivery mechanisms (redirect / pipe-upstream) = 6, both file-delivered. I tested BOTH readings empirically before choosing: the heredoc-delivered variants (`source /dev/stdin <<EOF...EOF`, and `cat <<EOF...EOF | source /dev/stdin` for all 3 device spellings, 3 commands total, scratchpad/w5a/precheck-wired-all.cjs ids SUPP-*) are ALREADY denied today under 8bc93b4 via rule (d)'s unconditional unsupported:heredoc handling (parse_status=unsupported:heredoc, same mechanism as the existing D61/D25 pattern) -- they are not HIGH-1 escapes, so counting them among \"the 6\" would not match the audit's \"6 例全 ALLOW\" claim. The 3-devices x 2-mechanisms (redirect/pipe), file-delivered reading gives exactly 6 commands that are ALL empirically confirmed ALLOW today (D113-D118 below), matching the audit prose exactly -- I went with this reading. The 3 heredoc-delivered probes were kept out of `cases` (brief said 6, and I should not silently expand scope) but their precheck results are recorded in scratchpad/w5a/precheck-wired-all-out.jsonl (ids SUPP-devstdin-redirect-heredoc, SUPP-devfd0-pipe-heredoc, SUPP-procselffd0-pipe-heredoc, all already deny) in case 主脑 wants them added as extra regression-lock cases in a later round. Please confirm this reading is correct, or correct it, before item 1 starts."
+   },
+   {
+    "id": "FLAG-D119-reason-code-provisional",
+    "text": "D119's expect.reason_code is pinned to \"nesting-too-deep\" verbatim per the brief's own wording for item 2, but I have not implemented item 2 and so cannot confirm the depth cap will actually surface that exact code (vs., e.g., reusing \"unsupported-structure\" since the segment is already parse_status=unsupported:command-substitution and the crash happens while checking THAT rule's own DUT-hit condition, not in a structurally separate code path). Only expect.decision=\"deny\" is a hard requirement per brief (\"不得 fail-open\"); reason_code/denied_segments/denial_rows should be reconciled against real self-test output once item 2 lands, same as D61's discipline."
+   }
+  ]
+ },
+ "conventions": {
+  "inputs": "every case is executed through the production entry exactly as settings.json wires it (bash \"<gate dir>/pmm-isolation-gate.sh\" with the fail-open wrapper) with structured hook JSON on stdin: {session_id, agent_id, agent_type, prompt_id, tool_use_id, cwd, hook_event_name:\"PreToolUse\", tool_name:\"Bash\", tool_input:{command}}; tool_name is \"Bash\" unless the case sets tool_name; stdin is replaced verbatim by case.stdin_raw when present",
+  "ids": "session_id = test:<randomUUID>, tool_use_id = toolu_selftest_<randomUUID>, agent_id = \"\" (main session) unless the case says otherwise; generated per run, never containing the case id",
+  "gate_process_env": "HOME = USERPROFILE = PMM_HOME = <run root>/home (a fresh mkdtemp dir created by the executor; NOT under <REALHOME>/.claude); every other PMM_* variable is removed; then case.hook_env (if any) is merged in. The gate therefore writes its denial log under resolveRoot() of THIS env, never under the real root",
+  "cwd": "hook JSON cwd = <run root>/cwd unless the case sets cwd",
+  "placeholders": {
+   "REALHOME": "path.resolve(<gate dir>, '..', '..') with forward slashes, e.g. C:/Users/<user>; substituted into command and hook_env text before the run",
+   "REALHOME_MSYS": "the same path in MSYS form, e.g. /c/Users/<user>",
+   "RUNROOT": "the executor's mkdtemp run root (forward slashes)",
+   "$T, $U, $J, $G, $HOME": "left LITERAL in the command text: the gate never executes the command, it only parses it; these are shell variable references to the gate"
+  },
+  "expect.decision": "allow = stdout 0 bytes AND stderr 0 bytes AND rc 0. deny = rc 0 AND stdout is exactly one JSON object whose hookSpecificOutput.hookEventName == \"PreToolUse\" and hookSpecificOutput.permissionDecision == \"deny\" AND stderr 0 bytes. exit code 2 is never a valid deny (the fail-open wrapper would turn it into allow)",
+  "expect.denied_segments": "for deny cases: the exact set of parser segment indexes (segment.index as emitted by pmm-cmd-parse.cjs, including dialect sub-segments) that the gate names in its reason text as `segments=<i>[,<j>...]`",
+  "expect.reason_code": "for deny cases: the reason text contains the token `iso-reason=<code>`; when several segments are denied the code of the lowest-index denied segment is asserted",
+  "expect.missing": "for reason_code missing-redirect / ambient-not-overridden: the exact set of variable names the reason text lists as `missing=<A>[,<B>...]`",
+  "expect.denial_rows": "number of NEW rows for this tool_use_id in <resolveRoot() of the gate process env>/isolation-denials-<host>.tsv after the case (deny events write exactly 1 row listing every denied segment; allow writes 0)",
+  "reason_codes": {
+   "missing-redirect": "a DUT segment lacks one or more of HOME / USERPROFILE / PMM_HOME in its own command-prefix assignments",
+   "value-mismatch": "all three present but their decoded_value differ",
+   "real-home-value": "all three present and equal, but the value is/starts with $HOME ${HOME} $USERPROFILE ${USERPROFILE} ~, or is a literal equal to REALHOME or inside REALHOME/.claude (after \\\\->/, lowercase, trailing-/ strip, /c/ == C:/)",
+   "ambient-not-overridden": "the gate process env carries PMM_RECALL_ROOT / PMM_TRIGGER_MEM / PMM_TRIGGER_STATE / PMM_TRIGGER_LOG / PMM_MEM_DIR and the segment prefix does not override it",
+   "unsupported-structure": "segment parse_status is unsupported:* and its source text contains a DUT basename",
+   "env-wrapper-misparse": "segment exe starts with '-' (parser artifact of env -u/-i/-C) and its source text contains a DUT basename",
+   "nesting-too-deep": "v1.4 draft, PROVISIONAL (item 2 not yet implemented; code name specified verbatim by the W5-A brief): judge()'s command-substitution / nested-nesting recursion (parseCommand and/or the classification-time findHit text scan) exceeded a fixed depth cap (brief suggests ~64) and denied rather than continuing to recurse toward a stack overflow that would otherwise fail-open (OPUS wave-4 LOW finding)."
+  },
+  "dut_set": "basename(<REALHOME>/.claude/guards/*.cjs|*.sh) UNION basename(every entry of <REALHOME>/.claude/memory/_local-config/hook-manifest.txt), listed at run time, compared lowercase",
+  "allow_any": [
+   "guard-canary.sh",
+   "pipe-gate-v2-acceptance.cjs"
+  ],
+  "allow_prod": [
+   "pmm-recall-label.cjs",
+   "pmm-recall-precision.cjs",
+   "pmm-recall-queue.cjs",
+   "pmm-recall-baseline.cjs",
+   "pmm-recall-m3.cjs",
+   "pmm-recall-classify.cjs",
+   "pmm-fingerprint.sh",
+   "review-stamp.sh",
+   "review-gate.sh",
+   "lesson-channel-lint.sh",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.cjs",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.sh",
+   "pmm-trigger-write-gate.sh",
+   "pmm-pointer-lint.sh",
+   "pmm-redundancy-lint.sh",
+   "pmm-trigger-write-gate.sh",
+   "hermes-memory-freshness.sh",
+   "pmm-trigger-write-gate.sh"
+  ],
+  "selftest_tokens": [
+   "--self-test",
+   "--self-check",
+   "--selftest"
+  ],
+  "allow_prod_rule": "allow_prod exempts a segment only when none of selftest_tokens appears as an independent argv token of that segment; allow_any exempts regardless of arguments; both exempt ONLY their own segment",
+  "non_dut": "bash -n / sh -n / node --check / node -c (syntax only); exe source or .; any exe not in {node, bash, sh} whose own basename is not in dut_set",
+  "precheck": "lesson process:contract-case-precheck-against-current-gate: on HEAD 506a370 no isolation gate exists, so every deny case below currently yields allow (the must-red evidence) and every allow/control case yields allow; segment indexes were taken from pmm-cmd-parse.cjs output on that HEAD",
+  "executor": "the gate's own `--self-test --contract <this file>` runs every case through the wired command string and prints one line `ISOGATE-CONTRACT {\"cases\":n,\"pass\":n,\"fail\":n}` followed by one line per failing id; the acceptance reviewer replays the same file independently in a git-archive copy with a temporary HOME; a case whose expectation cannot be evaluated is a FAIL, never a skip",
+  "scoring_v1_5": "v1.5 (2026-09-24, coordinator ruling for the AST engine): a case is scored on expect.decision and on denial_rows (0 for allow; >=1 for deny). expect.denied_segments and expect.reason_code are INFORMATIONAL: the self-test reports mismatches as \"info\" counts and never fails on them, because segment numbering was an implementation detail of the retired hand-written splitter (case/if/while/for bodies were cut into opaque blocks) and reason codes are engine-specific. Mutant scoring is unchanged (decision only). Cases whose note says the segment index is \"临时预测\" carry no assertion at all."
+ },
+ "cases": [
+  {
+   "id": "D01",
+   "classification": "deny",
+   "note": "s-cyc incident form (variable-held guards dir, piped hook JSON, timeout wrapper)",
+   "command": "G=~/.claude/guards; printf %s \"$J\" | timeout 20 node \"$G/pmm-trigger-recall.cjs\"",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     2
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D02",
+   "classification": "deny",
+   "note": "bare self-test",
+   "command": "bash ~/.claude/guards/pmm-trigger-recall.sh --self-test",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D03",
+   "classification": "deny",
+   "note": "cd into guards then basename only (K4)",
+   "command": "cd ~/.claude/guards && node pmm-trigger-recall.cjs --self-test",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     1
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D04",
+   "classification": "deny",
+   "note": "only one root redirected -- the 09-17 572-row leak shape (K2)",
+   "command": "PMM_TRIGGER_LOG=$T/log.tsv node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D05",
+   "classification": "deny",
+   "note": "HOME+USERPROFILE without PMM_HOME (K2)",
+   "command": "HOME=$T USERPROFILE=$T node ~/.claude/guards/pmm-recall-m3.cjs --self-test",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D06",
+   "classification": "deny",
+   "note": "redirect to the real home itself",
+   "command": "HOME=$HOME USERPROFILE=$HOME PMM_HOME=$HOME bash ~/.claude/guards/pmm-trigger-recall.sh --self-test",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "real-home-value",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D07",
+   "classification": "deny",
+   "note": "env -u only unsets; parser mis-parses exe as -u (K2/K3)",
+   "command": "env -u PMM_HOME bash ~/.claude/guards/pmm-trigger-recall.sh --self-test",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "env-wrapper-misparse",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D08",
+   "classification": "deny",
+   "note": "env X= form: parser drops env assignments (K3)",
+   "command": "env HOME=$T USERPROFILE=$T PMM_HOME=$T node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D09",
+   "classification": "deny",
+   "note": "export in an earlier segment is not a same-segment prefix (K3)",
+   "command": "export HOME=$T USERPROFILE=$T PMM_HOME=$T; node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     1
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D10",
+   "classification": "deny",
+   "note": "node -e requiring a guard module",
+   "command": "node -e \"require(process.env.USERPROFILE + '/.claude/guards/pmm-recall-ledger.cjs')\"",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D11",
+   "classification": "report_only",
+   "note": "public-cut (open-core): depends on a guard/manifest entry that is not part of the public release; recorded, not scored. hook entry outside guards/ (hook-manifest member) fed a hook payload (K4)",
+   "command": "printf %s \"$J\" | bash ~/.claude/pmm-entry-length-watch.sh --block",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     1
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D12",
+   "classification": "deny",
+   "note": "allow_any exempts only its own segment (K1)",
+   "command": "bash ~/.claude/guards/guard-canary.sh; node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     1
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D13",
+   "classification": "deny",
+   "note": "allow_prod tool invoked as a self-test",
+   "command": "node ~/.claude/guards/pmm-recall-label.cjs --self-test",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D14",
+   "classification": "deny",
+   "note": "complete prefix on a different segment",
+   "command": "HOME=$T USERPROFILE=$T PMM_HOME=$T true; node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     1
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D15",
+   "classification": "deny",
+   "note": "literal real home",
+   "command": "HOME=REALHOME USERPROFILE=REALHOME PMM_HOME=REALHOME node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "real-home-value",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D16",
+   "classification": "deny",
+   "note": "literal inside the real .claude tree",
+   "command": "HOME=REALHOME/.claude/tmp-iso USERPROFILE=REALHOME/.claude/tmp-iso PMM_HOME=REALHOME/.claude/tmp-iso node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "real-home-value",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D17",
+   "classification": "deny",
+   "note": "the three values differ",
+   "command": "HOME=$T USERPROFILE=$T PMM_HOME=$U node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "value-mismatch",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D18",
+   "classification": "deny",
+   "note": "ambient PMM_RECALL_ROOT in the hook env must be overridden too (K2 rule 3); denial row lands under RUNROOT/ambient-root",
+   "hook_env": {
+    "PMM_RECALL_ROOT": "RUNROOT/ambient-root"
+   },
+   "command": "HOME=$T USERPROFILE=$T PMM_HOME=$T node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "ambient-not-overridden",
+    "missing": [
+     "PMM_RECALL_ROOT"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D19",
+   "classification": "deny",
+   "note": "dialect sub-segment inside bash -c (scope root/0)",
+   "command": "bash -c 'node ~/.claude/guards/pmm-trigger-recall.cjs < in.json'",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     1
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D20",
+   "classification": "deny",
+   "note": "guard script executed directly (exe is the script)",
+   "command": "~/.claude/guards/pmm-trigger-recall.sh --self-test",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D21",
+   "classification": "deny",
+   "note": "command substitution hides the DUT from the parser (rule d)",
+   "command": "out=$(printf %s \"$J\" | node ~/.claude/guards/pmm-trigger-recall.cjs)",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "unsupported-structure",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D22",
+   "classification": "deny",
+   "note": "MSYS spelling of the real home",
+   "command": "HOME=REALHOME_MSYS USERPROFILE=REALHOME_MSYS PMM_HOME=REALHOME_MSYS node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "real-home-value",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D23",
+   "classification": "deny",
+   "note": "tilde-rooted value",
+   "command": "HOME=~/iso USERPROFILE=~/iso PMM_HOME=~/iso node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "real-home-value",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "D24",
+   "classification": "deny",
+   "note": "v1.1 (E-2): upper-case DUT basename still matches dut_set after case-fold (K4); missing redirect still denies -- pins K4 with an actual deny case instead of only the lowercase-fold-removal mutant seeing no expected_failing. Empirically confirmed against live HEAD badd16c: iso-reason=missing-redirect segments=0",
+   "command": "node ~/.claude/guards/PMM-ISOLATION-GATE.CJS --self-test",
+   "expect": {
+    "decision": "deny",
+    "denied_segments": [
+     0
+    ],
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "A01",
+   "classification": "allow",
+   "note": "complete prefix set, variable value",
+   "command": "HOME=$T USERPROFILE=$T PMM_HOME=$T node ~/.claude/guards/pmm-trigger-recall.cjs < $T/in.json",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A02",
+   "classification": "allow",
+   "note": "incident form, correctly redirected (prefix before timeout)",
+   "command": "G=~/.claude/guards; printf %s \"$J\" | HOME=$T USERPROFILE=$T PMM_HOME=$T timeout 20 node \"$G/pmm-trigger-recall.cjs\"",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A03",
+   "classification": "allow",
+   "note": "mktemp in an unsupported segment that names no DUT; complete prefix on the DUT segment",
+   "command": "T=$(mktemp -d); HOME=$T USERPROFILE=$T PMM_HOME=$T bash ~/.claude/guards/pmm-trigger-recall.sh --self-test",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A04",
+   "classification": "allow",
+   "note": "literal Windows temp dir -- under the real home but not under REALHOME/.claude (K2 落笔修正)",
+   "command": "HOME=REALHOME/AppData/Local/Temp/iso-a04 USERPROFILE=REALHOME/AppData/Local/Temp/iso-a04 PMM_HOME=REALHOME/AppData/Local/Temp/iso-a04 node ~/.claude/guards/pmm-recall-m3.cjs --self-test",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A05",
+   "classification": "allow",
+   "note": "allow_any: canary",
+   "command": "bash ~/.claude/guards/guard-canary.sh",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A06",
+   "classification": "allow",
+   "note": "allow_any: runner self-check",
+   "command": "node ~/.claude/guards/pipe-gate-v2-acceptance.cjs --self-check",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A07",
+   "classification": "allow",
+   "note": "allow_prod: M1 labelling must reach the real root (K1)",
+   "command": "node ~/.claude/guards/pmm-recall-label.cjs toolu_01AbCdEfGh useful",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A08",
+   "classification": "allow",
+   "note": "allow_prod: the only writer of policy.json (K1)",
+   "command": "node ~/.claude/guards/pmm-recall-precision.cjs --unlock process:pipe-hides-exit-code-and-truncates-evidence --gate B",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A09",
+   "classification": "allow",
+   "note": "allow_prod: fingerprint roster",
+   "command": "bash ~/.claude/guards/pmm-fingerprint.sh --refresh \"C0.5 A batch\"",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A10",
+   "classification": "allow",
+   "note": "allow_prod: review stamp mandated by global CLAUDE.md",
+   "command": "bash ~/.claude/guards/review-stamp.sh opus 3 guards/audits/x.md",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A11",
+   "classification": "report_only",
+   "note": "public-cut (open-core): depends on a guard/manifest entry that is not part of the public release; recorded, not scored. allow_prod: /read-pmm step 5 runs a hook-manifest member",
+   "command": "bash ~/.claude/pmm-trigger-write-gate.sh",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A12",
+   "classification": "allow",
+   "note": "not a DUT: grep with the self-test token as a pattern (K1 no substring match)",
+   "command": "grep -n -- --self-test ~/.claude/guards/pmm-trigger-recall.sh",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A13",
+   "classification": "allow",
+   "note": "not a DUT: commit message and pathspec mention a guard",
+   "command": "git -C ~ commit -m \"fix(trigger-recall): --self-test isolation\" -- .claude/guards/pmm-trigger-recall.sh",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A14",
+   "classification": "allow",
+   "note": "not a DUT: syntax-only checks",
+   "command": "bash -n ~/.claude/guards/pmm-trigger-recall.sh && node --check ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A15",
+   "classification": "allow",
+   "note": "not a DUT: sourcing the home resolver",
+   "command": "source ~/.claude/guards/pmm-home.sh && echo \"$PMM_HOME_RESOLVED\"",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A16",
+   "classification": "allow",
+   "note": "not a DUT: reading a guard file",
+   "command": "sed -n 1,20p ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A17",
+   "classification": "allow",
+   "note": "unrelated command",
+   "command": "npm test -- --runInBand",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A18",
+   "classification": "allow",
+   "note": "allow_prod: core check",
+   "command": "node ~/.claude/guards/pmm-core.cjs --check",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A19",
+   "classification": "allow",
+   "note": "allow_prod reserved C0.5 name (file may not exist yet)",
+   "command": "node ~/.claude/guards/pmm-shadow-replay.cjs --report",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A20",
+   "classification": "allow",
+   "note": "memory-repo search tool is outside the DUT set",
+   "command": "bash ~/.claude/memory/_local-config/pmm-search.sh tooling:selftest-must-redirect-every-root-the-tool-writes",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A21",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, rule (d) fail-closed reinstated, no more read-only-consumer exemption): v1.1 (M-7/E-1): heredoc body of a read-only cat mentions a guard basename in prose; nothing is executed. Empirically DENIES today (iso-reason=unsupported-structure segments=0). FLIPPED allow->deny: precheck v1.0=deny(unsupported-structure) v1.2(current, narrowed)=allow; v1.3 restores v1.0 behavior (matches spec contradiction-list W24-adjacent guidance: 误拦可换写法, not gate-side special-casing). fail-closed. 误拦替代写法: 提示词/探针用 Write 工具落盘后传路径，不再用 heredoc 提及守卫文件名",
+   "command": "cat <<'IGEOF'\nremember to redirect HOME/USERPROFILE/PMM_HOME before running ~/.claude/guards/pmm-isolation-gate.cjs\nIGEOF",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "A22",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27): recomputed under the new N-normalization criterion (ii) (glob-pattern basename matching a DUT via a literal \".claude/guards\" directory context). precheck v1.0=allow v1.2=allow (both current versions miss this -- no glob-pattern matching existed before). segment probe: 4 unsupported:keyword:for sub-segments (indices 0-3), hit is on segment 0 (\"for f in ~/.claude/guards/*.sh\") only -- the body segment 2 (\"cat \\\"$f\\\"\") has no directory-literal context of its own so it does NOT independently hit. 誤拦替代写法: 单条多文件命令 cat/head/wc -l/grep -c 后跟 ~/.claude/guards/*.sh（原为读只型 for 循环）。",
+   "command": "for f in ~/.claude/guards/*.sh; do cat \"$f\"; done",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "A23",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, rule (d) fail-closed reinstated, no more read-only-consumer exemption): v1.1 (M-7): command substitution whose only invoked command is grep (read-only) over a literal guard basename. Empirically DENIES today (iso-reason=unsupported-structure segments=0). FLIPPED allow->deny: precheck v1.0=deny(unsupported-structure) v1.2(current, narrowed)=allow; v1.3 restores v1.0 behavior (matches spec contradiction-list W24-adjacent guidance: 误拦可换写法, not gate-side special-casing). fail-closed. 误拦替代写法: 不捕获直接跑（去掉 n=$(...) 赋值），或先写文件再读",
+   "command": "n=$(grep -c TODO ~/.claude/guards/pmm-trigger-recall.cjs); echo \"$n\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "A24",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, rule (d) fail-closed reinstated, no more read-only-consumer exemption): v1.1 (M-7/E-1): standard Claude Code commit form, message assembled via $(cat <<'EOF' ... EOF), message body mentions a guard basename, no pathspec. Empirically DENIES today (iso-reason=unsupported-structure segments=0). FLIPPED allow->deny: precheck v1.0=deny(unsupported-structure) v1.2(current, narrowed)=allow; v1.3 restores v1.0 behavior (matches spec contradiction-list W24-adjacent guidance: 误拦可换写法, not gate-side special-casing). fail-closed. 误拦替代写法: git -C ~ commit -F <文件>（消息用 Write 工具落盘），或多行双引号 -m \"…\"",
+   "command": "git commit -m \"$(cat <<'EOF'\nfix(pmm-isolation-gate.cjs): tighten rule d unsupported-structure scan\nEOF\n)\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "A25",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, rule (d) fail-closed reinstated, no more read-only-consumer exemption): v1.1 (M-7/E-1): A13 replayed through the heredoc-assembled commit form (message + trailing pathspec naming a guard). Empirically DENIES today (iso-reason=unsupported-structure segments=0) even though the literal-message equivalent (A13) already allows -- this is the exact A13-intent conflict M-7 names. FLIPPED allow->deny: precheck v1.0=deny(unsupported-structure) v1.2(current, narrowed)=allow; v1.3 restores v1.0 behavior (matches spec contradiction-list W24-adjacent guidance: 误拦可换写法, not gate-side special-casing). fail-closed. 误拦替代写法: 同 A24：git -C ~ commit -F <文件>，pathspec 照旧跟在 -- 之后",
+   "command": "git commit -m \"$(cat <<'EOF'\nfix(trigger-recall): --self-test isolation\nEOF\n)\" -- .claude/guards/pmm-trigger-recall.sh",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "A26",
+   "classification": "allow",
+   "note": "v1.1 (task item 0, F2): cat on pmm-search.sh, a memory-repo tool outside the DUT set entirely (not under guards/, not in hook-manifest.txt -- see spec 24). Already allows today -- kept as an explicit regression lock paired with A20 | v1.3 draft (spec addendum3 item 27): recomputed, UNCHANGED (spec line 250 \"A12-A16、A26 不变\"). precheck v1.0=allow v1.2=allow. exe=cat is parse_status=ok (not unsupported), so this is judged under the ok-segment NON_EXEC_EXE closed-set rule, not rule (d); cat is a NON_EXEC_EXE member and the target basename pmm-search.sh is outside DUT_SET regardless, so no rule fires either way.",
+   "command": "cat ~/.claude/memory/_local-config/pmm-trigger-write-gate.sh",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "C01",
+   "classification": "control",
+   "note": "malformed JSON on stdin -> fail-open, silent",
+   "stdin_raw": "{not json",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "C02",
+   "classification": "control",
+   "note": "empty stdin -> fail-open, silent",
+   "stdin_raw": "",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "C03",
+   "classification": "control",
+   "note": "non-Bash tool_name is out of scope even with a DUT command (K5 KNOWN-GAP)",
+   "tool_name": "PowerShell",
+   "command": "node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "D25",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=D25): H3 primary escape: heredoc attached to cat (read-only inspector), piped to node running the DUT directly -- 'most natural way to feed hook JSON'",
+   "command": "cat <<'E' | node ~/.claude/guards/pmm-trigger-recall.cjs\n{\"tool_name\":\"Edit\"}\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D26",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=D26): H3 primary escape: heredoc attached to cat, piped to bare bash (bash reads the piped stream as its own script) -- the DUT invocation text lives IN the heredoc body, not after the pipe (esc-cases E7 shape, cat variant)",
+   "command": "cat <<'E' | bash\nbash ~/.claude/guards/pmm-trigger-recall.sh --self-test\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D27",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=D26b): esc-cases E7 literal: sed -n p heredoc piped to sh, DUT invocation in body",
+   "command": "sed -n p <<'X' | sh\nbash ~/.claude/guards/pmm-trigger-recall.sh --self-test\nX",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D28",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=D27): H3 secondary bug (:260 in old numbering): node -e with a command-substitution argument whose only stage is cat (read-only) reading the DUT file -- rule (c) eval-arg scan never looks inside $(...) at all",
+   "command": "node -e \"$(cat ~/.claude/guards/pmm-trigger-recall.cjs)\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D29",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=D28): H3 secondary bug (:266 in old numbering): git shortcut does not exclude process substitution -- git diff --no-index reading <(node DUT) actually executes node against the DUT",
+   "command": "git diff --no-index <(node ~/.claude/guards/pmm-trigger-recall.cjs) /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D30",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=D29): review literal example 2: heredoc attached to cat, chained with && to a real (unredirected) DUT invocation",
+   "command": "cat <<'E' && node ~/.claude/guards/pmm-trigger-recall.cjs\nsome body text\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D31",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=D30): review literal example 3: heredoc attached to ls, chained with ; to a real (unredirected) DUT invocation",
+   "command": "ls <<'E'; node ~/.claude/guards/pmm-trigger-recall.cjs\nsome body text\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D32",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=D31): review literal example 5: heredoc attached to head, piped to node running the gate's OWN self-test flag on itself",
+   "command": "head <<'E' | node ~/.claude/guards/pmm-isolation-gate.cjs --self-test\nsome body text\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D33",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=D32): brief item 0 literal (h3-verify.cjs form): no heredoc at all, plain && chain to an unredirected DUT invocation -- regression lock that ordinary multi-segment && splitting still denies",
+   "command": "echo x && node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D34",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=D33): brief item 0 literal (h3-verify.cjs form): no heredoc at all, plain ; chain to an unredirected DUT invocation -- regression lock that ordinary multi-segment ; splitting still denies",
+   "command": "echo x; node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D35",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=D34): brief item 0 literal: heredoc attached to printf (NOT a READONLY_INSPECTOR member) piped to node DUT -- regression lock that the exemption never generalizes past the 7-name inspector list",
+   "command": "printf '%s' x <<'E' | node ~/.claude/guards/pmm-trigger-recall.cjs\nbody\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D36",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=D35): brief item 0 literal: plain pipe (no heredoc) from printf into node DUT, matching D01's shape but with printf instead of timeout -- must still deny via missing-redirect regardless of rule-(d) rework",
+   "command": "printf %s \"$J\" | node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D37",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=D36): brief item 0 literal: bash -c with the real DUT invocation as the INNER command string (dialect sub-segment, D19's shape) -- regression lock",
+   "command": "bash -c 'node ~/.claude/guards/pmm-trigger-recall.cjs'",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D38",
+   "classification": "deny",
+   "note": "v1.2 (H3 confirmed escape, source candidate-id=E1): esc-cases E1: heredoc attached to cat, piped to bare bash, DUT invocation (with explicit </dev/null) lives in the heredoc body",
+   "command": "cat <<'EOF2' | bash\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nEOF2",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D39",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E3): esc-cases E3: git status ; case keyword-block whose only branch runs the DUT unredirected",
+   "command": "git status; case x in x) node ~/.claude/guards/pmm-trigger-recall.cjs;; esac",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     3
+    ]
+   }
+  },
+  {
+   "id": "D40",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E4): esc-cases E4: git status && a parenthesized subshell running the DUT unredirected",
+   "command": "git status && ( node ~/.claude/guards/pmm-trigger-recall.cjs )",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     1
+    ]
+   }
+  },
+  {
+   "id": "D41",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E5): esc-cases E5: git log (redirected to /dev/null) ; shell function definition whose body runs the DUT, then invoked",
+   "command": "git log -1 >/dev/null; f() { node ~/.claude/guards/pmm-trigger-recall.cjs; }; f",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     1
+    ]
+   }
+  },
+  {
+   "id": "D42",
+   "classification": "report_only",
+   "note": "public-cut (open-core): depends on a guard/manifest entry that is not part of the public release; recorded, not scored. v1.2 (H3 regression-lock, already correct, source candidate-id=E6): esc-cases E6: for-loop over a literal (non-glob) DUT path, basename extracted via command substitution and only echoed -- control case, should ALLOW (no real invocation) but pinned here as a reverse-adjacent regression lock",
+   "command": "for f in ~/.claude/guards/pmm-hook.cjs; do n=$(basename $f); echo $n; done",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D43",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E8): esc-cases E8: git status ; brace group running the DUT unredirected",
+   "command": "git status; { node ~/.claude/guards/pmm-trigger-recall.cjs; }",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     1
+    ]
+   }
+  },
+  {
+   "id": "D44",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E9): esc-cases E9: git log piped into a while-read loop whose body runs the DUT unredirected on every iteration",
+   "command": "git log --format=%H -3 | while read h; do node ~/.claude/guards/pmm-trigger-recall.cjs; done",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     3
+    ]
+   }
+  },
+  {
+   "id": "D45",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E10): esc-cases E10: if git diff --quiet; then <DUT unredirected>; fi",
+   "command": "if git diff --quiet; then node ~/.claude/guards/pmm-trigger-recall.cjs; fi",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     2
+    ]
+   }
+  },
+  {
+   "id": "D46",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E11): esc-cases E11: heredoc-assembled git commit -m message, && chained to a real (unredirected) DUT invocation -- tests whether the git-commit inert-text shortcut over-reaches past its own segment",
+   "command": "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" && node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D47",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E12): esc-cases E12: backtick-assembled git commit message, ; chained to a real (unredirected) DUT invocation",
+   "command": "git commit -m `cat msg.txt` ; node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D48",
+   "classification": "deny",
+   "note": "v1.2 (H3 regression-lock, already correct, source candidate-id=E13): esc-cases E13: heredoc-assembled git commit message containing a stray close-paren 'a) b', ; chained to a real (unredirected) DUT invocation -- tests paren-balance robustness of the git shortcut",
+   "command": "git commit -m \"$(cat <<'EOF'\nfix: a) b\nEOF\n)\"; node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D49",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H01-redir-before-pipe): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' 2>/dev/null | node ~/.claude/guards/pmm-trigger-recall.cjs\n{}\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D50",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H04-two-heredocs): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<A <<B | node ~/.claude/guards/pmm-trigger-recall.cjs\na\nA\nb\nB",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D51",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H05-filter-then-bash): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | grep -v '^#' | bash\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D52",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H06-bash-s-args): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | bash -s -- x\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D53",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H07-bash-devstdin): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | bash /dev/stdin\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D54",
+   "classification": "deny",
+   "note": "主脑裁定 2026-09-24:xargs 段的 operand 含 DUT basename,按第 27 条 operand 扫描命中,无需跨段追踪。v1.3 draft (spec addendum3 item 27, source=esc5/H08-xargs-node-body): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | xargs node\nC:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D55",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H09-pipe-continues-after-terminator): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' |\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE\nbash",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D56",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H10-write-script-then-run): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat > /tmp/p.sh <<'E'\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE\nbash /tmp/p.sh",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D57",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H11-env-bash): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | env bash\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D58",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H12-bash-o-pipefail): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | bash -o pipefail\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D59",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H13-node-dash-arg): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | node - x\nrequire('C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs')\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D60",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H14-tee-then-sh): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | tee /dev/null | sh\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D61",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H15-source-devstdin): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | source /dev/stdin\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D62",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H16-sed-to-file-and-run): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "sed -n p <<'E' > /tmp/p.sh && bash /tmp/p.sh\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D63",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H17-bash-exe): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | bash.exe\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D64",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H19-node-eval-stdin): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "cat <<'E' | node -e \"eval(require('fs').readFileSync(0,'utf8'))\"\nrequire('C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs')\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D65",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S01-timeout-node-e-cat): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "timeout 20 node -e \"$(cat ~/.claude/guards/pmm-trigger-recall.cjs)\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D66",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S02-node-pe-cat): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "node -pe \"$(cat ~/.claude/guards/pmm-trigger-recall.cjs)\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D67",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S03-node-eval-eq-cat): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "node --eval=\"$(cat ~/.claude/guards/pmm-trigger-recall.cjs)\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D68",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S04-bash-xc-cat): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "bash -xc \"$(cat ~/.claude/guards/pmm-trigger-recall.sh)\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D69",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S05-env-node-e-cat): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "env node -e \"$(cat ~/.claude/guards/pmm-trigger-recall.cjs)\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D70",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S06-var-then-bash-c): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "x=$(cat ~/.claude/guards/pmm-trigger-recall.sh); bash -c \"$x\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D71",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S08-echo-sub-pipe-bash): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "echo \"$(cat ~/.claude/guards/pmm-trigger-recall.sh)\" | bash",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D72",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S09-heredoc-sub-then-eval): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "x=$(cat <<'E'\nnode ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\nE\n); eval \"$x\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D73",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/S10-sed-sub-path-pipe-bash): \"v1.0 拒/v1.2 放\" escape -- rule (d) narrowing (v1.1/v1.2) let this through because the heredoc/command-substitution consumer looked read-only; v1.3 reinstates unconditional rule (d), matching v1.0. precheck: v1.0=deny(unsupported-structure) v1.2(current)=allow. denied_segments provisional: heredoc-attached forms bundle the whole first physical line (incl. any piped continuation) into segment 0 per the established D25 pattern; command-substitution forms are a single unsupported:command-substitution segment 0. Needs reconciliation against actual v1.3 self-test output once item 1 lands.",
+   "command": "sed -n p \"$(ls ~/.claude/guards/pmm-trigger-recall.sh)\" | bash",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D74",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/H18-launder-trailing-allowany): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. heredoc consumer=node, DUT is the FIRST operand after the heredoc, a second trailing operand names guard-canary.sh (an ALLOW_ANY member) -- laundering attempt. Rule (d) fires unconditionally on the unsupported:heredoc segment 0 regardless (rule d applies NO ALLOW exemption at all, per spec: \"rule (d) 段不适用任何 ALLOW 豁免\"), so the trailing-arg laundering does not matter.",
+   "command": "cat <<'E' | node ~/.claude/guards/pmm-trigger-recall.cjs ~/.claude/guards/guard-canary.sh\n{}\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D75",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/L01-for-launder-allowprod-selftest): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. for-loop over LITERAL basenames pmm-core.cjs (ALLOW_PROD member) and pmm-trigger-recall.cjs (DUT) -- R1 original incident shape. DOUBLE hit: segment 0 (\"for f in pmm-core.cjs pmm-trigger-recall.cjs\") contains the DUT basename literally (criterion i); segment 2 (\"node ~/.claude/guards/$f --self-test\") N-normalizes \"$f\"->\"*\" giving basename \"*\" with literal directory \".claude/guards\" (criterion ii). Both indices provisional pending v1.3 self-test reconciliation -- may need to be [0] only if the real implementation only reports the lowest-index hit.",
+   "command": "for f in pmm-core.cjs pmm-trigger-recall.cjs; do node ~/.claude/guards/$f --self-test; done",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0,
+     2
+    ]
+   }
+  },
+  {
+   "id": "D76",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/L02-subshell-launder-allowprod): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. subshell ( node ALLOW_PROD-member; node DUT ) -- single unsupported:subshell segment 0, whole-text substring hit.",
+   "command": "( node ~/.claude/guards/pmm-search-v2.cjs x; node ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null )",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D77",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/L03-node-heredoc-comment-launder): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node <<heredoc with a \"// see guard-canary.sh\" comment line and a require(DUT) line in the body -- unsupported:heredoc segment 0, whole-span substring hit on the DUT basename inside the heredoc body.",
+   "command": "node <<'E'\n// see guard-canary.sh\nrequire('C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs')\nE",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D78",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W01-stdbuf): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. catch-all exe (stdbuf explicitly named); own operand contains DUT path literally.",
+   "command": "stdbuf -oL node ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D79",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W02-nice): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. catch-all exe (nice explicitly named); own operand contains DUT path literally.",
+   "command": "nice node ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D80",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W03-exec): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. catch-all exe (exec explicitly named); own operand contains DUT path literally.",
+   "command": "exec node ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D81",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W04-xargs): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. *** SPEC GAP FLAG ***: echo(DUT path) | xargs node. echo is NON_EXEC_EXE (segment 0 inert, non-DUT). xargs is in the \"其余一切 exe\" catch-all, but that bullet only scans xargs's OWN operands/prefix-assignments/redirect-targets (\"node\" only) -- it has NO stdin/upstream-segment tracing clause like the node/bash/sh bullet does. Under a literal reading of the landed spec text, this command is NOT flagged as containing a DUT segment at all and would remain ALLOW under v1.3, contradicting this task's blanket \"esc5 30-set minus W24/W30/W34 all deny\" instruction. Marked deny here per the brief's explicit instruction, but 主脑 should either (a) extend the closed-set catch-all bullet with a cross-segment/stdin-tracing clause for xargs (and any other exe that can receive a script via stdin), or (b) accept this as a KNOWN-GAP allow like W24/V06. denied_segments=[1] (xargs) is a PLACEHOLDER pending that ruling -- if left ungated this case cannot actually deny under the closed-set text as written.",
+   "command": "echo ~/.claude/guards/pmm-trigger-recall.cjs | xargs node",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D82",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W05-find-exec): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. catch-all exe (find explicitly named); own operand \"-name pmm-trigger-recall.cjs\" contains DUT basename literally as find's own argument (independent of the -exec node {} part). NOTE: text lacks a literal \".claude/guards/\" substring (directory given without trailing slash before -name), so this case is a NEW path-substring-mutant failing id (see mutants section) even though the real predicate still fires via the basename match.",
+   "command": "find ~/.claude/guards -name pmm-trigger-recall.cjs -exec node {} \\;",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D83",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W07-source-sh): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. exe=source, operand basename = DUT, operand not in SOURCE_LIB_OK -> DUT segment.",
+   "command": "source ~/.claude/guards/pmm-trigger-recall.sh",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D84",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W08-cat-pipe-bash): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. cat(DUT path, NON_EXEC_EXE, non-DUT segment 0) | bash (segment 1, no script operand -> stdin-tracing clause: upstream segment N-text contains DUT basename -> hit).",
+   "command": "cat ~/.claude/guards/pmm-trigger-recall.sh | bash",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D85",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W09-bash-stdin-redirect): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. exe=bash, \"<\" redirect target N-basename = DUT -> hit via node/bash/sh bullet redirect-target clause.",
+   "command": "bash < ~/.claude/guards/pmm-trigger-recall.sh",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D86",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W10-node-stdin-redirect): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. cd ~/.claude/guards (segment 0, cd is NON_EXEC_EXE, non-DUT) && node < pmm-trigger-recall.cjs (segment 1, \"<\" redirect target N-basename = DUT -> hit, independent of cwd). NOTE: text lacks the literal \".claude/guards/\" substring adjacent to the DUT filename (cd'd away, bare relative redirect target) -- new path-substring-mutant failing id.",
+   "command": "cd ~/.claude/guards && node < pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     1
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D87",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W12-node-require-eq): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node --require=<DUT> -e 0 -- require/import/loader clause, value N-basename = DUT.",
+   "command": "node --require=C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs -e 0",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D88",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W13-node-import-eq): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node --import=file://<DUT> -e 0 -- same clause.",
+   "command": "node --import=file:///C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs -e 0",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D89",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W14-node-pe-require): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node -pe \"require(<DUT>)\" -- -e/-p/--eval/--print clause, argument text contains DUT name.",
+   "command": "node -pe \"require('C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs')\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D90",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W15-node-eval-eq-require): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node --eval=\"require(<DUT>)\" -- same clause (= fused form).",
+   "command": "node --eval=\"require('C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs')\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D91",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W16-node-e-argv): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node -e \"require(process.argv[1])\" <DUT> -- DUT is a trailing operand, hits the general \"任一 operand 的 N-basename ∈ DUT\" clause independent of the -e text itself.",
+   "command": "node -e \"require(process.argv[1])\" C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D92",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W18-trailing-dot): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node <DUT>. (trailing dot) -- N rule (6) strips trailing dot from basename before comparison.",
+   "command": "node C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs.",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D93",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W19-8dot3): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node PMM-TR~1.CJS -- criterion (iii) 8.3-alias pattern match (no filesystem query, conservative).",
+   "command": "node C:/Users/<user>/.claude/guards/PMM-TR~1.CJS",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D94",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W21-ansi-c-escape): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node $'...\\x2ecjs' -- parse_status=unsupported:ansi-c-quote (confirmed via segment probe), so this is judged under rule (d), not the node ok-bullet. N rule (2) ANSI-C-decodes \\x2e -> '.', reconstructing the literal DUT basename inside the $'...' segment text.",
+   "command": "node $'C:/Users/<user>/.claude/guards/pmm-trigger-recall\\x2ecjs'",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D95",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W26-npx-node): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. catch-all exe (npx not explicitly named but caught by \"任何未列名命令\"); own operand contains DUT path literally.",
+   "command": "npx node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D96",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W27-winpty): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. catch-all exe (winpty explicitly named); own operand contains DUT path literally.",
+   "command": "winpty node ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D97",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W28-cmd-slashslash-c): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. catch-all exe (cmd explicitly named); own operand contains DUT path literally.",
+   "command": "cmd //c node C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D98",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W31-bash-o-pipefail-script): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. exe=bash, own operand (the -o pipefail script argument) basename = DUT -> node/bash/sh bullet operand clause, not catch-all.",
+   "command": "bash -o pipefail ~/.claude/guards/pmm-trigger-recall.sh --self-test",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D99",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W32-node-r-ts-then-dut): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. node --require ./x.cjs <DUT> -- DUT is a trailing operand, general operand clause.",
+   "command": "node --require ./x.cjs ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D100",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W36-bash-O-extglob): \"3-version-all-allow\" case (both v1.0 and v1.2 currently allow this -- a genuinely NEW catch introduced by the v1.3 closed-set ok-segment rules, not a rule-(d)-narrowing regression). precheck: v1.0=allow v1.2=allow. exe=bash, own operand (the -O extglob script argument) basename = DUT.",
+   "command": "bash -O extglob ~/.claude/guards/pmm-trigger-recall.sh",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D101",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V01-glob-basename): operand \"pmm-trigger-recall.c?s\" -- glob metachar in basename, criterion (ii) (matches DUT pmm-trigger-recall.cjs, literal chars present besides extension). precheck v1.0=allow v1.2=allow (NEW catch).",
+   "command": "node ~/.claude/guards/pmm-trigger-recall.c?s < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D102",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V02-brace-expansion): operand \"pmm-trigger-{recall,zz}.cjs\" -- N rule (5) brace expansion yields pmm-trigger-recall.cjs as one of 2 candidates, literal match (criterion i) after expansion. precheck v1.0=allow v1.2=allow (NEW catch).",
+   "command": "node ~/.claude/guards/pmm-trigger-{recall,zz}.cjs < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D103",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V03-subst-splice): operand \"pmm-trigger-$(echo recall).cjs\" -- parse_status=unsupported:command-substitution (rule d). N rule (4) replaces $(...) with placeholder \"*\", reconstructing the path-like token \"pmm-trigger-*.cjs\"; this token is then evaluated as a glob pattern under criterion (ii) (matches DUT, literal chars present) -- NOT a plain criterion-(i) substring hit, since the literal \"recall\" text is consumed by the placeholder. precheck v1.0=ALLOW v1.2=ALLOW v1.1(reverted-narrowing)=ALLOW (confirmed via r4/gaterun.cjs against all 3 mirrors) -- even v1.0's original rule (d) misses this today because its scan is a plain substring test with no glob-token reconstruction; v1.3's criterion (ii) extension is required to catch it. IMPLEMENTATION FLAG for item 1: confirms N must reconstruct path-like tokens from unsupported-segment text (splitting on shell-word boundaries) and run criterion (ii) on them, not just do a single whole-text substring test -- otherwise $(...)-spliced DUT names slip through exactly like they do today.",
+   "command": "node ~/.claude/guards/pmm-trigger-$(echo recall).cjs < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D104",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V04-quote-splice): operand \"pmm-trigger-rec''all.cjs\" -- N rule (3) deletes quote chars, reconstructing literal basename. Already denies today (missing-redirect) -- regression lock, not a new flip. precheck v1.0=deny v1.2=deny.",
+   "command": "node ~/.claude/guards/pmm-trigger-rec''all.cjs < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D105",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V05-backslash-splice): operand \"pmm-trigger-rec\\\\all.cjs\" -- N rule (3) deletes the escape backslash, reconstructing literal basename. precheck v1.0=allow v1.2=allow (NEW catch -- current code does not strip mid-basename escape backslashes before comparison).",
+   "command": "node ~/.claude/guards/pmm-trigger-rec\\all.cjs < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D106",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V08-ctrl-dollar-home): operand \"$HOME/.claude/guards/pmm-trigger-recall.cjs\" -- basename portion unaffected by the $HOME/N-placeholder substitution on the directory part, literal basename match. Already denies today -- regression lock. precheck v1.0=deny v1.2=deny.",
+   "command": "node $HOME/.claude/guards/pmm-trigger-recall.cjs < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D107",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V09-uppercase-ext): operand \"...pmm-trigger-recall.CJS\" -- N rule (1) case-fold (K4, pre-existing). Already denies today -- regression lock. precheck v1.0=deny v1.2=deny.",
+   "command": "node C:/Users/<user>/.claude/guards/pmm-trigger-recall.CJS < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D108",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V10-backslash-path): operand is the whole path with Windows backslash separators -- basename extracted via core.normalizeWin32PathForCompare (backslash-aware path split), already denies today via the existing (non-rule-d) basename-equality path. Already denies today -- regression lock. precheck v1.0=deny v1.2=deny. NOTE: text uses \"\\\\\" throughout, never a literal \".claude/guards/\" (forward-slash) substring -- new path-substring-mutant failing id (see mutants section); real predicate still fires via backslash-aware basename extraction, independent of the mutant's naive forward-slash substring check.",
+   "command": "node 'C:\\Users\\<user>\\.claude\\guards\\pmm-trigger-recall.cjs' < /dev/null",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D109",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, X4, source=w4probe.cjs P6): for-loop over guard-dir glob, body runs each with --self-test (the R1 original incident shape, batched). precheck v1.0=allow v1.2=allow. segment probe: 4x unsupported:keyword:for sub-segments; hit is segment 0 only (glob \"~/.claude/guards/*.sh\", criterion ii, directory-literal \".claude/guards\"), body segment 2 (\"bash \\\"$f\\\" --self-test\") has no directory context of its own so does not independently hit (same shape as A22).",
+   "command": "for f in ~/.claude/guards/*.sh; do bash \"$f\" --self-test; done",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "unsupported-structure",
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D110",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, X6, source=w4probe2.cjs Q1): NODE_OPTIONS=\"--require <DUT>\" node -e 0. precheck v1.0=allow v1.2=allow. segment probe: exe=node, parse_status=ok, prefix-assignment NODE_OPTIONS IS already captured by pmm-cmd-parse.cjs as a command_prefix_assignment (confirmed) -- item 1 only needs to add NODE_OPTIONS to the front-assignment name closed set in pmm-isolation-gate.cjs and scan its value with N.",
+   "command": "NODE_OPTIONS=\"--require C:/Users/<user>/.claude/guards/pmm-trigger-write-gate.cjs\" node -e 0",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D111",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, X7, source=w4probe2.cjs Q2): BASH_ENV=<DUT.sh> bash -c true. precheck v1.0=allow v1.2=allow. IMPLEMENTATION FLAG for item 1: segment probe shows pmm-cmd-parse.cjs currently does NOT capture BASH_ENV as a command_prefix_assignment on the bash segment the way it does for GIT_EDITOR (V07) and NODE_OPTIONS (X6/D110) -- splits into segment 0 (bash -c, asg=[]) and segment 1 (the nested \"true\"). Since K3 forbids touching pmm-cmd-parse.cjs, item 1 must locate BASH_ENV under whatever kind/field the parser DOES expose it as (raw env-var assignment token preceding the command, not necessarily kind=command_prefix_assignment) before it can scan the value with N.",
+   "command": "BASH_ENV=C:/Users/<user>/.claude/guards/pmm-trigger-recall.sh bash -c true",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "D112",
+   "classification": "deny",
+   "note": "v1.3 draft (spec addendum3 item 27, X8, source=w4probe2.cjs Q3): awk 'BEGIN{system(\"node <DUT>\")}'. precheck v1.0=allow v1.2=allow. segment probe: exe=awk, parse_status=ok -- caught by the \"其余一切 exe\" catch-all bullet (awk explicitly named); the whole -f/program-text operand N-scanned, containing the DUT path literally inside the system() call string.",
+   "command": "awk 'BEGIN{system(\"node C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs\")}'",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "denied_segments": [
+     0
+    ],
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ]
+   }
+  },
+  {
+   "id": "A27",
+   "classification": "allow",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc5/W24-unset-T-trio): KNOWN-GAP allow, kept per spec contradiction-list guidance (\"W24 与契约 A01/A03 同形的唯一正确写法\"). Command = \"HOME=$T USERPROFILE=$T PMM_HOME=$T node ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null\" -- same shape as A01/A03's already-registered pattern (3-var prefix with an unresolved $T placeholder). The gate cannot prove $T is not the real home at parse time (it is not one of the excluded self-referencing names $HOME/${HOME}/$USERPROFILE/${USERPROFILE}/~), so it must allow; wave-3 empirically confirmed that if this were actually run with $T genuinely unset, the DUT script's own resolveHome() throws at runtime -- i.e. fail-closed happens one layer down, not in the gate. precheck v1.0=allow v1.2=allow v1.1=allow (unanimous, not a version-specific bug).",
+   "command": "HOME=$T USERPROFILE=$T PMM_HOME=$T node ~/.claude/guards/pmm-trigger-recall.cjs < /dev/null",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "R01",
+   "classification": "report_only",
+   "note": "v1.3 draft (spec addendum3 item 27, source=esc6/V06-cross-command-var): report_only per spec contradiction-list guidance (\"V06 的变量来自命令外，不可判\"). Command = \"node $DUTPATH < /dev/null\" -- $DUTPATH is an environment variable whose value originates OUTSIDE this command entirely (not assigned anywhere in-line); the gate has no text to scan that could ever name a DUT. To deny this class categorically would require denying every \"interpreter + wholly-unresolved-variable operand\" shape in the whole repo, which the spec review flagged as disproportionate. precheck v1.0=allow v1.2=allow v1.1=allow (unanimous). NOT scored under acceptance.all_cases_pass or the mutant expected_failing sets until 主脑 rules on whether this needs a real classification or stays permanently out-of-scope. [主脑:expect 由 classification 派生;control=按 precheck 现状放行,report_only=只记录不判红]",
+   "command": "node $DUTPATH < /dev/null",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "P01",
+   "classification": "deny",
+   "note": "主脑裁定 2026-09-24:第 27 条闭集覆盖第 21 条「exe∉{node,bash,sh} 非 DUT 段」——任何未列名 exe 的 operand/前缀赋值值/重定向目标含 DUT basename 即拒(fail-closed)。原 pending_ruling: v1.3 draft (spec addendum3 item 27, source=esc5/W30-python-subprocess): PENDING -- 按简报「按第 21 条现行规则给出 precheck 并在 note 写明与第 27 条闭集的关系，由主脑裁定 allow/deny」。这是 spec 审矛盾清单②「第 21 条『exe 不在 {node,bash,sh} 的段不是 DUT 段』，与『W30/W34/V07 全部 deny』直接冲突」点名的 3 个用例之一，不属于本任务可单方面判定的范围。 [第21条现行规则] exe python ∉ {node,bash,sh} -> 第21条现行规则判非 DUT 段 -> 现行 gate 判 ALLOW（precheck v1.0=allow v1.2=allow，已实证） | [第27条闭集重算] python 在第27条 \"其余一切 exe\" 闭集催收列表内被显式点名；其 -c 参数文本 N 后含 DUT basename \"pmm-trigger-recall.cjs\" 子串（criterion i）-> 若按 27 条闭集执行则命中 -> DENY | 若主脑裁定 deny：reason_code=missing-redirect, denied_segments=[0]（exe=python，段本身缺三变量前缀）。若裁定 allow：维持现状不变。 [主脑:expect 由 classification 派生;control=按 precheck 现状放行,report_only=只记录不判红]",
+   "command": "python -c \"import subprocess; subprocess.run(['node','C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs'])\"",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "P02",
+   "classification": "deny",
+   "note": "主脑裁定 2026-09-24:第 27 条闭集覆盖第 21 条「exe∉{node,bash,sh} 非 DUT 段」——任何未列名 exe 的 operand/前缀赋值值/重定向目标含 DUT basename 即拒(fail-closed)。原 pending_ruling: v1.3 draft (spec addendum3 item 27, source=esc5/W34-git-alias-bang): PENDING -- 按简报「按第 21 条现行规则给出 precheck 并在 note 写明与第 27 条闭集的关系，由主脑裁定 allow/deny」。这是 spec 审矛盾清单②「第 21 条『exe 不在 {node,bash,sh} 的段不是 DUT 段』，与『W30/W34/V07 全部 deny』直接冲突」点名的 3 个用例之一，不属于本任务可单方面判定的范围。 [第21条现行规则] exe git ∉ {node,bash,sh} -> 第21条现行规则判非 DUT 段 -> 现行 gate 判 ALLOW（precheck v1.0=allow v1.2=allow，已实证） | [第27条闭集重算] git -c alias.x='!...' 命中第27条 git 专属子规则（-c 的 key=alias.*(值以 ! 开头)）-> 对其值做 N 扫描，值含 DUT basename -> 命中 -> DENY | 若主脑裁定 deny：reason_code=missing-redirect, denied_segments=[0]（exe=git，段本身缺三变量前缀）。若裁定 allow：维持现状不变。 [主脑:expect 由 classification 派生;control=按 precheck 现状放行,report_only=只记录不判红]",
+   "command": "git -c alias.x='!node ~/.claude/guards/pmm-trigger-recall.cjs' x",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "P03",
+   "classification": "deny",
+   "note": "主脑裁定 2026-09-24:第 27 条闭集覆盖第 21 条「exe∉{node,bash,sh} 非 DUT 段」——任何未列名 exe 的 operand/前缀赋值值/重定向目标含 DUT basename 即拒(fail-closed)。原 pending_ruling: v1.3 draft (spec addendum3 item 27, source=esc6/V07-git-editor-dut): PENDING -- 按简报「按第 21 条现行规则给出 precheck 并在 note 写明与第 27 条闭集的关系，由主脑裁定 allow/deny」。这是 spec 审矛盾清单②「第 21 条『exe 不在 {node,bash,sh} 的段不是 DUT 段』，与『W30/W34/V07 全部 deny』直接冲突」点名的 3 个用例之一，不属于本任务可单方面判定的范围。 [第21条现行规则] exe git ∉ {node,bash,sh} -> 第21条现行规则判非 DUT 段 -> 现行 gate 判 ALLOW（precheck v1.0=allow v1.2=allow，已实证；且 pmm-cmd-parse.cjs 已经把 GIT_EDITOR 结构化为该 git 段的 command_prefix_assignment，只是现行 isolation-gate.cjs 尚未读取它） | [第27条闭集重算] GIT_EDITOR 在第27条前缀赋值名单闭集内被显式点名；值 \"node <DUT>\" N 后含 DUT basename -> 命中 -> DENY | 若主脑裁定 deny：reason_code=missing-redirect, denied_segments=[0]（exe=git, prefix-assignment GIT_EDITOR，段本身缺三变量前缀）。若裁定 allow：维持现状不变。 [主脑:expect 由 classification 派生;control=按 precheck 现状放行,report_only=只记录不判红]",
+   "command": "GIT_EDITOR='node C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs' git commit --allow-empty",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1
+   }
+  },
+  {
+   "id": "A28",
+   "classification": "allow",
+   "command": "git -C ~ commit -F /tmp/msg.txt",
+   "note": "v1.3 draft item 3 (误拦替代写法表实证, spec 审 ③ 表): alt-write for the A24/A25-shape commit-message-mentions-a-guard problem -- -F <file> reads the message from a file instead of assembling it via $(cat <<EOF...EOF), so the segment stays parse_status=ok (git subcommand=commit, no -c risky key) and never reaches rule (d) at all. Empirically confirmed allow via gaterun2.cjs against the live wired entry.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A29",
+   "classification": "allow",
+   "command": "git -C ~ commit -m \"guards(pmm-hook.cjs): x\n\nbody mentions a guard file\"",
+   "note": "v1.3 draft item 3: alt-write -- a literal (not $(cat <<EOF...EOF)-assembled) -m argument, even multi-line, parses ok (same shape as existing A13); mentioning a guard basename in inert commit-message TEXT is fine once the message is not built via a command substitution that turns the whole argument into an unsupported segment. Empirically confirmed allow.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A30",
+   "classification": "allow",
+   "command": "grep -c TODO ~/.claude/guards/pmm-trigger-recall.cjs",
+   "note": "v1.3 draft item 3: alt-write for the A23-shape capture problem -- run the read-only inspector directly without capturing its output into a variable via $(...); grep is NON_EXEC_EXE, plain command, parse_status=ok, no rule(d) exposure. Empirically confirmed allow.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A31",
+   "classification": "allow",
+   "command": "cat ~/.claude/guards/*.sh",
+   "note": "v1.3 draft item 3: alt-write for the A22-shape (and X4-shape) for-loop-over-glob problem -- a SINGLE multi-file command (cat with a glob operand) instead of a for-loop; cat is NON_EXEC_EXE (no glob-pattern exception the way sed has one for its own script argument), so this stays a plain ok segment untouched by rule (d) or the glob-token criterion (ii) that denies the for-loop shape. Empirically confirmed allow.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A32",
+   "classification": "allow",
+   "command": "wc -l ~/.claude/guards/*.sh",
+   "note": "v1.3 draft item 3: same alt-write shape as A31 with a different NON_EXEC_EXE member (wc). Empirically confirmed allow.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A33",
+   "classification": "allow",
+   "command": "bash ~/.claude/guards/guard-canary.sh",
+   "note": "v1.3 draft item 3: alt-write for wrapping the canary in `time`/a subshell/$(...) capture (all of which make the whole line an unsupported segment that rule (d) denies unconditionally, per D34-shape regression locks) -- invoke it directly (same shape as existing A05); ALLOW_ANY exempts it. Empirically confirmed allow.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A34",
+   "classification": "allow",
+   "command": "cmp ~/.claude/guards/pmm-hook.cjs ~/.claude/memory/_local-config/pmm-trigger-write-gate.cjs",
+   "note": "v1.3 draft item 3: alt-write for a for-loop-based mirror-verification -- cmp two literal file paths directly; cmp is NON_EXEC_EXE, plain ok segment. Empirically confirmed allow.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A35",
+   "classification": "allow",
+   "command": "diff -rq ~/.claude/guards ~/.claude/memory/_local-config",
+   "note": "v1.3 draft item 3: alt-write for a per-file mirror-verification loop -- diff -rq over the two DIRECTORIES (operands are directory paths, not individual guard file names) in one command; diff is NON_EXEC_EXE. Empirically confirmed allow.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "A36",
+   "classification": "allow",
+   "command": "git -C ~ diff HEAD -- .claude/guards/pmm-trigger-write-gate.cjs",
+   "note": "v1.3 draft item 3: alt-write for the D29-shape process-substitution diff (`git diff --no-index <(node <DUT>) /dev/null`, which genuinely executes the DUT and correctly denies) -- an ordinary `git diff HEAD -- <pathspec>` names the guard only as a pathspec, matching existing A13's convention that a pathspec is not an invocation; no process substitution, no risky -c key, subcommand=diff (not one of the git-risky-subcommand set). Empirically confirmed allow.",
+   "expect": {
+    "decision": "allow",
+    "denial_rows": 0
+   }
+  },
+  {
+   "id": "D113",
+   "classification": "deny",
+   "note": "v1.4 draft (W5-A item 0, source=audits/OPUS-2026-09-24-c05-wave4-review.md HIGH-1, form 1/6: stdin-device operand `/dev/stdin` + `<` redirect target names the DUT file). Root cause: classifySourceSegment (pmm-isolation-gate.cjs:630-635) finds a scriptArg (`/dev/stdin`), fails the direct DUT-basename hit check against it, and returns null immediately -- it never falls through to the `<` redirect-target check at :637-642 the way the sibling \"no scriptArg\" branch does. precheck (8bc93b4, wired entry, 2026-09-24): rc=0, stdout=\"\", stderr=\"\" -- CONFIRMED ALLOW (escape). Segments (pmm-cmd-parse.cjs, same HEAD): single segment index 0, exe=source, parse_status=ok, args=[\"/dev/stdin\"], redirects=[{op:\"<\",target:\"~/.claude/guards/pmm-trigger-recall.cjs\"}]. expect.decision=deny is the HARD requirement per brief; reason_code/denied_segments/missing below are PROVISIONAL, predicted from item 1's stated fix (\"source 段复用 interpreter 的 stdin 形态 + 重定向/上游判据\" -- i.e. classifySourceSegment should return the same {rule:\"source\",basenames:[hit]} shape its own \"no scriptArg\" branch already produces, routing through the normal judgeRedirect() path); zero command-prefix assignments are present so judgeRedirect would report the full HOME_TRIO missing, same shape as case D01. Needs reconciliation against actual output once item 1 lands (same discipline as D61).",
+   "command": "source /dev/stdin < ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D114",
+   "classification": "deny",
+   "note": "v1.4 draft (W5-A item 0, source=OPUS wave-4 HIGH-1, form 2/6: stdin-device operand `/dev/stdin` + DUT fed via the pipeline's UPSTREAM segment, which reads the real DUT file). Same classifySourceSegment early-return bug as D113, but hitting the upstream-pipeline branch at :643-647 instead of the `<` redirect branch. precheck (8bc93b4, wired entry, 2026-09-24): rc=0, stdout=\"\", stderr=\"\" -- CONFIRMED ALLOW (escape). Segments: index 0 = cat (exe=cat, parse_status=ok, args=[\"~/.claude/guards/pmm-trigger-recall.cjs\"], no redirects), index 1 = source (exe=source, parse_status=ok, args=[\"/dev/stdin\"], no redirects) -- confirmed via scratchpad/w5a/segprobe.cjs. expect.decision=deny is the HARD requirement; reason_code/denied_segments/missing PROVISIONAL -- denied_segments predicted as [1] (the source segment itself, attributed the same way the existing interpreter stdin-tracing rule (a) at :603-624 attributes its denial to the READING segment while only consulting the upstream segment's text for the hit, not to the upstream segment's own index). Needs reconciliation once item 1 lands.",
+   "command": "cat ~/.claude/guards/pmm-trigger-recall.cjs | source /dev/stdin",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denied_segments": [
+     1
+    ]
+   }
+  },
+  {
+   "id": "D115",
+   "classification": "deny",
+   "note": "v1.4 draft (W5-A item 0, source=OPUS wave-4 HIGH-1, form 3/6: stdin-device operand `/dev/fd/0` + `<` redirect target names the DUT file -- same mechanism as D113, second of the three stdin-device spellings named in the audit). precheck (8bc93b4, wired entry, 2026-09-24): rc=0, stdout=\"\", stderr=\"\" -- CONFIRMED ALLOW (escape). Segments: single segment index 0, exe=source, parse_status=ok, args=[\"/dev/fd/0\"], redirects=[{op:\"<\",target:\"~/.claude/guards/pmm-trigger-recall.cjs\"}] (confirmed via scratchpad/w5a/segprobe.cjs). expect PROVISIONAL, same reasoning as D113. Needs reconciliation once item 1 lands.",
+   "command": "source /dev/fd/0 < ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D116",
+   "classification": "deny",
+   "note": "v1.4 draft (W5-A item 0, source=OPUS wave-4 HIGH-1, form 4/6: stdin-device operand `/dev/fd/0` + DUT fed via the pipeline's upstream segment -- same mechanism as D114, second stdin-device spelling). precheck (8bc93b4, wired entry, 2026-09-24): rc=0, stdout=\"\", stderr=\"\" -- CONFIRMED ALLOW (escape). Segments: index 0 = cat (ok, reads the real DUT file), index 1 = source (ok, args=[\"/dev/fd/0\"]) -- confirmed via scratchpad/w5a/precheck.cjs (case id H3 in that script). expect PROVISIONAL, same reasoning as D114. Needs reconciliation once item 1 lands.",
+   "command": "cat ~/.claude/guards/pmm-trigger-recall.cjs | source /dev/fd/0",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denied_segments": [
+     1
+    ]
+   }
+  },
+  {
+   "id": "D117",
+   "classification": "deny",
+   "note": "v1.4 draft (W5-A item 0, source=OPUS wave-4 HIGH-1, form 5/6: stdin-device operand `/proc/self/fd/0` + `<` redirect target names the DUT file -- third of the three stdin-device spellings named in the audit). precheck (8bc93b4, wired entry, 2026-09-24): rc=0, stdout=\"\", stderr=\"\" -- CONFIRMED ALLOW (escape). Segments: single segment index 0, exe=source, parse_status=ok, args=[\"/proc/self/fd/0\"], redirects=[{op:\"<\",target:\"~/.claude/guards/pmm-trigger-recall.cjs\"}] (confirmed via scratchpad/w5a/precheck.cjs, case id H5). expect PROVISIONAL, same reasoning as D113. Needs reconciliation once item 1 lands.",
+   "command": "source /proc/self/fd/0 < ~/.claude/guards/pmm-trigger-recall.cjs",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denied_segments": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "D118",
+   "classification": "deny",
+   "note": "v1.4 draft (W5-A item 0, source=OPUS wave-4 HIGH-1, form 6/6: stdin-device operand `/proc/self/fd/0` + DUT fed via the pipeline's upstream segment -- third stdin-device spelling). precheck (8bc93b4, wired entry, 2026-09-24): rc=0, stdout=\"\", stderr=\"\" -- CONFIRMED ALLOW (escape). Segments: index 0 = cat (ok, reads the real DUT file), index 1 = source (ok, args=[\"/proc/self/fd/0\"]) -- confirmed via scratchpad/w5a/segprobe.cjs. expect PROVISIONAL, same reasoning as D114. Needs reconciliation once item 1 lands.",
+   "command": "cat ~/.claude/guards/pmm-trigger-recall.cjs | source /proc/self/fd/0",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "missing-redirect",
+    "missing": [
+     "HOME",
+     "USERPROFILE",
+     "PMM_HOME"
+    ],
+    "denied_segments": [
+     1
+    ]
+   }
+  },
+  {
+   "id": "D119",
+   "classification": "deny",
+   "note": "v1.4 draft (W5-A item 0, source=OPUS wave-4 review LOW finding: \"judge() 对约 1 万层深的 $() 嵌套在 findHit 递归里 RangeError -- :894 的 try 只包 parseCommand,递归溢出落到外层 -> fail-open 放行\"; and brief item 0's explicit instruction to add this case \"期望 deny(不得 fail-open)\"). Command wraps a DUT invocation in exactly 10000 nested `$(...)` layers (matching the audit's \"约1万层\" description), prefixed with a harmless `echo`. precheck (8bc93b4, wired entry, 2026-09-24): rc=0, stdout=\"\", stderr=\"pmm-isolation-gate 内部异常 — fail-open 放行: Maximum call stack size exceeded\\npmm-isolation-gate 自身故障 — fail-open 放行\\n\" -- effectively ALLOW at the settings.json `||` fail-open-fallback level today (empty stdout, rc 0), though NOT the harness's strict 0/0/0-with-empty-stderr \"allow\" shape (stderr is non-empty) -- flagged for 主脑 as a self-test evaluate() caveat, moot here since expect.decision=deny is what is pinned, not allow. Root cause confirmed via a direct (no- ledger-write) judge() call (scratchpad/w5a/precheck.cjs): parseCommand() itself does NOT throw for this input (returns a single segment, index 0, exe=null, parse_status=\"unsupported:command-substitution\", confirmed on a depth-3 shape of the same command) -- the RangeError instead comes from findHit()'s own recursion during segment classification (stack trace: pmm-isolation-gate.cjs:457 -> :463, repeating), which is NOT covered by the :894 try{parseCommand}catch{return allow} block, so it propagates to main()'s stdin-handler catch (writes stderr, process.exit(1)), which settings.json's own `|| exit 0` then fail-opens. expect.decision=deny is the HARD, non-negotiable requirement per brief; reason_code \"nesting-too-deep\" is specified verbatim by the brief for item 2's planned depth cap (~64) and is used here as-instructed rather than derived; denied_segments/denial_rows are PROVISIONAL best-effort predictions (single segment, index 0) -- the exact attribution depends on where item 2's depth-cap check ends up living (inside findHit's own recursion vs. a new top-level judge() guard), which is not yet implemented. Needs reconciliation once item 2 lands; only the overall decision=deny is pinned as a MUST (brief: \"不得 fail-open\").",
+   "command": "echo $($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($($(node ~/.claude/guards/pmm-trigger-recall.cjs))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
+   "expect": {
+    "decision": "deny",
+    "denial_rows": 1,
+    "reason_code": "nesting-too-deep",
+    "denied_segments": [
+     0
+    ]
+   }
+  }
+ ],
+ "mutants": {
+  "scoring": "a case FAILS under a mutant iff its observed decision differs from expect.decision (segment indexes, reason codes and denial rows are NOT scored under mutants); the actual failing set must equal expected_failing exactly",
+  "any-one-redirect": {
+   "definition": "a DUT segment is allowed when at least ONE of HOME, USERPROFILE, PMM_HOME, PMM_RECALL_ROOT, PMM_TRIGGER_MEM, PMM_TRIGGER_STATE, PMM_TRIGGER_LOG, PMM_MEM_DIR is in its command-prefix assignments with a value passing rules 1 and 2; the three-equal-values requirement is dropped; the ambient rule 3 and every other rule are unchanged",
+   "expected_failing": [
+    "D04",
+    "D05",
+    "D17"
+   ],
+   "v1_1_note": "none of the new cases (A21-A26, D24) carry any command-prefix assignment at all (zero, not partial), so this mutant cannot change their outcome either way; expected_failing is unchanged from v1.0",
+   "v1_2_note": "none of the 24 new v1.2 cases (D25-D48) carry any command-prefix assignment at all (zero, not partial) -- same posture as v1.1’s own note; expected_failing unchanged from v1.1.",
+   "v1_3_note": "unchanged from v1.2: none of the ~69 new/changed cases in this draft carry a PARTIAL command-prefix redirect (A27/W24 has all three, which already allows under both the real predicate and this weaker mutant; every other new case has zero). expected_failing unchanged: D04, D05, D17.",
+   "v1_4_note": "recomputed for the 7 new v1.4 cases (D113-D119, script: scratchpad/w5a/build-v14-draft.cjs): none carry ANY command-prefix assignment at all (zero, not partial -- same posture every prior addendum's new cases had), so weakening the redirect-completeness check from \"all three\" to \"any one\" cannot change any of their outcomes either way. For D119 (nesting-too-deep) the mutant parameter only alters judgeRedirect()'s own logic, which the planned depth-cap check (item 2) does not route through -- both real and mutant deny identically once the cap fires. expected_failing unchanged: D04, D05, D17 (same set since v1.0)."
+  },
+  "path-substring": {
+   "definition": "the DUT-segment predicate (a)-(e) is replaced by: the segment source text contains the substring `.claude/guards/`; allow_any/allow_prod still exempt by the basename of the first path-like token; redirect rules unchanged",
+   "expected_failing": [
+    "A12",
+    "A13",
+    "A14",
+    "A15",
+    "A16",
+    "A24",
+    "A30",
+    "A31",
+    "A32",
+    "A34",
+    "A36",
+    "D01",
+    "D03",
+    "D108",
+    "D82",
+    "D86"
+   ],
+   "v1_1_note": "added A21 (heredoc body contains the literal substring '.claude/guards/'), A22 (the for-loop's own head segment contains '.claude/guards/*.sh'), A23 (the command-substitution segment contains '.claude/guards/pmm-trigger-recall.cjs') and A25 (the trailing pathspec '.claude/guards/pmm-trigger-recall.sh', same shape as A13). NOT added: A24 (commit message text says only 'pmm-isolation-gate.cjs', never preceded by '.claude/guards/'), A26 (target path is .claude/memory/_local-config/, never contains the substring 'guards'), D24 (already denies under both real code and this mutant -- decision does not change, so it cannot appear in a decision-only failing set)",
+   "v1_2_note": "all 24 new v1.2 cases (D25-D48) contain the literal substring ‘.claude/guards/’ in their source text (every one references ~/.claude/guards/pmm-trigger-recall.cjs or pmm-isolation-gate.cjs) AND carry zero command-prefix redirect assignment, so this mutant’s redirect-completeness check still denies every one of them exactly as the real predicate does -- expected_failing unchanged from v1.1. Empirically re-verified: scratchpad/w3a/verify-mutants.cjs.",
+   "v1_3_note": "recomputed mechanically (script: scratchpad/build-v13-draft.cjs) by checking literal substring \".claude/guards/\" presence in every case's raw command text (all 84 new/changed cases checked). REMOVED (now match: real v1.3 denies, mutant also denies since substring is present): A21, A22, A23, A25 -- their real decision flipped allow->deny in this draft, converging with what the mutant already predicted. ADDED (new mismatch: real v1.3 denies via a basename/normalization rule, but mutant's naive forward-slash substring check misses the text): A24 (commit message text says only \"pmm-isolation-gate.cjs\", no directory prefix at all -- pre-existing case, brief called this out explicitly), D82 (=W05-find-exec, \"~/.claude/guards -name pmm-trigger-recall.cjs\" has no slash between \"guards\" and \"-name\"), D86 (=W10-node-stdin-redirect, \"cd ~/.claude/guards && node < pmm-trigger-recall.cjs\" -- redirect target is a bare relative filename, cd'd away from any directory prefix), D108 (=V10-backslash-path, whole path uses \"\\\\\" separators, never contains the forward-slash substring). No other new case (of the 69 added, or the 3 reclassified A21/A23/A25, or A22) lacks the substring -- mechanically verified, see scratchpad/build-v13-draft.cjs section 8. A12-A16, D01, D03, D11 unchanged (real behavior unaffected by this draft). D81 (=W04-xargs) intentionally excluded from this mutant recompute since its own classification is itself flagged SPEC GAP above -- pending 主脑 ruling before its mutant membership can be determined either way.",
+   "v1_3_note_2": "item 3 alt-write-table proof cases (A28-A36) added 2026-09-24: A30/A31/A32/A34/A36 use a NON_EXEC_EXE member (grep/cat/wc/cmp) or a diff/git-diff pathspec whose command text contains the literal \".claude/guards/\" substring with no redirect -- the mutant's naive substring predicate flags them as DUT segments (missing-redirect) while the real predicate correctly exempts them (NON_EXEC_EXE closed set / pathspec-only git diff), same divergence pattern as A12-A16. A28/A29/A35 do not contain the literal substring (no trailing slash before the next token, or no guards-path reference at all); A33 is ALLOW_ANY-exempt under the mutant too.",
+   "v1_4_note": "recomputed for the 7 new v1.4 cases (script: scratchpad/w5a/build-v14-draft.cjs). Empirically re-verified (scratchpad/w5a/precheck.cjs + precheck-wired-all.cjs, 2026-09-24): under the CURRENT (unfixed, 8bc93b4) gate, this mutant already returns deny for all 7 new commands, because its branch (judge()'s `mutant==='path-substring'` arm) does not call classifySegment/classifySourceSegment at all -- it scans each segment's own getSourceText() for the literal substring \".claude/guards/\" directly, a code path the HIGH-1 bug never touches. D113/D115/D117 (single source segment carrying the literal `~/.claude/guards/pmm-trigger-recall.cjs` redirect target in its own source text) and D114/D116/D118 (two segments; segment 0 = `cat ~/.claude/guards/pmm-trigger-recall.cjs`, which carries the substring in ITS own text) both trigger a mutant-side denial today already. D119's mutant branch does a single non-recursive regex test over the whole 30KB source text (matches \".claude/guards/\" literally), so it denies too without hitting the findHit recursion that crashes the real (non-mutant) path today. Real v1.4 (post item 1/2) is expected to deny all 7 as well, so no divergence in either direction -- expected_failing unchanged from v1.3's list (A24, D108, D11, D82, D86, plus A12-A16/A30-A32/A34/A36/D01/D03)."
+  }
+ },
+ "acceptance": {
+  "all_cases_pass": true,
+  "mutant_failing_sets_exact": "actual failing ids under each mutant == expected_failing (by id); any extra or missing id is red",
+  "wired_entry": "every case is launched through the settings.json command string, not by requiring the module",
+  "no_real_root_writes": "the real-root watch set of spec 22 (selftest-iso.cjs footprint) shows no attributable change across the whole contract run",
+  "blob_pinned": "this file's git blob is named in the acceptance dispatch prompt",
+  "v1_1_note": "case count: 46 (v1.0) + 7 (A21-A26, D24) = 53. Every v1.0 case, mutant expected_failing entry and acceptance clause above is reproduced byte-for-byte except the two edits called out in mutants.path-substring.expected_failing and mutants.any-one-redirect.v1_1_note; v1.0's own blob is specs/isolation-gate-contract.json @ 9ae79d45c110b4620cc4463bf8a5276fd6d883c1 (matches audits/OPUS-2026-09-24-c05-batch-review.md §0)",
+  "v1_2_note": "case count: 53 (v1.1) + 24 (D25-D48) = 77. Every v1.1 case, mutant expected_failing entry and acceptance clause is reproduced byte-for-byte; only new cases were appended and the two v1_2_note fields above were added to the mutants block. v1.1’s own blob is specs/isolation-gate-contract.json (post-registration hash pending from the F2/F2b history -- main brain to confirm at registration time).",
+  "v1_3_note": "DRAFT, not yet run against real v1.3 code (item 1 has not started). case count: 77 (v1.2) + 69 new (D49-D112, A27, R01, P01-P03) = 146 total; of the original 77, five were reclassified in place (A21,A22,A23,A24,A25: allow->deny) and one got a clarifying note only (A26: allow, unchanged). R01 (report_only) and P01-P03 (pending_ruling) are NOT scored under acceptance.all_cases_pass or the mutant expected_failing sets until 主脑 rules on them -- see v1_3_addendum and the contradiction-list handling in each case's note. v1.2's own blob is specs/isolation-gate-contract.json (registered, 77 cases, this file's \"base\").",
+  "v1_4_note": "DRAFT, not yet run against real v1.4 code (items 1-2 have not started; builder stops after item 0 per brief). case count: 155 (v1.3 base, this file's own count as read, NOT the possibly- stale \"146\" figure in v1_3_note above which predates the later A28-A36 alt-write batch) + 7 new (D113-D119) = 162 total. All 155 v1.3 cases, both mutants' expected_failing arrays, and every existing note/addendum are reproduced byte-for-byte; only new cases and new v1_4_note/v1_4_addendum fields were appended. D113-D118 expect.decision=deny is a HARD target (currently ALLOW under 8bc93b4, confirmed escapes -- see each case's note); D119 expect.decision=deny is likewise a HARD target (currently fails open via an uncaught RangeError, see note). reason_code/denied_segments/missing on all 7 are PROVISIONAL pending items 1-2's actual implementation and must be reconciled against real self-test output before this draft is treated as final (same discipline v1.3's D61 used)."
+ },
+ "v1_5_addendum": {
+  "status": "REGISTERED by coordinator",
+  "change": "scoring relaxed to decision + denial_rows; denied_segments/reason_code informational",
+  "cases_added": 0
+ }
+}

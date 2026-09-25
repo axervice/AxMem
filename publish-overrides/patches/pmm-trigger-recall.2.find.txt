@@ -1,0 +1,1 @@
+    if (core.FENCE_RE.test(line)) inFence = !inFence;

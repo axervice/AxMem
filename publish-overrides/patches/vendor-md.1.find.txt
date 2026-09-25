@@ -1,0 +1,20 @@
+## minisearch
+
+- **来源**:`lucaong/minisearch`(npm 包名 `minisearch`)
+- **URL**:`https://registry.npmjs.org/minisearch/-/minisearch-7.2.0.tgz`
+- **版本**:7.2.0(C05-BUILD-SPEC.md 补遗二 §19 指定版本;`npm pack minisearch@7.2.0` 于
+  2026-09-24 取得,tarball shasum `3dc30e41e9464b3836553b6d969b656614f8f359`,
+  npm registry integrity `sha512-dqT2XBYUOZOiC[...]AlE+QZ/QnDglg==`)
+- **许可证**:MIT(全文见 `minisearch/LICENSE`,取自 tarball `LICENSE.txt`,逐字节未改)
+- **vendor 文件**:`minisearch/index.cjs`(取自 tarball 内 `dist/cjs/index.cjs` ——
+  该包 `package.json` `exports["."].require` 指向的自包含 CJS bundle;零外部 `require`,
+  不需要任何 sibling 文件,已把 `SearchableMap`/`MiniSearch` 等全部打包进这一个文件)
+- **上游正文 sha256**(`dist/cjs/index.cjs`,即 vendor 文件里前置注释之后的正文,逐字节一致):
+  `21a36ec7f23f9da440a274958c7feaaad8ce77e0053ba5f9a75e91c79836d115`
+- **用途**:`guards/pmm-search-v2.cjs`(C05-BUILD-SPEC.md 交付物 6)的底层多字段索引/匹配引擎。
+  精确命中置顶、字段权重(§3.2)、图重排(head +2 / superseded −5)、并列序都在
+  `pmm-search-v2.cjs` 的包装层实现,不改 vendor 文件本身;vendor 只负责分词后的倒排索引、
+  多字段 BM25 匹配与 `match`(词→命中字段)结果,供包装层做加权求和。
+- **改动**:仅文件头加了一段前置注释(来源/版本/许可证/sha256/用途),正文未改一字节
+  (已用 `diff` 对照 tarball 原文验证)。
+

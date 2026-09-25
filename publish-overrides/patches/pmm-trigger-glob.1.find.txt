@@ -1,0 +1,4 @@
+module.exports = {
+  TriggerPatternError, compileTriggerPath, checkTriggerPathB5, testTriggerPath,
+  MAX_CANDIDATE_PATH_LEN, validateTriggerPathContract,
+};
