@@ -104,6 +104,11 @@
     { "file": "guards/pmm-bash-impression.cjs", "findFile": "publish-overrides/patches/pmm-bash-impression.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-bash-impression.1.replace.txt" },
     { "file": "guards/pmm-bash-impression.cjs", "findFile": "publish-overrides/patches/pmm-bash-impression.2.find.txt", "replaceFile": "publish-overrides/patches/pmm-bash-impression.2.replace.txt" },
     { "file": "guards/pmm-bash-impression.cjs", "findFile": "publish-overrides/patches/pmm-bash-impression.3.find.txt", "replaceFile": "publish-overrides/patches/pmm-bash-impression.3.replace.txt" },
+    "_comment_pmm-bash-impression.4: 2026-09-25 fix (review OPUS-2026-09-25-c05-w5-w10-review.md §7 MED) -- the excluded-upstream require('./pmm-core.cjs') used to fail-open via a silent try/catch (core=null, later miss()'d with zero explanation); now prints one explicit line to stderr saying this is an AxMem Pro module not shipped in the free tier, so this guard is a no-op BY DESIGN. Private repo behavior is unaffected (pmm-core.cjs IS present there; the catch branch is not normally taken).",
+    { "file": "guards/pmm-bash-impression.cjs", "findFile": "publish-overrides/patches/pmm-bash-impression.4.find.txt", "replaceFile": "publish-overrides/patches/pmm-bash-impression.4.replace.txt" },
+
+    "_comment_pmm-trigger-write-gate.1: 2026-09-25 fix (review OPUS-2026-09-25-c05-w5-w10-review.md §7 MED) -- same fix as pmm-bash-impression.4 above, applied to this file's own require('./pmm-core.cjs') try/catch (this file previously had NO replacement entry at all, so the excluded-module require shipped completely unpatched).",
+    { "file": "guards/pmm-trigger-write-gate.cjs", "findFile": "publish-overrides/patches/pmm-trigger-write-gate.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-trigger-write-gate.1.replace.txt" },
 
     { "file": "guards/pmm-isolation-gate.cjs", "findFile": "publish-overrides/patches/pmm-isolation-gate.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-isolation-gate.1.replace.txt" },
     { "file": "guards/pmm-isolation-gate.cjs", "findFile": "publish-overrides/patches/pmm-isolation-gate.2.find.txt", "replaceFile": "publish-overrides/patches/pmm-isolation-gate.2.replace.txt" },

@@ -1,0 +1,1 @@
+try { core = require('./pmm-core.cjs'); } catch (e) { core = null; }

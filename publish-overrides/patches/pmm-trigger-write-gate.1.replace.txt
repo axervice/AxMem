@@ -1,0 +1,10 @@
+try {
+  core = require(path.join(__dirname, 'pmm-core.cjs'));
+} catch {
+  // AxMem Pro module (guards/pmm-core.cjs) is not part of the free/open-core tier this file ships
+  // in -- see README's "guards/ is legacy/reference" section for what is and is not wired into
+  // bin/axmem. This guard is a no-op in this install BY DESIGN, not a silent accident -- print that
+  // once so anyone running this file standalone sees why, instead of it just doing nothing.
+  process.stderr.write('[pmm-trigger-write-gate] AxMem Pro module guards/pmm-core.cjs not present in this (free-tier) install -- no-op.\n');
+  process.exit(0);
+}
