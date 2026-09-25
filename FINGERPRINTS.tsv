@@ -16,9 +16,10 @@ core/trigger-recall.cjs	51eb710a61772df7
 core/trigger-recall.sh	36574011593100b7
 core/write-echo.cjs	2865b056aa61a967
 core/write-gate.sh	2818f702ba996d41
+lib/atomic-write.cjs	bbc2da8cbf453905
 lib/fence.cjs	954236947a37d597
 lib/fence.sh	53fd22271dfe22bd
 lib/lock.cjs	37a49ce15da879c4
-lib/msys-path.cjs	582ffb5f658f5d42
+lib/msys-path.cjs	12f295aba236632e
 lib/prelude.cjs	969b90bbf3c73891
 lib/prelude.sh	759fd7d3ff734ea2

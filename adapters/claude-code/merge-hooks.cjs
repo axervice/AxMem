@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const ctx = require('../../lib/prelude.cjs');
+const { writeFileAtomicSync } = require('../../lib/atomic-write.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').replace(/\\/g, '/');
 
@@ -153,7 +154,14 @@ function main(argv) {
   const backup = SETTINGS + '.axmem-backup-' + new Date().toISOString().replace(/[:.]/g, '-');
   fs.copyFileSync(SETTINGS, backup);
   const newRaw = JSON.stringify(settings, null, 2) + '\n';
-  fs.writeFileSync(SETTINGS, newRaw);
+  // BORROW-MATRIX-2026-09-24-full.md group 6 "补": this used to be a plain
+  // fs.writeFileSync(SETTINGS, newRaw) directly on the real settings.json —
+  // a process crash or power loss between that call and its return leaves
+  // settings.json truncated/corrupt on disk (every CC hook stops firing).
+  // writeFileAtomicSync stages the new content in a sibling file, fsyncs
+  // it, then renames it over SETTINGS — a reader/crash at any point before
+  // the rename still sees the OLD complete file, never a half-written one.
+  writeFileAtomicSync(SETTINGS, newRaw);
   JSON.parse(fs.readFileSync(SETTINGS, 'utf8')); // choke early if we wrote garbage
   console.log(`claude-code adapter: added ${addedCount} hook(s); backup at ${backup}`);
 
@@ -251,9 +259,39 @@ function selfTest() {
     fs.rmSync(T, { recursive: true, force: true });
   }
 
+  // 6. crash-mid-write (BORROW-MATRIX-2026-09-24-full.md group 6 "补"): a
+  //    real main() run against a real settings.json that dies between the
+  //    atomic staging write and the rename that would publish it must leave
+  //    the on-disk settings.json byte-for-byte UNCHANGED — no half-written
+  //    file. Simulated by monkey-patching fs.renameSync (the exact step
+  //    writeFileAtomicSync uses to publish) to throw, standing in for the
+  //    process being killed at that instant.
+  {
+    const os = require('os');
+    const T = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-cc-crash-'));
+    const settingsPath = path.join(T, 'settings.json');
+    const oldContent = JSON.stringify({ hooks: {} }, null, 2) + '\n';
+    fs.writeFileSync(settingsPath, oldContent);
+    const origRename = fs.renameSync;
+    fs.renameSync = () => { throw new Error('simulated crash: killed before rename could publish settings.json'); };
+    let threw = false;
+    try {
+      main(['--settings', settingsPath]);
+    } catch {
+      threw = true;
+    } finally {
+      fs.renameSync = origRename;
+    }
+    const after = fs.readFileSync(settingsPath, 'utf8');
+    const strayStaging = fs.readdirSync(T).filter((f) => f.includes('.axmem-staging-'));
+    check('6 simulated crash before settings.json rename: original file byte-for-byte unchanged (never half-written), no stray staging file left behind',
+      threw && after === oldContent && strayStaging.length === 0);
+    fs.rmSync(T, { recursive: true, force: true });
+  }
+
   console.log(results.join('\n'));
-  console.log(`claude-code merge-hooks self-test ${ok}/5`);
-  return ok === 5 ? 0 : 1;
+  console.log(`claude-code merge-hooks self-test ${ok}/6`);
+  return ok === 6 ? 0 : 1;
 }
 
 if (require.main === module && process.argv.includes('--self-test')) {
