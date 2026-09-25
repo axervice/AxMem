@@ -307,38 +307,64 @@ function step5_applyReplacements(exportDir, manifest) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Sanitize rules are DYNAMIC: derived from the machine actually running this script, never a
-// hardcoded literal, so the same script stays correct if run from a different machine/user.
-function buildSanitizeRules() {
-  const realUser = os.userInfo().username;
-  const realHost = os.hostname();
-  const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const userEsc = escRe(realUser);
-  const hostEsc = escRe(realHost);
-  return [
-    { id: 'home-username-path', re: new RegExp('((?:[A-Za-z]:[\\\\/]|/)Users[\\\\/])' + userEsc + '([\\\\/])', 'g'), replace: '$1<user>$2' },
-    { id: 'bare-username', re: new RegExp('(["\'`\\s(])' + userEsc + '(["\'`\\s).,;])', 'g'), replace: '$1<user>$2' },
-    { id: 'hostname', re: new RegExp('\\b' + hostEsc + '\\b', 'g'), replace: '<mach>' },
-    { id: 'lan-ip', re: /192\.168\.1\.151/g, replace: '10.0.0.1' },
-    { id: 'd-rag-path', re: /D:[\\/]RAG/gi, replace: 'D:/example-project' },
-    // [Builder W9, 2026-09-25] Blanket rename, ANY occurrence -- not just inside a real absolute
-    // path. Supersedes the old narrower 'desktop-axervice-booking-real-path' rule (username-redaction
-    // there is already covered by home-username-path above; this rule now handles the project-name
-    // half unconditionally, including test-fixture repo= values and comments). The private source
-    // fixtures were also renamed directly (guards/pmm-trigger-recall.cjs/.sh, guards/fixtures/v3/
-    // trigger-write-gate-probe.cjs), so this is defense-in-depth, not the primary mechanism. KNOWN
-    // INTENTIONAL divergence from today's origin/main -- see manifest knownDivergencesFromCurrentOriginMain.
-    { id: 'axervice-booking-repo-name', re: /axervice-booking/g, replace: 'example-project' },
-    // Deliberately a hardcoded literal, unlike every other rule here -- 'Jax' is a personal name
-    // embedded in prose/comments across the tree, not derivable from any os.userInfo()/os.hostname()
-    // API. Word-boundary match so it never touches an already-mapped compound like a
-    // 'JaxStuuu'-style hostname (the dynamic hostname rule above already handles that).
-    { id: 'author-first-name', re: /\bJax\b/g, replace: 'the maintainer' },
-  ];
+// Sanitize rules for username/hostname are the UNION of two sources:
+//  1. DYNAMIC: derived from the machine actually running this script (os.userInfo()/os.hostname())
+//     -- correct when the export runs on the author's own machine.
+//  2. LITERAL FALLBACK (manifest.sanitizeLiteralFallback): hardcoded username/hostname literals --
+//     correct on any OTHER host (e.g. CI), where the running machine's own identity is irrelevant
+//     but the author's identity is still baked into private-repo prose/strings/comments.
+// LOW-1 fix (review FAB-2026-09-25-w11-w12-review.md LOW-1): before this fix, only (1) existed, so
+// gate1_residualScan run from a machine whose os.userInfo()/os.hostname() differ from the author's
+// (true of every CI runner) would neither sanitize NOR catch a leftover author-identity literal that
+// wasn't already covered by one of the per-file `replacements` patches. See manifest's
+// sanitizeLiteralFallback._comment for the full rationale and provenance of the literal values.
+function uniqStrings(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const s of arr) {
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
 }
 
-function step6_sanitize(exportDir) {
-  const rules = buildSanitizeRules();
+function buildSanitizeRules(manifest) {
+  const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const fallback = (manifest && manifest.sanitizeLiteralFallback) || {};
+  const usernames = uniqStrings([os.userInfo().username].concat(fallback.usernames || []));
+  const hostnames = uniqStrings([os.hostname()].concat(fallback.hostnames || []));
+
+  const rules = [];
+  for (const u of usernames) {
+    const userEsc = escRe(u);
+    rules.push({ id: 'home-username-path:' + u, re: new RegExp('((?:[A-Za-z]:[\\\\/]|/)Users[\\\\/])' + userEsc + '([\\\\/])', 'g'), replace: '$1<user>$2' });
+    rules.push({ id: 'bare-username:' + u, re: new RegExp('(["\'`\\s(])' + userEsc + '(["\'`\\s).,;])', 'g'), replace: '$1<user>$2' });
+  }
+  for (const h of hostnames) {
+    const hostEsc = escRe(h);
+    rules.push({ id: 'hostname:' + h, re: new RegExp('\\b' + hostEsc + '\\b', 'g'), replace: '<mach>' });
+  }
+  rules.push({ id: 'lan-ip', re: /192\.168\.1\.151/g, replace: '10.0.0.1' });
+  rules.push({ id: 'd-rag-path', re: /D:[\\/]RAG/gi, replace: 'D:/example-project' });
+  // [Builder W9, 2026-09-25] Blanket rename, ANY occurrence -- not just inside a real absolute
+  // path. Supersedes the old narrower 'desktop-axervice-booking-real-path' rule (username-redaction
+  // there is already covered by home-username-path above; this rule now handles the project-name
+  // half unconditionally, including test-fixture repo= values and comments). The private source
+  // fixtures were also renamed directly (guards/pmm-trigger-recall.cjs/.sh, guards/fixtures/v3/
+  // trigger-write-gate-probe.cjs), so this is defense-in-depth, not the primary mechanism. KNOWN
+  // INTENTIONAL divergence from today's origin/main -- see manifest knownDivergencesFromCurrentOriginMain.
+  rules.push({ id: 'axervice-booking-repo-name', re: /axervice-booking/g, replace: 'example-project' });
+  // Deliberately a hardcoded literal, unlike the dynamic rules above -- 'Jax' is a personal name
+  // embedded in prose/comments across the tree, not derivable from any os.userInfo()/os.hostname()
+  // API. Word-boundary match so it never touches an already-mapped compound like a
+  // 'JaxStuuu'-style hostname (the hostname rules above already handle that).
+  rules.push({ id: 'author-first-name', re: /\bJax\b/g, replace: 'the maintainer' });
+  return rules;
+}
+
+function step6_sanitize(exportDir, manifest) {
+  const rules = buildSanitizeRules(manifest);
   const files = [];
   walk(exportDir, '', files);
   let touched = 0;
@@ -359,8 +385,8 @@ function step6_sanitize(exportDir) {
 }
 
 // ---------------------------------------------------------------------------------------------
-function gate1_residualScan(exportDir) {
-  const rules = buildSanitizeRules();
+function gate1_residualScan(exportDir, manifest) {
+  const rules = buildSanitizeRules(manifest);
   const files = [];
   walk(exportDir, '', files);
   const findings = [];
@@ -453,6 +479,72 @@ function gate3_npmSelftest(exportDir) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// MED-3 fix (review FAB-2026-09-25-w11-w12-review.md MED-3): overlay drift detection. `overlays` in
+// the manifest is a full-content snapshot copy (step4_applyOverlays) of a hand-curated file that
+// stands in for `main`'s OWN tracked file at the same path. If `main`'s file at that path changes
+// (e.g. a kept, non-excluded guard's canary roster grows) after the overlay snapshot was last
+// reviewed, the overlay silently ships stale content with zero warning -- unlike `replacements`,
+// whose required=true find-text check already fails closed on upstream drift. This gives overlays
+// the same fail-closed guarantee: manifest.overlayBaselines records the git blob sha of main's file
+// at each overlay target path as of the last human review; this function recomputes it now and dies
+// if it no longer matches, BEFORE anything is archived/exported/committed.
+function overlayTargets(manifest) {
+  return Object.keys(manifest.overlays || {}).filter((k) => k.indexOf('_comment') !== 0);
+}
+
+function blobShaAtRef(ref, relPath) {
+  try {
+    return git(['rev-parse', ref + ':' + relPath]).trim();
+  } catch (e) {
+    return null; // path does not exist at that ref
+  }
+}
+
+function checkOverlayDrift(manifest) {
+  const targets = overlayTargets(manifest);
+  const baselines = manifest.overlayBaselines || {};
+  const drifted = [];
+  for (const target of targets) {
+    const expected = Object.prototype.hasOwnProperty.call(baselines, target) ? baselines[target] : null;
+    const actual = blobShaAtRef('main', target);
+    if (expected === null || actual === null || expected !== actual) {
+      drifted.push({ target: target, expected: expected, actual: actual });
+    }
+  }
+  if (drifted.length) {
+    const lines = drifted.map((d) => '  - ' + d.target + ': baseline=' + (d.expected || '(none recorded)') + ' current main=' + (d.actual || '(missing at that path in main!)'));
+    die(
+      'GATE0 overlay drift: ' + drifted.length + ' overlay target(s) no longer match the baseline recorded in ' +
+      'publish.manifest.json overlayBaselines -- main\'s own file at that path changed since the overlay content ' +
+      'under publish-overrides/ (or README.public.md etc.) was last hand-reviewed against it, so the overlay may ' +
+      'now silently ship stale content. Review the diff at each path below, refresh the overlay content if needed, ' +
+      'then re-run with --update-overlay-baselines to acknowledge and record the new baseline:\n' + lines.join('\n')
+    );
+  }
+  log('GATE0 overlay drift: 0 drifted overlay target(s) of ' + targets.length + ' -- baselines match main');
+}
+
+function updateOverlayBaselines(manifest) {
+  const targets = overlayTargets(manifest);
+  const prev = manifest.overlayBaselines || {};
+  const next = { _comment: prev._comment };
+  const changes = [];
+  for (const target of targets) {
+    const actual = blobShaAtRef('main', target);
+    const before = Object.prototype.hasOwnProperty.call(prev, target) ? prev[target] : null;
+    next[target] = actual;
+    changes.push({ target: target, before: before, after: actual, changed: before !== actual });
+  }
+  manifest.overlayBaselines = next;
+  fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  const changedCount = changes.filter((c) => c.changed).length;
+  log('--update-overlay-baselines: wrote ' + targets.length + ' baseline(s) to ' + MANIFEST_PATH + ' (' + changedCount + ' changed, ' + (targets.length - changedCount) + ' unchanged):');
+  for (const c of changes) {
+    log('  - ' + c.target + ': ' + (c.changed ? ((c.before || '(none)') + ' -> ' + c.after) : (c.after + ' (unchanged)')));
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 function treeHashOfDir(exportDir) {
   // Build a git tree object from exportDir's current on-disk state using a throwaway index file,
   // WITHOUT touching the real working tree/index of the repo (public/main stay untouched on disk).
@@ -533,8 +625,22 @@ function getRemoteRefSha(remoteName, ref) {
 
 function main() {
   step0_cleanupStaleTemp();
-  const push = process.argv.includes('--push');
   const manifest = readManifest();
+
+  // MED-3 fix: --update-overlay-baselines is a standalone, explicit "I have reviewed the drift,
+  // record the new baseline" action -- it does NOT also run the export in the same invocation, so
+  // acknowledging drift is a distinct, deliberate step from publishing. See updateOverlayBaselines()'s
+  // comment.
+  if (process.argv.includes('--update-overlay-baselines')) {
+    updateOverlayBaselines(manifest);
+    log('DONE (baselines updated -- re-run without this flag to export)');
+    return;
+  }
+
+  // GATE0, runs before anything is archived/exported/committed (see checkOverlayDrift()'s comment).
+  checkOverlayDrift(manifest);
+
+  const push = process.argv.includes('--push');
   const orphan = process.argv.includes('--orphan') || manifest.history === 'orphan';
   const privateShortSha = git(['rev-parse', '--short', 'main']).trim();
   log('source: main @ ' + privateShortSha + (orphan ? ' (orphan history mode)' : ''));
@@ -545,9 +651,9 @@ function main() {
     step3_applyAddFiles(exportDir, manifest);
     step4_applyOverlays(exportDir, manifest);
     step5_applyReplacements(exportDir, manifest);
-    step6_sanitize(exportDir);
+    step6_sanitize(exportDir, manifest);
 
-    const residual = gate1_residualScan(exportDir);
+    const residual = gate1_residualScan(exportDir, manifest);
     if (residual !== 0) die('GATE1 residual scan found ' + residual + ' match(es) -- aborting, no commit made');
 
     const g2 = gate2_installLayoutSelfTest(exportDir, manifest);
@@ -601,16 +707,34 @@ function main() {
   }
 }
 
+// Exposed for unit-testing individual pieces (e.g. checkOverlayDrift, buildSanitizeRules,
+// gate1_residualScan) via require() against a fixture repo, WITHOUT triggering the auto-run below --
+// require.main !== module in that case. Behavior when invoked as `node scripts/publish-public.cjs`
+// (require.main === module) is unchanged.
+module.exports = {
+  buildSanitizeRules,
+  gate1_residualScan,
+  step6_sanitize,
+  checkOverlayDrift,
+  updateOverlayBaselines,
+  overlayTargets,
+  blobShaAtRef,
+  readManifest,
+  main,
+};
+
 // Thin wrapper so die()'s throw unwinds through main()'s try/finally (running the cleanup above)
 // before the process exit code is set, instead of die() calling process.exit() directly and skipping
 // that finally block entirely (see die()'s comment). A non-die() exception (a real bug) is also caught
 // here so it gets the same treatment rather than an unhandled-rejection-style crash that bypasses
 // cleanup.
-try {
-  main();
-} catch (err) {
-  if (!err || !err.__axmemDie) {
-    process.stderr.write('[publish-public] UNCAUGHT: ' + ((err && err.stack) || err) + '\n');
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    if (!err || !err.__axmemDie) {
+      process.stderr.write('[publish-public] UNCAUGHT: ' + ((err && err.stack) || err) + '\n');
+    }
+    process.exitCode = 1;
   }
-  process.exitCode = 1;
 }

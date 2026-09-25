@@ -80,12 +80,21 @@
   },
 
   "overlays": {
-    "_comment": "Full-content replace. Used where the private->public difference is a hand-curated narrative (README) or a dense, coupled data-file edit (guard-canary.sh's roster/EXPECTED arithmetic; isolation-gate-contract.json's allow_prod roster remap + 3 report_only downgrades + mutation-set trim) that is safer to snapshot than to re-derive mechanically. TRADEOFF (see report): these 4 files will need a manual overlay refresh whenever their private source gains new content for KEPT (non-excluded) guards -- the script does not auto-detect staleness.",
+    "_comment": "Full-content replace. Used where the private->public difference is a hand-curated narrative (README) or a dense, coupled data-file edit (guard-canary.sh's roster/EXPECTED arithmetic; isolation-gate-contract.json's allow_prod roster remap + 3 report_only downgrades + mutation-set trim) that is safer to snapshot than to re-derive mechanically. Drift risk: if `main`'s OWN copy of one of these target paths changes after the overlay was hand-curated, the overlay snapshot can silently ship stale content -- see `overlayBaselines` below, which is the fail-closed check for exactly that (review FAB-2026-09-25-w11-w12-review.md MED-3).",
     "README.md": "README.public.md",
     "README.zh.md": "README.zh.public.md",
     "guards/guard-canary.sh": "publish-overrides/guards/guard-canary.sh",
     "guards/specs/isolation-gate-contract.json": "publish-overrides/guards/specs/isolation-gate-contract.json",
     "CHANGELOG.md": "CHANGELOG.public.md"
+  },
+
+  "overlayBaselines": {
+    "_comment": "MED-3 fix (review FAB-2026-09-25-w11-w12-review.md MED-3): drift-detection baseline for each entry in `overlays` above. Value is the git blob sha of `main`'s OWN tracked file at that same path (`git rev-parse main:<path>`) as of the moment the hand-curated overlay content under publish-overrides/ (or README.public.md etc.) was last reviewed against it. checkOverlayDrift() in scripts/publish-public.cjs recomputes this sha at the start of every export and dies (before archiving/committing anything) if it no longer matches -- the private source at that path moved since the overlay was last reviewed, so the overlay snapshot may now be stale. After reviewing the diff at that path and refreshing the overlay content if needed, re-baseline with: `node scripts/publish-public.cjs --update-overlay-baselines` (rewrites only this section of this manifest; does not run the rest of the export pipeline).",
+    "README.md": "383e602f665a159f9d4d039c47b728824396762e",
+    "README.zh.md": "4925e5f26ae6e6c060bebef13088ed0657c0553f",
+    "guards/guard-canary.sh": "ed7844bf4c759d1db7f4a0870c4cc7b8fc62bba7",
+    "guards/specs/isolation-gate-contract.json": "a3a8b2025ee0a3c057927ad43f57d76586b6ac08",
+    "CHANGELOG.md": "c58ca537c84f91774b907e5969e2b19dd73f1139"
   },
 
   "replacements": [
@@ -126,8 +135,14 @@
     { "file": "package.json", "findFile": "publish-overrides/patches/package-json.3.find.txt", "replaceFile": "publish-overrides/patches/package-json.3.replace.txt" }
   ],
 
+  "sanitizeLiteralFallback": {
+    "_comment": "LOW-1 fix (review FAB-2026-09-25-w11-w12-review.md LOW-1): the dynamic os.userInfo().username/os.hostname() rules below are only correct when the MACHINE RUNNING THE EXPORT is the machine whose identity needs scrubbing. On the CI runner (.github/workflows/publish-public.yml, ubuntu-latest) that is false -- the runner's own username/hostname are irrelevant; what needs to stay scrubbed is the AUTHOR's identity literals already baked into private-repo prose/strings/comments. This section is the hardcoded fallback so gate1_residualScan/step6_sanitize do not go blind on a host whose os.userInfo()/os.hostname() differ from the author's. Values taken from the author's own machine (see buildSanitizeRules() dynamic derivation on that machine, and the pre-existing per-file `replacements` patches for guards/bash-pipe-exitcode-watch.cjs, guards/pipe-gate-v2-acceptance.cjs, guards/pmm-bash-impression.cjs, which already strip these same literals from their known occurrences upstream of sanitize/gate1 -- this section is the union/fallback layer, not a replacement for those). This file is in `exclude` above (publish.manifest.json is never shipped to the public tree), so these literals never reach `public`.",
+    "usernames": ["jax-x"],
+    "hostnames": ["JaxStuuu"]
+  },
+
   "sanitize": {
-    "_comment": "Defense-in-depth regex scrub applied to every exported text file (not just the ones covered by replacements/overlays above), driven dynamically from the running machine's os.userInfo().username / os.hostname() -- never a hardcoded literal in this manifest or the script, so it stays correct if run from a different machine.",
+    "_comment": "Defense-in-depth regex scrub applied to every exported text file (not just the ones covered by replacements/overlays above). The username/hostname rules are the UNION of the running machine's os.userInfo().username / os.hostname() (dynamic, correct when export runs on the author's own machine) and the hardcoded literals in `sanitizeLiteralFallback` above (correct on any other host, e.g. CI) -- see that section's comment for why both are needed.",
     "rules": [
       { "id": "home-username-path", "description": "C:/Users/<realuser>/ or /Users/<realuser>/ or /c/Users/<realuser>/ -> <user>/", "kind": "username-path" },
       { "id": "bare-username", "description": "the real OS username as a bare word (e.g. inside a JS string literal or comment) -> <user>", "kind": "username-bare" },
