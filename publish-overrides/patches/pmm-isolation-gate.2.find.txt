@@ -1,1 +1,1 @@
-  return stripWin32TrailingDotSpace(stripWin32AdsSuffix(String(b)));
+  return core.stripWin32TrailingDotSpace(core.stripWin32AdsSuffix(String(b)));

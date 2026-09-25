@@ -1,3 +1,3 @@
-    { id: 'e2 case: lowercase c:/users/<name>', file: 'x.cjs', text: "const h = 'c:/" + U.toLowerCase() + "/exampleuser/x';", want: 'red', pattern: 'home-literal' },
-    { id: 'e2 case: upper-case C:\\USERS\\<name>', file: 'x.sh', text: 'H="C:\\' + U.toUpperCase() + '\\exampleuser"', want: 'red', pattern: 'home-literal' },
-    { id: 'e2 case: msys /c/users/<name>', file: 'x.sh', text: 'H=/c/' + U.toLowerCase() + '/exampleuser', want: 'red', pattern: 'home-literal-msys' },
+    { id: 'e2 case: lowercase c:/users/<name>', file: 'x.cjs', text: "const h = 'c:/" + U.toLowerCase() + "/jax-x/x';", want: 'red', pattern: 'home-literal' },
+    { id: 'e2 case: upper-case C:\\USERS\\<name>', file: 'x.sh', text: 'H="C:\\' + U.toUpperCase() + '\\jax-x"', want: 'red', pattern: 'home-literal' },
+    { id: 'e2 case: msys /c/users/<name>', file: 'x.sh', text: 'H=/c/' + U.toLowerCase() + '/jax-x', want: 'red', pattern: 'home-literal-msys' },

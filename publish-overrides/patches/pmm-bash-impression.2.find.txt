@@ -1,1 +1,1 @@
-  // old literal (whose basename really is the real machine's home basename, so a regression here would make this assert false
+  // old literal (whose basename really is "jax-x", so a regression here would make this assert false

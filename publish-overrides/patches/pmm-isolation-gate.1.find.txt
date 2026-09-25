@@ -1,4 +1,1 @@
-// 2026-09-24 open-core cut: this gate only ever used two pure Win32 filename-safety helpers off of
-// guards/pmm-core.cjs (the causal shadow-memory engine, moved to AxMem Pro) — extracted verbatim into
-// guards/pmm-win32-path-safety.cjs so this gate stays fully self-contained in the open-core repo.
-const { stripWin32AdsSuffix, stripWin32TrailingDotSpace } = require('./pmm-win32-path-safety.cjs');
+const core = require('./pmm-core.cjs');

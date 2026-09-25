@@ -1,1 +1,1 @@
-    line: "    report('M0 hook module already exports a working desensitize() (pre-existing, not this round\\'s work)', typeof M0.desensitize === 'function' && M0.desensitize('cat C:/Users/<user>/x \"q\"').indexOf(os.userInfo().username) < 0, '');" },
+    line: "    report('M0 hook module already exports a working desensitize() (pre-existing, not this round\\'s work)', typeof M0.desensitize === 'function' && M0.desensitize('cat C:/Users/<user>/x \"q\"').indexOf('jax-x') < 0, '');" },

@@ -1,1 +1,2 @@
-    "classes.md.example"
+    "classes.md.example",
+    "pmm-hook.cjs"

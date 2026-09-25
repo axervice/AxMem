@@ -1,1 +1,1 @@
-  "description": "Deterministic guardrails + causal shadow memory for Claude Code.",
+  "description": "Deterministic guardrails for AI coding agents (Claude Code first).",

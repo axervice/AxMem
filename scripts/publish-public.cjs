@@ -34,7 +34,12 @@ function readManifest() {
 }
 
 function git(args, opts) {
-  return execFileSync('git', args, Object.assign({ cwd: REPO_ROOT, encoding: 'utf8' }, opts || {}));
+  // -c core.autocrlf=false: git blobs in this repo are stored LF-only; `git archive` (unlike `git
+  // show`) otherwise honors a machine-local core.autocrlf=true and would silently convert every line
+  // ending to CRLF on export, corrupting every find/replace/overlay byte-comparison against the
+  // LF-stored blobs of both this commit and origin/main.
+  const fullArgs = ['-c', 'core.autocrlf=false'].concat(args);
+  return execFileSync('git', fullArgs, Object.assign({ cwd: REPO_ROOT, encoding: 'utf8' }, opts || {}));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -93,7 +98,11 @@ function step1_archiveMainToTemp() {
   const archiveTar = path.join(tmp, '.__archive.tar');
   const out = git(['archive', '--format=tar', 'main'], { encoding: 'buffer', maxBuffer: 1024 * 1024 * 512 });
   fs.writeFileSync(archiveTar, out);
-  const tarRc = spawnSync('tar', ['-xf', archiveTar, '-C', tmp], { stdio: 'inherit' });
+  // --force-local: bsdtar/Windows tar otherwise reads a "C:\..." archive path as a "host:file" remote
+  // spec because of the drive-letter colon. Forward-slash form additionally sidesteps MSYS's own
+  // backslash-argv mangling when spawning the MSYS-bundled tar.exe without a shell.
+  const toPosix = (p) => p.replace(/\\/g, '/');
+  const tarRc = spawnSync('tar', ['--force-local', '-xf', toPosix(archiveTar), '-C', toPosix(tmp)], { stdio: 'inherit' });
   if (tarRc.status !== 0) die('tar -xf failed extracting git archive output (status ' + tarRc.status + ')');
   fs.unlinkSync(archiveTar);
   return tmp;
@@ -292,8 +301,8 @@ function treeHashOfDir(exportDir) {
   // WITHOUT touching the real working tree/index of the repo (public/main stay untouched on disk).
   const tmpIndex = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-publish-idx-')), 'index');
   const env = Object.assign({}, process.env, { GIT_INDEX_FILE: tmpIndex, GIT_WORK_TREE: exportDir, GIT_DIR: path.join(REPO_ROOT, '.git') });
-  execFileSync('git', ['add', '-A'], { cwd: exportDir, env });
-  const tree = execFileSync('git', ['write-tree'], { cwd: exportDir, env, encoding: 'utf8' }).trim();
+  execFileSync('git', ['-c', 'core.autocrlf=false', 'add', '-A'], { cwd: exportDir, env });
+  const tree = execFileSync('git', ['-c', 'core.autocrlf=false', 'write-tree'], { cwd: exportDir, env, encoding: 'utf8' }).trim();
   rmrf(path.dirname(tmpIndex));
   return tree;
 }
@@ -318,6 +327,31 @@ function commitOntoPublic(exportDir, privateShortSha) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Finds an existing remote already pointed at manifest.publicRepo (the normal case in a local clone
+// set up per the task: `origin` = the public repo) so `--push` reuses it verbatim. Falls back to
+// creating a dedicated remote authenticated with $PUBLIC_REPO_TOKEN when none exists (the CI case:
+// actions/checkout's `origin` is THIS private repo, not the public one).
+function ensurePublicRemote(manifest) {
+  const target = manifest.publicRepo; // e.g. "axervice/AxMem"
+  let remotesRaw = '';
+  try { remotesRaw = git(['remote', '-v']); } catch { remotesRaw = ''; }
+  for (const line of remotesRaw.split('\n')) {
+    const m = line.match(/^(\S+)\s+(\S+)\s+\(push\)$/);
+    if (!m) continue;
+    const [, name, url] = m;
+    if (url.replace(/\.git$/i, '').toLowerCase().endsWith('/' + target.toLowerCase())) return name;
+  }
+  const dedicated = 'publish-public-target';
+  const token = process.env.PUBLIC_REPO_TOKEN;
+  const url = token
+    ? ('https://x-access-token:' + token + '@github.com/' + target + '.git')
+    : ('https://github.com/' + target + '.git');
+  try { git(['remote', 'remove', dedicated]); } catch {}
+  git(['remote', 'add', dedicated, url]);
+  log('no existing remote points at ' + target + ' -- created `' + dedicated + '`' + (token ? ' (token-authenticated)' : ''));
+  return dedicated;
+}
+
 function main() {
   const push = process.argv.includes('--push');
   const manifest = readManifest();
@@ -344,8 +378,9 @@ function main() {
     const result = commitOntoPublic(exportDir, privateShortSha);
 
     if (push) {
-      log('pushing public -> origin main');
-      git(['push', 'origin', 'public:main'], { stdio: 'inherit' });
+      const remoteName = ensurePublicRemote(manifest);
+      log('pushing public -> ' + remoteName + ' main');
+      git(['push', remoteName, 'public:main'], { stdio: 'inherit' });
     } else {
       log('--push not set: local `public` branch updated, origin NOT touched');
     }

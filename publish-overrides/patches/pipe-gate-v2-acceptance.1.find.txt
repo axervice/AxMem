@@ -1,1 +1,1 @@
-    line: "    report('desensitize() unit: bare (unquoted) C:/Users/<name>/ and /Users/<name>/ paths both lose their username', out.indexOf(os.userInfo().username) < 0 && out.indexOf('otherName') < 0 && out.indexOf('C:/Users/_/') >= 0 && out.indexOf('/Users/_/') >= 0, JSON.stringify(out));" },
+    line: "    report('desensitize() unit: bare (unquoted) C:/Users/<name>/ and /Users/<name>/ paths both lose their username', out.indexOf('jax-x') < 0 && out.indexOf('otherName') < 0 && out.indexOf('C:/Users/_/') >= 0 && out.indexOf('/Users/_/') >= 0, JSON.stringify(out));" },
