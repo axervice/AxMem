@@ -39,6 +39,26 @@ if [ "${1:-}" = "--self-test" ]; then
   # of every later `cd ... && pwd` route through the SAME canonicalization
   # path, so they agree.
   T="$(cygpath -m "$T" 2>/dev/null || printf '%s' "$T")"
+  # [Builder W9, 2026-09-24] CI hardening: GH Actions windows-latest reported
+  # 6/8 on this self-test (run 36083001021) while every TMPDIR/HOME variant
+  # this file's own M6 fix already covers (see the cygpath -m note above)
+  # reproduces 8/8 on a normal dev machine. One documented, hosted-runner-
+  # specific gap the M6 fix does NOT cover: git >= 2.35.2's "detected
+  # dubious ownership in repository at ..." refusal, which some Windows
+  # runner ACL/ownership configurations trigger even for a directory the
+  # current process itself just mkdir'd (a known class of GH Actions
+  # flakiness, unrelated to path-form duplicity). A refusal here would break
+  # git config/add/commit/diff for the REST of this fixture, and because
+  # this fixture mixes "expect exit 0" (green) and "expect exit != 0" (red)
+  # assertions, a blanket git failure does not fail cleanly — some red cases
+  # would accidentally read as passing while green cases correctly fail,
+  # landing on a partial count instead of 0/8 or 8/8, which matches the
+  # observed 6/8 shape. Isolate this fixture's OWN --global config to a
+  # scratch file next to $T (GIT_CONFIG_GLOBAL, git >= 2.32) so this can
+  # never fire here regardless of host ACLs, without ever touching the real
+  # ~/.gitconfig or system git identity.
+  export GIT_CONFIG_GLOBAL="$T.selftest-gitconfig"
+  git config --global --add safe.directory "$T" 2>/dev/null || true
   M="$T/mem"; mkdir -p "$M"
   # AXMEM_STATE_DIR sandboxed here too (canary-poisoning note, same class as
   # the entry-length guard's documented incident): the E2 block below invokes
@@ -54,23 +74,39 @@ if [ "${1:-}" = "--self-test" ]; then
   ( cd "$T" && git add -A && git commit -qm base ) >/dev/null 2>&1
   g() { ( cd "$T" && git add -A ) >/dev/null 2>&1; AXMEM_MEMORY_DIR="$M" AXMEM_GIT_DIR="$T" AXMEM_STATE_DIR="$ST" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; }
   ok=0
+  fails=""
+  # [Builder W9, 2026-09-24] Per-case labeling (was: a single silent
+  # ok=$((ok+1)) per case, giving only a bare N/8 with zero indication of
+  # WHICH case(s) failed). GH Actions windows-latest reported 6/8 with no
+  # way to tell which 2 of the 8 broke — bin/axmem's driver already dumps
+  # this whole self-test's stdout on any nonzero exit (see its `sed`-indent
+  # of $_st_out), so labeling failures here makes the NEXT red run
+  # (if any) actionable from the CI log alone instead of requiring a
+  # from-scratch repro.
+  expect() { # $1=case label, $2=nonzero|zero (what `rc` should be)
+    if { [ "$2" = "nonzero" ] && [ "$rc" -ne 0 ]; } || { [ "$2" = "zero" ] && [ "$rc" -eq 0 ]; }; then
+      ok=$((ok+1))
+    else
+      fails="${fails}  case failed: $1 (expected rc $2, got $rc)\n"
+    fi
+  }
   # 1 red: delete without archiving
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n\n## Entries\n\n**2026-01-01 — keep** [a:keep]\nb\n' > "$M/lessons.md"
-  g; [ $? -ne 0 ] && ok=$((ok+1))
+  g; rc=$?; expect "1 red: delete without archiving" nonzero
   # 2 green: verbatim archived
   printf '# archive\n\n**2026-01-02 — doomed** [a:doomed]\nb\n' > "$M/lessons-archive.md"
-  g && ok=$((ok+1))
+  g; rc=$?; expect "2 green: verbatim archived" zero
   ( cd "$T" && git commit -qm step ) >/dev/null 2>&1
   # 3 green: title rewrite (tag still leads an entry) must not be blocked
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n\n## Entries\n\n**2026-01-01 — keep reworded** [a:keep]\nb\n' > "$M/lessons.md"
-  g && ok=$((ok+1))
+  g; rc=$?; expect "3 green: title rewrite" zero
   ( cd "$T" && git commit -qm step2 ) >/dev/null 2>&1
   # 4 red (escape 3): deleted title carries a bare [sole-record]-style token that
   #   another live title also carries — must still be treated as retirement
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n- 2026-01-03 [a:vic] v\n\n## Entries\n\n**2026-01-01 — keep [sole-record]** [a:keep]\nb\n\n**2026-01-03 — victim [sole-record] note** [a:vic]\nb\n' > "$M/lessons.md"
   ( cd "$T" && git add -A && git commit -qm base3 ) >/dev/null 2>&1
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n\n## Entries\n\n**2026-01-01 — keep [sole-record]** [a:keep]\nb\n' > "$M/lessons.md"
-  g; [ $? -ne 0 ] && ok=$((ok+1))
+  g; rc=$?; expect "4 red (escape 3): bare [sole-record] token shared with a live title" nonzero
   # 5 red: title-only placeholder in archive (the body must move too)
   ( cd "$T" && git add -A && git commit -qm b5 ) >/dev/null 2>&1
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n- 2026-01-06 [a:body] v\n\n## Entries\n\n**2026-01-01 — keep [sole-record]** [a:keep]\nb\n\n**2026-01-06 — body entry** [a:body]\nreal body line one\nreal body line two\n' > "$M/lessons.md"
@@ -78,7 +114,7 @@ if [ "${1:-}" = "--self-test" ]; then
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n\n## Entries\n\n**2026-01-01 — keep [sole-record]** [a:keep]\nb\n' > "$M/lessons.md"
   printf '# archive\n\n**2026-01-02 — doomed** [a:doomed]\nb\n\n**2026-01-06 — body entry** [a:body]\n' > "$M/lessons-archive.md"
   ( cd "$T" && git add -A ) >/dev/null 2>&1
-  g; [ $? -ne 0 ] && ok=$((ok+1))
+  g; rc=$?; expect "5 red: title-only placeholder in archive" nonzero
   # 6 red (escape E1): delete the vic entry while another LIVE title's PROSE
   #   mentions [a:vic] (e.g. a hand-written back-reference) — a substring scan
   #   across header lines would find the tag "present" and wave the deletion
@@ -88,14 +124,14 @@ if [ "${1:-}" = "--self-test" ]; then
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n- 2026-01-07 [a:vic] v\n\n## Entries\n\n**2026-01-01 — keep mentions [a:vic] in the title** [a:keep]\nb\n\n**2026-01-07 — vic** [a:vic]\nvic body\n' > "$M/lessons.md"
   ( cd "$T" && git add -A && git commit -qm baseE1b ) >/dev/null 2>&1
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n\n## Entries\n\n**2026-01-01 — keep mentions [a:vic] in the title** [a:keep]\nb\n' > "$M/lessons.md"
-  g; [ $? -ne 0 ] && ok=$((ok+1))
+  g; rc=$?; expect "6 red (escape E1): live title's prose mentions the deleted tag" nonzero
   # 7 red (E2): a write that bypasses Edit/Write hooks entirely (a raw file
   #   write, as sed/echo>> would produce) must still be caught at the commit
   #   boundary by running the full write-gate over the staged snapshot —
   #   here an orphan date-list block outside any Index.
   ( cd "$T" && git add -A && git commit -qm baseE2 ) >/dev/null 2>&1
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n\n## Entries\n\n**2026-01-01 — keep mentions [a:vic] in the title** [a:keep]\nb\n\n- 2026-01-09 orphan date-list block, never a proper entry\n' > "$M/lessons.md"
-  g; [ $? -ne 0 ] && ok=$((ok+1))
+  g; rc=$?; expect "7 red (E2): orphan date-list block bypassing Edit/Write hooks" nonzero
   # 8 green (lesson-class taxonomy, classes.md in the E2 snapshot): a NEW
   #   lessons.md entry references a class defined ONLY in a classes.md
   #   staged in this SAME commit. If the snapshot used a fixed file list
@@ -105,9 +141,16 @@ if [ "${1:-}" = "--self-test" ]; then
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n\n## Entries\n\n**2026-01-01 — keep mentions [a:vic] in the title** [a:keep]\nb\n' > "$M/lessons.md"
   printf '**2026-09-14 — Class: alpha** [class:alpha]\nCriterion: x\n' > "$M/classes.md"
   printf '## Index\n\n- 2026-01-01 [a:keep] k\n- 2026-01-10 [a:classy] c\n\n## Entries\n\n**2026-01-01 — keep mentions [a:vic] in the title** [a:keep]\nb\n\n**2026-01-10 — classy** [a:classy]\nClass: [[class:alpha]]\nb\n' > "$M/lessons.md"
-  g && ok=$((ok+1))
-  rm -rf "$T"
-  if [ "$ok" -eq 8 ]; then echo "precommit-gate self-test 8/8"; exit 0; else echo "precommit-gate self-test $ok/8 FAIL"; exit 1; fi
+  g; rc=$?; expect "8 green: new entry's class defined in a same-commit classes.md" zero
+  rm -rf "$T" "$T.selftest-gitconfig"
+  if [ "$ok" -eq 8 ]; then
+    echo "precommit-gate self-test 8/8"
+    exit 0
+  else
+    printf '%b' "$fails"
+    echo "precommit-gate self-test $ok/8 FAIL"
+    exit 1
+  fi
 fi
 
 GDIR="${AXMEM_GIT_DIR:-$AXMEM_MEMORY_DIR}"
