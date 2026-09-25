@@ -3,6 +3,56 @@
 set -u
 BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$BIN")"
+
+# [Builder W9, 2026-09-24] `selftest` fail-closed self-isolation: a bare
+# `npm run selftest` / `bash bin/axmem selftest` with no isolation env vars
+# set must NEVER write into the real $HOME/.axmem (a prior round, W8,
+# proved exactly this class of mistake — an un-isolated self-test run
+# silently wrote a real, live home directory). This check runs BEFORE
+# lib/prelude.sh is sourced below on purpose: prelude.sh's own trailing
+# `mkdir -p "$AXMEM_STATE_DIR"` is an unconditional side effect on every
+# single invocation, so detecting the problem only after sourcing it would
+# already be too late to prevent it. Heuristic: HOME and any of
+# AXMEM_HOME/AXMEM_MEMORY_DIR/AXMEM_STATE_DIR that are explicitly set must
+# all already live under the OS temp dir (the convention every isolated
+# caller in this repo — CI's workflow, this file's own test harnesses, the
+# builder-mandated manual-run prefix — already uses); if any of them
+# doesn't, self-isolate under a freshly minted temp HOME instead of
+# proceeding. AXMEM_SELFTEST_ISOLATED=1 is this script's own re-exec
+# sentinel (not a caller-facing opt-out) — it exists solely to make the
+# single re-exec below terminate deterministically instead of depending on
+# the prefix check matching its own freshly-normalized path exactly.
+if [ "${1:-}" = "selftest" ] && [ "${AXMEM_SELFTEST_ISOLATED:-}" != "1" ]; then
+  _w9_systmp="${TMPDIR:-${TEMP:-${TMP:-/tmp}}}"
+  _w9_systmp="$(cd "$_w9_systmp" 2>/dev/null && pwd || printf '%s' "$_w9_systmp")"
+  _w9_isolated=1
+  case "${HOME:-}" in
+    "$_w9_systmp"*) : ;;
+    *) _w9_isolated=0 ;;
+  esac
+  for _w9_v in "${AXMEM_HOME:-}" "${AXMEM_MEMORY_DIR:-}" "${AXMEM_STATE_DIR:-}"; do
+    if [ -n "$_w9_v" ]; then
+      case "$_w9_v" in
+        "$_w9_systmp"*) : ;;
+        *) _w9_isolated=0 ;;
+      esac
+    fi
+  done
+  if [ "$_w9_isolated" -ne 1 ]; then
+    _w9_iso="$(mktemp -d)"
+    _w9_iso="$(cygpath -m "$_w9_iso" 2>/dev/null || printf '%s' "$_w9_iso")"
+    echo "axmem selftest: no isolated HOME detected (fail-closed) — self-isolating under $_w9_iso so the real home is never touched" >&2
+    exec env \
+      HOME="$_w9_iso" USERPROFILE="$_w9_iso" PMM_HOME="$_w9_iso" \
+      AXMEM_HOME="$_w9_iso/.axmem" \
+      AXMEM_MEMORY_DIR="$_w9_iso/mem" \
+      AXMEM_STATE_DIR="$_w9_iso/state" \
+      AXMEM_CONFIG="$_w9_iso/axmem.json" \
+      AXMEM_SELFTEST_ISOLATED=1 \
+      bash "$BIN/axmem" selftest
+  fi
+fi
+
 . "$ROOT/lib/prelude.sh"
 
 # D1 (P1 2.1, 2026-09-16): adapters.hermes.memory_md is RETIRED — AxMem never
