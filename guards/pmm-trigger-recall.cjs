@@ -171,11 +171,28 @@ fp = fp.replace(/\\/g, '/');
 fp = fp.replace(/^([A-Za-z]):\//, (m, d) => d.toLowerCase() + ':/');
 const lower = fp.toLowerCase();
 let repo = null, rel = null;
-const axIdx = lower.lastIndexOf('/axervice-booking/');
-if (axIdx >= 0) {
-  repo = 'axervice-booking';
-  rel = fp.slice(axIdx + '/axervice-booking/'.length);
-} else if (lower.startsWith(HOME.toLowerCase() + '/')) {
+// [Builder W9, 2026-09-24] PMM_REPO_MARKERS: comma-separated repo directory
+// names this hook recognizes by path substring, beyond `home` (was a single
+// hardcoded real personal-project directory name -- a deployment detail
+// that had no business being a literal in shipped guard logic, and would
+// have leaked into the public export verbatim). Empty by default (matches
+// this pass's other two env-parameterized guard hardcodes,
+// PMM_SECOND_REPO_DIR and PMM_POINTER_EXTRA_ROOTS, per the same README
+// note) -- with no markers configured, only `repo=home` (below) is ever
+// recognized. First marker whose `/<marker>/` substring appears wins, same
+// last-substring-match semantics the single hardcoded case used to have.
+const REPO_MARKERS = String(process.env.PMM_REPO_MARKERS || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+for (const marker of REPO_MARKERS) {
+  const markerLower = marker.toLowerCase();
+  const idx = lower.lastIndexOf('/' + markerLower + '/');
+  if (idx >= 0) {
+    repo = marker;
+    rel = fp.slice(idx + markerLower.length + 2); // +2: the two '/' either side of the marker
+    break;
+  }
+}
+if (!repo && lower.startsWith(HOME.toLowerCase() + '/')) {
   repo = 'home';
   rel = fp.slice(HOME.length + 1);
 }
@@ -233,7 +250,7 @@ if ((tool === 'Edit' || tool === 'MultiEdit') && repo === 'home' && relLower.ind
 // written to any column, so an external verifier (the G11 runner) could never recompute
 // impression_id from the ledger row alone. Pinned inputs to the formula (so an external recompute
 // is deterministic): `repo` is exactly the string this trigger engine resolved above ('home' or
-// 'axervice-booking' -- never a filesystem path); `rel` is the path relative to THAT repo's root,
+// one of PMM_REPO_MARKERS -- never a filesystem path); `rel` is the path relative to THAT repo's root,
 // forward-slashed (fp already had backslashes normalized above), with no leading './' (it is a
 // direct String.slice() right after the repo-root prefix, which structurally cannot produce one).
 // The hash itself is carried in run_provenance as an appended `inst:<sha16>` tag (suppressed rows'

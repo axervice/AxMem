@@ -5,6 +5,8 @@
   "publicRepo": "axervice/AxMem",
   "publicBranch": "public",
   "sourceBranch": "main",
+  "history": "orphan",
+  "_comment_history": "2026-09-25 Jax ruling: `public`'s original two commits (built before this manifest/pipeline existed) carried un-sanitized content and had to disappear from reachable history entirely -- not just get overwritten in a new commit's working tree. Every commitOntoPublic() call is therefore a single parentless (orphan) commit; `public`'s history is always exactly 1 commit deep, never a chain. Idempotency is unaffected -- it was already tree-hash-only, never parent-based (see commitOntoPublic's IDEMPOTENT check). Overridable per-invocation via the --orphan CLI flag, but this field is the standing default so an ordinary `node scripts/publish-public.cjs` run (no flags) still rebuilds an orphan commit, not a chain.",
   "_comment_source": "Reverse-engineered 2026-09-24 from the diff between public origin/main (592c4c3) and pre-cut-release (b862900). Every path below either appears as an add-only ('A') entry in `git diff --name-status 592c4c3 pre-cut-release` (exclude list) or as a modified ('M') / deleted-from-592c4c3 ('D', i.e. add-back) entry that needed a transform to reproduce 592c4c3's exact content.",
 
   "exclude": [
@@ -60,7 +62,13 @@
     "guards/specs/ROUND14-SCHEMA-SPEC-v2.PAUSED.md",
     "guards/specs/TARGET-SPEC-V3.md",
     "guards/specs/retrieval-canary-v2.tsv",
-    "guards/fixtures/v3/**"
+    "guards/fixtures/v3/**",
+
+    "docs/BACKLOG.md",
+    "docs/audits/**",
+    "guards/specs/PIPE-GATE-BRIEF.md",
+    "guards/specs/PIPE-GATE-V2-REPAIR-BRIEF.md",
+    "_comment_INTERNAL_TRACES: 2026-09-24 Jax ruling -- internal work-tracking/review-brief material with no free-tier value: the private backlog, the full docs/audits/ review-report tree, and the two guards/specs/ pipe-gate review briefs (contract JSON files and M-SPEC docs under guards/specs/ are kept -- e.g. isolation-gate-contract.json, RECALL-LOOP-M-SPEC.md, pipe-gate-v2-*.json -- those are technical references shipped code/comments actually cite, not review narrative)"
   ],
   "excludeExceptions": [
     "guards/fixtures/v3/trigger-write-gate-probe.cjs"
@@ -76,7 +84,8 @@
     "README.md": "README.public.md",
     "README.zh.md": "README.zh.public.md",
     "guards/guard-canary.sh": "publish-overrides/guards/guard-canary.sh",
-    "guards/specs/isolation-gate-contract.json": "publish-overrides/guards/specs/isolation-gate-contract.json"
+    "guards/specs/isolation-gate-contract.json": "publish-overrides/guards/specs/isolation-gate-contract.json",
+    "CHANGELOG.md": "CHANGELOG.public.md"
   },
 
   "replacements": [
@@ -120,12 +129,13 @@
       { "id": "hostname", "description": "the real machine hostname -> <mach>", "kind": "hostname" },
       { "id": "lan-ip", "pattern": "192\\.168\\.1\\.151", "flags": "g", "replace": "10.0.0.1" },
       { "id": "d-rag-path", "pattern": "D:[\\\\/]RAG", "flags": "gi", "replace": "D:/example-project" },
-      { "id": "desktop-axervice-booking-real-path", "description": "Desktop\\axervice-booking or Desktop/axervice-booking, ONLY when immediately preceded by a real absolute-path username segment (not a $VAR reference and not an already-redacted <user> placeholder) -- deliberately scoped so it does NOT touch the pre-existing, already-public $HOMEW/Desktop/axervice-booking test fixtures in guards/pmm-trigger-recall.sh or the already-<user>-redacted mention in docs/audits/SURVEY-2026-09-17-live-vs-product.md (both byte-identical to today's origin/main; touching them would break the byte-identity gate over content Jax already accepted as public).", "kind": "desktop-axervice-booking-scoped" }
+      { "id": "axervice-booking-repo-name", "description": "2026-09-25 Jax ruling -- ANY occurrence of the real personal-project directory name 'axervice-booking' (not just inside a real absolute path -- also test-fixture repo= values, comments, etc.) -> 'example-project'. Supersedes and replaces the old narrower 'desktop-axervice-booking-real-path' rule (username-redaction there is already covered by home-username-path above; this rule now handles the project-name half unconditionally). KNOWN INTENTIONAL divergence from today's origin/main (592c4c3), which still ships the OLD narrow-scoped behavior (byte-identical test fixture text in guards/pmm-trigger-recall.sh) -- see knownDivergencesFromCurrentOriginMain below. The private source fixtures themselves were also renamed to 'example-project' directly (guards/pmm-trigger-recall.cjs/.sh, guards/fixtures/v3/trigger-write-gate-probe.cjs), so this rule is now defense-in-depth, not the primary mechanism.", "pattern": "axervice-booking", "flags": "g", "replace": "example-project" },
+      { "id": "author-first-name", "description": "2026-09-25 Jax ruling -- the maintainer's bare first name 'Jax' (word-boundary match, so it never touches an already-mapped compound like a 'JaxStuuu'-style hostname, which the dynamic hostname rule above already handles) -> 'the maintainer'. Deliberately a hardcoded literal, unlike every other rule here -- 'Jax' is a personal name embedded in prose/comments across the tree, not derivable from any os.userInfo()/os.hostname() API the way the dynamic rules are.", "pattern": "\\bJax\\b", "flags": "g", "replace": "the maintainer" }
     ]
   },
 
   "gates": {
-    "residualScanPatterns": ["home-username-path", "bare-username", "hostname", "lan-ip", "d-rag-path", "desktop-axervice-booking-real-path"],
+    "residualScanPatterns": ["home-username-path", "bare-username", "hostname", "lan-ip", "d-rag-path", "axervice-booking-repo-name", "author-first-name"],
     "installLayoutSelfTest": {
       "guard": "pmm-isolation-gate.cjs",
       "args": ["--self-test", "--contract", "specs/isolation-gate-contract.json"],
@@ -141,6 +151,9 @@
 
   "knownDivergencesFromCurrentOriginMain": [
     "docs/P2-CC-PERFECT-SPEC.md (now excluded per 2026-09-24 Jax ruling; current origin/main still ships an older, unexcluded copy -- see exclude[] comment above)",
-    "lib/msys-path.cjs, lib/atomic-write.cjs, adapters/claude-code/merge-hooks.cjs, lib/VENDOR.md (W7 fixes on pre-cut-release not yet in origin/main -- see build report for whether these are new-vs-592c4c3 or already-identical)"
+    "lib/msys-path.cjs, lib/atomic-write.cjs, adapters/claude-code/merge-hooks.cjs, lib/VENDOR.md (W7 fixes on pre-cut-release not yet in origin/main -- see build report for whether these are new-vs-592c4c3 or already-identical)",
+    "guards/pmm-trigger-recall.sh test fixtures (2026-09-25 Jax ruling: 'axervice-booking' -> 'example-project' blanket rename, plus the new 'author-first-name' Jax->the-maintainer rule; current origin/main still ships the old, unrenamed fixture text and author name -- see sanitize.rules comments above)",
+    "docs/BACKLOG.md, docs/audits/**, guards/specs/PIPE-GATE-BRIEF.md, guards/specs/PIPE-GATE-V2-REPAIR-BRIEF.md (newly excluded per 2026-09-25 Jax ruling as internal work-tracking/review material; current origin/main still ships them)",
+    "CHANGELOG.md (now overlaid with CHANGELOG.public.md's short public-facing entries per 2026-09-25 Jax ruling; current origin/main still ships the full internal engineering-diary CHANGELOG.md verbatim)"
   ]
 }

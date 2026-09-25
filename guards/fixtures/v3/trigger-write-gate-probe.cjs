@@ -114,7 +114,7 @@ function winPath(memDir, base) { return memDir.replace(/\//g, '\\') + '\\' + bas
     tool_input: {
       file_path: winPath(mem, 'lessons.md'),
       old_string: 'ANCHOR',
-      new_string: 'ANCHOR\n**2026-01-03 — n** [test:glob-ok]\n<!-- trigger: tool=Edit|Write; repo=axervice-booking; path=src/lib/**/*lock* -->\nbody\n',
+      new_string: 'ANCHOR\n**2026-01-03 — n** [test:glob-ok]\n<!-- trigger: tool=Edit|Write; repo=example-project; path=src/lib/**/*lock* -->\nbody\n',
     },
   }, mem);
   ok('Edit + 合法多 token glob trigger → 不 DENY', !isDenied(r.out), 'code=' + r.code + ' out=' + r.out.slice(0, 200));

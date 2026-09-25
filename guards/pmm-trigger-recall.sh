@@ -112,7 +112,14 @@ process.stdout.write(ledger.sha16(process.argv[2] + ledger.NUL + (process.argv[3
   run_dut_custom() {
     local mem="$1" state="$2" log="$3" root="$4" base="$5" payload="$6" tmo="${7:-60}"
     selftest_iso_env "$base"
-    export PMM_TRIGGER_MEM="$mem" PMM_TRIGGER_STATE="$state" PMM_TRIGGER_LOG="$log" PMM_RECALL_ROOT="$root"
+    # [Builder W9, 2026-09-24] PMM_REPO_MARKERS=example-project: the fixtures below that exercise
+    # repo!=home matching (cases 3/12/13) used to rely on pmm-trigger-recall.cjs's own hardcoded
+    # real-project-name literal; that hardcode is gone (see pmm-trigger-recall.cjs), so this DUT
+    # entry now supplies the SAME marker the fixtures reference via the env knob the production code
+    # reads instead. selftest_iso_env just wildcard-unset every PMM_* var above, so this is the only
+    # place it needs setting — every run_dut/run_dut_custom-based case gets it uniformly; the one case
+    # that must NOT see any PMM_* at all (30, via run_dut_bare_redirect) never calls this function.
+    export PMM_TRIGGER_MEM="$mem" PMM_TRIGGER_STATE="$state" PMM_TRIGGER_LOG="$log" PMM_RECALL_ROOT="$root" PMM_REPO_MARKERS="example-project"
     printf '%s' "$payload" | timeout "$tmo" node "$G/pmm-trigger-recall.cjs"  # DUT-ENTRY
   }
   # run_dut <base> <payload> [timeout_secs=60] — 标准入口:mem/state/log/root 全部用 <base> 的默认
@@ -143,15 +150,17 @@ process.stdout.write(ledger.sha16(process.argv[2] + ledger.NUL + (process.argv[3
   # TW(2026-09-23,A3-尾-3):$T 现在**同时**是 run_dut() 对"标准"用例(repo=home 匹配)的 HOME 落点——
   # run_dut 会把 HOME/USERPROFILE/PMM_HOME 都钉在它的第一个参数上,所以任何靠"file_path 前缀等于
   # resolveHome() 的结果"来命中 repo=home 的夹具,前缀必须用 $TW(= cygpath -m "$T"),不能再用
-  # $HOMEW(那是外层环境本身的家目录,和 run_dut 传的 base 是两个不同的目录)。repo=axervice-booking
-  # 的夹具(3/4/12/13)靠路径里 `/axervice-booking/` 子串匹配,与 HOME 无关,继续用 $HOMEW 没有影响。
+  # $HOMEW(那是外层环境本身的家目录,和 run_dut 传的 base 是两个不同的目录)。repo=example-project
+  # 的夹具(3/12/13,经 PMM_REPO_MARKERS=example-project)靠路径里 `/example-project/` 子串匹配,与
+  # HOME 无关,继续用 $HOMEW 没有影响;case 4 是反例,故意用一个不在 PMM_REPO_MARKERS 里的
+  # `unrelated-repo` 占位,证明不会 basename/跨仓误配。
   TW="$(cygpath -m "$T")"
   {
     printf '%s\n' '**2026-01-01 — 测试教训甲** [test:trig-alpha]'
     printf '%s\n' '<!-- trigger: tool=Edit|Write; repo=home; path=.claude/guards/* -->'
     printf '%s\n' 'body'
     printf '%s\n' '**2026-01-02 — 测试教训乙(精确路径)** [test:trig-beta]'
-    printf '%s\n' '<!-- trigger: tool=Write; repo=axervice-booking; path=.github/workflows/ci.yml -->'
+    printf '%s\n' '<!-- trigger: tool=Write; repo=example-project; path=.github/workflows/ci.yml -->'
     printf '%s\n' 'body'
   } > "$T/mem/lessons.md"
   : > "$T/mem/decisions.md"; : > "$T/mem/standinginstructions.md"
@@ -185,10 +194,10 @@ process.stdout.write(ledger.sha16(process.argv[2] + ledger.NUL + (process.argv[3
   out="$(run '{"session_id":"test:s1","tool_name":"Edit","tool_input":{"file_path":"'"$TW"'/.claude/guards/y.sh"}}')"
   [ -z "$out" ] && ok=$((ok+1))
   # 3 worktree 物理根归一:仓库相对路径照样命中精确 trigger
-  out="$(run '{"session_id":"test:s2","tool_name":"Write","tool_input":{"file_path":"'"$HOMEW"'/Desktop/axervice-booking/.claude/worktrees/kj/.github/workflows/ci.yml"}}')"
+  out="$(run '{"session_id":"test:s2","tool_name":"Write","tool_input":{"file_path":"'"$HOMEW"'/Desktop/example-project/.claude/worktrees/kj/.github/workflows/ci.yml"}}')"
   printf '%s' "$out" | grep -q 'test:trig-beta' && ok=$((ok+1))
-  # 4 负例:同名文件在别的仓不匹配(禁 basename 兜底)
-  out="$(run '{"session_id":"test:s3","tool_name":"Write","tool_input":{"file_path":"D:/example-project/.github/workflows/ci.yml"}}')"
+  # 4 负例:同名文件在别的仓不匹配(禁 basename 兜底)—— unrelated-repo 故意不在 PMM_REPO_MARKERS 里
+  out="$(run '{"session_id":"test:s3","tool_name":"Write","tool_input":{"file_path":"D:/unrelated-repo/.github/workflows/ci.yml"}}')"
   [ -z "$out" ] && ok=$((ok+1))
   # 5 坏输入 fail-open
   out="$(run_dut "$T" 'not-json'; echo "rc=$?")"
@@ -278,17 +287,17 @@ fs.writeFileSync(p,s);" "$T/mem/lessons.md"
   T5="$(mktemp -d)"; mkdir -p "$T5/mem/dreams" "$T5/state" "$T5/ledger"
   {
     printf '%s\n' '**2026-01-01 — 测试教训戊(中段通配)** [test:trig-epsilon]'
-    printf '%s\n' '<!-- trigger: tool=Edit|Write; repo=axervice-booking; path=src/lib/**/*lock* -->'
+    printf '%s\n' '<!-- trigger: tool=Edit|Write; repo=example-project; path=src/lib/**/*lock* -->'
     printf '%s\n' 'body'
   } > "$T5/mem/lessons.md"
   : > "$T5/mem/decisions.md"; : > "$T5/mem/standinginstructions.md"
-  out="$(run_dut "$T5" '{"session_id":"test:s12","tool_name":"Edit","tool_input":{"file_path":"'"$HOMEW"'/Desktop/axervice-booking/src/lib/appointments/resource-lock.ts"}}')"
+  out="$(run_dut "$T5" '{"session_id":"test:s12","tool_name":"Edit","tool_input":{"file_path":"'"$HOMEW"'/Desktop/example-project/src/lib/appointments/resource-lock.ts"}}')"
   printf '%s' "$out" | grep -q 'test:trig-epsilon' && ok=$((ok+1))
   # 13 glob HIGH-1 反例(2026-09-15,FABLE-2026-09-15-glob-review-triage.md finding 1,端到端):同一条
   #    src/lib/**/*lock* trigger,编辑一个 lock 只出现在【目录名】、文件名里完全不含 lock 的路径,必须
   #    不推送——这正是 HIGH-1 的实证场景(src/lib/lock-cache/unrelated.ts),修前旧的「末尾 * 跨段」
   #    实现会让 .* 吃穿 / 而误判命中。
-  out="$(run_dut "$T5" '{"session_id":"test:s13","tool_name":"Edit","tool_input":{"file_path":"'"$HOMEW"'/Desktop/axervice-booking/src/lib/lock-cache/unrelated.ts"}}')"
+  out="$(run_dut "$T5" '{"session_id":"test:s13","tool_name":"Edit","tool_input":{"file_path":"'"$HOMEW"'/Desktop/example-project/src/lib/lock-cache/unrelated.ts"}}')"
   [ -z "$out" ] && ok=$((ok+1))
   # 14 R-4 fix(2026-09-15 round 3,guards/audits/OPUS-2026-09-15-round2-review.md「R-4」):缩进的
   #    trigger 注释——读侧(classifyTriggerLine)完全看不见它(TRIGGERISH_RE 要求 <!-- 在行首),

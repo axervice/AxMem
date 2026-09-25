@@ -197,10 +197,19 @@ function buildSanitizeRules() {
     { id: 'hostname', re: new RegExp('\\b' + hostEsc + '\\b', 'g'), replace: '<mach>' },
     { id: 'lan-ip', re: /192\.168\.1\.151/g, replace: '10.0.0.1' },
     { id: 'd-rag-path', re: /D:[\\/]RAG/gi, replace: 'D:/example-project' },
-    // Scoped: only a REAL absolute path (drive letter or /c/ mount) with the REAL username segment
-    // right before Desktop -- never touches $HOMEW-style shell vars or already-<user> placeholder text
-    // that origin/main already ships byte-identical (see manifest sanitize.rules comment).
-    { id: 'desktop-axervice-booking-real-path', re: new RegExp('((?:[A-Za-z]:[\\\\/]|/[a-z]/)Users[\\\\/])' + userEsc + '([\\\\/]Desktop[\\\\/])axervice-booking', 'g'), replace: '$1<user>$2example-project' },
+    // [Builder W9, 2026-09-25] Blanket rename, ANY occurrence -- not just inside a real absolute
+    // path. Supersedes the old narrower 'desktop-axervice-booking-real-path' rule (username-redaction
+    // there is already covered by home-username-path above; this rule now handles the project-name
+    // half unconditionally, including test-fixture repo= values and comments). The private source
+    // fixtures were also renamed directly (guards/pmm-trigger-recall.cjs/.sh, guards/fixtures/v3/
+    // trigger-write-gate-probe.cjs), so this is defense-in-depth, not the primary mechanism. KNOWN
+    // INTENTIONAL divergence from today's origin/main -- see manifest knownDivergencesFromCurrentOriginMain.
+    { id: 'axervice-booking-repo-name', re: /axervice-booking/g, replace: 'example-project' },
+    // Deliberately a hardcoded literal, unlike every other rule here -- 'Jax' is a personal name
+    // embedded in prose/comments across the tree, not derivable from any os.userInfo()/os.hostname()
+    // API. Word-boundary match so it never touches an already-mapped compound like a
+    // 'JaxStuuu'-style hostname (the dynamic hostname rule above already handles that).
+    { id: 'author-first-name', re: /\bJax\b/g, replace: 'the maintainer' },
   ];
 }
 
