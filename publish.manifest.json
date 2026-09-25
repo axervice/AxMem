@@ -17,6 +17,9 @@
     "docs/P2-CC-PERFECT-SPEC.md",
     "_comment_P2: 2026-09-24 Jax ruling -- this internal build spec (private product roadmap, mentions the paid-tier causal-memory core cluster) is not free-tier material, excluded outright not just sanitized. KNOWN INTENTIONAL divergence from today's origin/main (592c4c3), which still ships an older, unexcluded copy of this file -- byte-diff gate special-cases it, see knownDivergencesFromCurrentOriginMain below.",
 
+    "docs/NORTH-STAR.md",
+    "_comment_NORTHSTAR: 2026-09-24 Jax ruling -- the permanent, uncompressed record of AxMem's founding intent, moat, business model (including the paid AxMem Pro tier) and North Star metric. Private-repo-only by design, same as docs/P2-CC-PERFECT-SPEC.md above.",
+
     "guards/pmm-core.cjs",
     "guards/pmm-core.sh",
     "guards/pmm-core-selftest.cjs",
