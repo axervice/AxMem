@@ -1,0 +1,56 @@
+name: publish-public
+
+# Exports `main` to the free-tier public repo (axervice/AxMem) via scripts/publish-public.cjs.
+#
+# Two ways to run:
+#   - workflow_dispatch: always runs, regardless of publish.manifest.json's "auto" field.
+#   - push to main: only actually publishes when publish.manifest.json has "auto": true. Until Jax
+#     flips that flag, a push still triggers the workflow but the publish step is skipped -- this lets
+#     the workflow be exercised/reviewed without live-publishing on every push.
+#
+# Requires a repo secret PUBLIC_REPO_TOKEN: a PAT (classic, `repo` scope, or a fine-grained token with
+# contents:write) belonging to an account with push access to axervice/AxMem, set on THIS repo
+# (axervice/AxMem-dev) under Settings -> Secrets and variables -> Actions. See README.md's
+# "Maintenance mode" section.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Decide whether to publish
+        id: gate
+        run: |
+          AUTO=$(node -e "console.log(require('./publish.manifest.json').auto === true)")
+          echo "auto=$AUTO" >> "$GITHUB_OUTPUT"
+          if [ "$AUTO" != "true" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "publish.manifest.json has auto=false and this is a push trigger -- skipping publish. Use workflow_dispatch to force a run."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: git identity for commit-tree
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          git config user.name "AxMem publish bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Export, gate, and publish
+        if: steps.gate.outputs.run == 'true'
+        env:
+          PUBLIC_REPO_TOKEN: ${{ secrets.PUBLIC_REPO_TOKEN }}
+        run: node scripts/publish-public.cjs --push

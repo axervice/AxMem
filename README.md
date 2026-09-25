@@ -169,6 +169,30 @@ an excellent Claude Code memory plugin by NominexHQ (PolyForm Noncommercial).
 that works with any markdown-file memory convention. PMM remains a great
 choice for the storage/save layer underneath.
 
+## Maintenance mode
+
+This private repo (`dev` remote) is the single source of truth. Only `main`
+here gets edited by hand. The free/open-core tier
+([axervice/AxMem](https://github.com/axervice/AxMem), `public` branch here,
+tracking its `origin/main`) is a mechanical export, never edited directly.
+
+`npm run publish:public` runs `scripts/publish-public.cjs`: it archives
+`main`'s tree, applies `publish.manifest.json` (exclude / add / overlay /
+literal-patch / sanitize), runs three gates (residual PII scan, an
+install-layout self-test of the exported guards against
+`guards/specs/isolation-gate-contract.json`, and `npm run selftest` against
+the exported tree), and — only if all three pass — commits the result onto
+the local `public` branch (idempotent: an unchanged export tree produces no
+new commit). It never pushes on its own; pass `--push` to also push
+`public` to `origin main`. A GitHub Actions workflow
+(`.github/workflows/publish-public.yml`) can run the same script on every
+push to `main` once `auto: true` is set in the manifest and a
+`PUBLIC_REPO_TOKEN` secret (a PAT with push access to `axervice/AxMem`) is
+configured on this repo.
+
+`publish.manifest.json` and `publish-overrides/` document *why* each path
+is excluded or transformed — see their own comments before editing either.
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
