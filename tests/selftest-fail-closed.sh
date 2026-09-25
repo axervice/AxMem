@@ -35,10 +35,35 @@ mkdir -p "$FAKE_HOME/.axmem"
 printf 'pre-existing sentinel file — must survive byte-identical\n' > "$FAKE_HOME/.axmem/sentinel.txt"
 hash_before="$(find "$FAKE_HOME" -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum)"
 
+# [Builder W10, 2026-09-25] The guard in bin/axmem treats HOME as "already
+# isolated" when it sits under the child's OWN resolved system temp dir
+# (TMPDIR, else TEMP, else TMP, else literal "/tmp"). FAKE_HOME above is
+# itself a bare `mktemp -d` result — i.e. it already lives under that same
+# system temp dir. On a bare `env -i` invocation (which clears TMPDIR/TEMP/
+# TMP along with everything else), the guard's fallback resolves to that
+# SAME system temp dir, so FAKE_HOME matches its own "isolated" prefix
+# check and the guard never fires — the test would then only be proving
+# something by accident of two spellings of the same path disagreeing
+# (which is what actually made it pass on Windows: cygpath -m'd FAKE_HOME
+# above vs the guard's un-normalized msys "/tmp" default don't textually
+# match there, so the guard "fires" for the wrong reason; on Linux there's
+# no cygpath step, both sides are already textually identical, and the
+# guard genuinely never fires — this is what CI run 36097673915 caught).
+# Give the child a SEPARATE, distinctly-suffixed temp root of its own (via
+# TMPDIR/TEMP/TMP) so the guard's "under the system temp dir" resolves to
+# THAT root, and FAKE_HOME — created before this and rooted at the
+# ORIGINAL ambient temp dir — is genuinely NOT a sub-path of it. This
+# forces the guard to be actually exercised on every OS, not accidentally
+# skipped or accidentally triggered by spelling drift.
+CHILD_TMPROOT="$(mktemp -d)"
+CHILD_TMPROOT="$(cygpath -m "$CHILD_TMPROOT" 2>/dev/null || printf '%s' "$CHILD_TMPROOT")"
+
 # Simulate a bare, forgot-to-isolate invocation: a cleared environment
 # (env -i) with ONLY PATH plus HOME/USERPROFILE pointed at the fake
-# stand-in — no AXMEM_* override, no AXMEM_SELFTEST_ISOLATED. If the guard
-# works, it self-redirects to a DIFFERENT, freshly-made temp home almost
+# stand-in (and the separate TMPDIR/TEMP/TMP root above, so the guard's own
+# isolation check is genuinely exercised) — no AXMEM_* override, no
+# AXMEM_SELFTEST_ISOLATED. If the guard works, it self-redirects to a
+# DIFFERENT, freshly-made temp home (nested under CHILD_TMPROOT) almost
 # immediately (before any real work), so bounding this to a few seconds is
 # enough to observe the outcome without paying for a full nested selftest
 # run (which the guard's success would otherwise kick off for real, inside
@@ -46,6 +71,7 @@ hash_before="$(find "$FAKE_HOME" -type f -exec sha256sum {} + 2>/dev/null | sort
 # this proof needs to sit through).
 out_file="$(mktemp)"
 env -i PATH="$PATH" HOME="$FAKE_HOME" USERPROFILE="$FAKE_HOME" \
+  TMPDIR="$CHILD_TMPROOT" TEMP="$CHILD_TMPROOT" TMP="$CHILD_TMPROOT" \
   timeout 5 bash "$ROOT/bin/axmem" selftest >"$out_file" 2>&1
 out="$(cat "$out_file")"
 rm -f "$out_file"
@@ -58,7 +84,7 @@ check "fake stand-in home byte-identical (sha256 of every file, sorted) before v
 printf '%s' "$out" | grep -q 'self-isolating'
 check "guard actually fired (stderr announced self-isolating under a fresh temp home)" $?
 
-rm -rf "$FAKE_HOME"
+rm -rf "$FAKE_HOME" "$CHILD_TMPROOT"
 
 printf '%s\n' "${lines[@]}"
 if [ "$ok" -eq "$total" ]; then
