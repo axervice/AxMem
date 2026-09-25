@@ -11,6 +11,9 @@
 // Usage:
 //   node scripts/publish-public.cjs             # export + 3 gates + commit onto local `public` (no push)
 //   node scripts/publish-public.cjs --push       # same, then `git push origin public:main`
+//   node scripts/publish-public.cjs --orphan     # commit as a fresh parentless commit (see manifest's
+//                                                 # "history" field -- "orphan" is the standing default,
+//                                                 # so this flag is rarely needed explicitly)
 //
 // Discipline: this script must never read/write the real $HOME/.claude tree. Gate 2 (install-layout
 // self-test) always runs under HOME=USERPROFILE=PMM_HOME=<a fresh mkdtemp>, never the real profile.
@@ -340,22 +343,31 @@ function treeHashOfDir(exportDir) {
   return tree;
 }
 
-function commitOntoPublic(exportDir, privateShortSha) {
+function commitOntoPublic(exportDir, privateShortSha, orphan) {
   const newTree = treeHashOfDir(exportDir);
   let publicHead = null;
   try { publicHead = git(['rev-parse', 'public']).trim(); } catch { publicHead = null; }
   let publicTree = null;
   if (publicHead) { try { publicTree = git(['rev-parse', publicHead + '^{tree}']).trim(); } catch {} }
+  // Idempotency is ALWAYS tree-hash-only (never parent/history-shape-dependent), in both modes: a
+  // second run against the same private commit must be a true no-op regardless of whether `public`'s
+  // history is a normal chain or a fresh orphan lineage.
   if (publicTree === newTree) {
     log('IDEMPOTENT: exported tree (' + newTree + ') matches public HEAD tree already -- no new commit');
     return { created: false, tree: newTree, commit: publicHead };
   }
   const date = new Date().toISOString().slice(0, 10);
   const msg = 'publish: ' + privateShortSha + ' ' + date;
-  const parentArgs = publicHead ? ['-p', publicHead] : [];
+  // [Builder W9, 2026-09-25] --orphan (Jax ruling): `public`'s prior two commits carried
+  // un-sanitized content and must disappear from reachable history entirely, not just from the
+  // working tree of a new commit built on top of them. Every export in this mode is therefore a
+  // single parentless commit -- `public`'s history is always exactly 1 commit deep, never a chain --
+  // so nothing from before this rebuild stays reachable once the ref is force-moved. Non-orphan mode
+  // (the default) keeps the normal chained-commit behavior for ordinary republishes.
+  const parentArgs = orphan ? [] : (publicHead ? ['-p', publicHead] : []);
   const newCommit = execFileSync('git', ['commit-tree', newTree].concat(parentArgs, ['-m', msg]), { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
   git(['update-ref', 'refs/heads/public', newCommit]);
-  log('created commit ' + newCommit + ' on `public` (tree ' + newTree + '): ' + msg);
+  log('created commit ' + newCommit + ' on `public` (tree ' + newTree + (orphan ? ', orphan -- no parent' : (publicHead ? ', parent ' + publicHead : ', first commit')) + '): ' + msg);
   return { created: true, tree: newTree, commit: newCommit };
 }
 
@@ -388,8 +400,9 @@ function ensurePublicRemote(manifest) {
 function main() {
   const push = process.argv.includes('--push');
   const manifest = readManifest();
+  const orphan = process.argv.includes('--orphan') || manifest.history === 'orphan';
   const privateShortSha = git(['rev-parse', '--short', 'main']).trim();
-  log('source: main @ ' + privateShortSha);
+  log('source: main @ ' + privateShortSha + (orphan ? ' (orphan history mode)' : ''));
 
   const exportDir = step1_archiveMainToTemp();
   try {
@@ -408,7 +421,7 @@ function main() {
     const g3 = gate3_npmSelftest(exportDir);
     if (!g3) die('GATE3 npm run selftest failed -- aborting, no commit made');
 
-    const result = commitOntoPublic(exportDir, privateShortSha);
+    const result = commitOntoPublic(exportDir, privateShortSha, orphan);
 
     if (push) {
       const remoteName = ensurePublicRemote(manifest);
