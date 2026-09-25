@@ -36,7 +36,7 @@ The always-on layer stays small because the pre-commit gate refuses commits that
 |---|---|---|
 | One memory entry | 900 bytes | entry-length watch (a longer entry must be a pointer to its full record) |
 | The active-work dashboard | 3,000 bytes | entry-length watch |
-| One memory file | 50 KB warning threshold | size watch |
+| Session-start injection (all memory files combined) | 50,000-token warning threshold | size watch |
 
 A pushed lesson therefore costs the agent at most a few hundred tokens, and a denied tool call costs zero.
 
@@ -114,7 +114,7 @@ Paid users get the full system through a private channel; the free tier contains
 |---|---|---|
 | 单条记忆条目 | 900 字节 | 条目长度监视(更长的必须降成指向完整记录的指针) |
 | 进行中工作仪表盘 | 3,000 字节 | 条目长度监视 |
-| 单个记忆文件 | 50 KB 预警线 | 体积监视 |
+| 会话启动总注入量(全部记忆文件合计) | 50,000 token 预警线 | 体积监视 |
 
 所以一次推送最多让 agent 花几百个 token,一次拒绝花零个。
 
