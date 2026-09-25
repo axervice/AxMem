@@ -2,6 +2,8 @@
 
 状态:**v1.1(2026-09-17 18:30,主脑按 codex 审 spec `review-20260917T220642Z` 9H/2M 全部收入;判定 GO-WITH-CHANGES → 本版为可开工版)**。裁定依据:PMM decisions `[axmem:adapter-priority-cc-then-codex-then-hermes]`(Jax 2026-09-17:CC 完美 → codex → Hermes/其它)。
 
+**分层说明(2026-09-24 Jax 裁决)**:本 spec 的产品本体 = 私仓 AxMem-dev 的完整系统。公开仓 axervice/AxMem 只承载免费层(由 publish.manifest.json 导出);§P2.1 提到的因果记忆核心簇等高级组件仍按本 spec 移植进产品本体,但归付费层,付费用户通过付费渠道把已安装的 AxMem 升级为完整系统。免费层代码不包含付费层代码。
+
 **开工前置(硬门)**:活体正在跑 fab 盲攻 + codex 终审(Jax 2026-09-17 指令),其修复落地并冻结后才生成 §1.0 的冻结清单;冻结清单不存在,P2.1 不得开工。
 
 ## 0. 事实基线
