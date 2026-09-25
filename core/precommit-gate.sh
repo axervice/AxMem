@@ -38,7 +38,25 @@ if [ "${1:-}" = "--self-test" ]; then
   # same spelling `git rev-parse --show-toplevel` emits — makes both sides
   # of every later `cd ... && pwd` route through the SAME canonicalization
   # path, so they agree.
-  T="$(cygpath -m "$T" 2>/dev/null || printf '%s' "$T")"
+  #
+  # [Builder W10, 2026-09-25] `-m` alone isn't enough: it's a syntax
+  # conversion (backslash -> forward slash), not a canonicalization — it
+  # preserves whatever DOS 8.3 short-name spelling the input already had.
+  # GH Actions windows-latest's TEMP/TMP is the short form
+  # (C:\Users\RUNNER~1\AppData\Local\Temp), so `mktemp -d` under it and
+  # `cygpath -m` on the result stays short-spelled, while `git rev-parse
+  # --show-toplevel` (line ~163 below, exercised via the `g()` harness)
+  # always resolves to the LONG form — a second, independent path-form
+  # trap on top of the MSYS-mount-alias one above, invisible on a normal
+  # dev machine (real usernames rarely trigger 8.3 aliasing) and on Ubuntu
+  # (no 8.3 short names at all), which is why this reproduced as CI-only
+  # 6/8 (run 36097673915's Windows leg) on cases #2/#3 specifically: the
+  # first case to touch a `**20...`-header diff after `relmem()`'s
+  # `$TOP`-prefix-strip silently no-ops on the short/long mismatch, handing
+  # git a mangled pathspec. `-l` (long-name) resolves the short alias back
+  # to its long form before the mixed-slash conversion, so this now agrees
+  # with git's own spelling regardless of which form TEMP/TMP arrived in.
+  T="$(cygpath -ml "$T" 2>/dev/null || printf '%s' "$T")"
   # [Builder W9, 2026-09-24] CI hardening: GH Actions windows-latest reported
   # 6/8 on this self-test (run 36083001021) while every TMPDIR/HOME variant
   # this file's own M6 fix already covers (see the cygpath -m note above)
