@@ -287,11 +287,35 @@ function copyDir(src, dst) {
 }
 
 function gate3_npmSelftest(exportDir) {
-  const res = spawnSync('npm', ['run', 'selftest'], { cwd: exportDir, encoding: 'utf8', shell: process.platform === 'win32' });
+  // MUST be isolated exactly like gate2 -- `bin/axmem selftest` falls back to $HOME/.axmem (and, via
+  // some components' own compat/legacy path, the real $HOME/.claude PMM tree) whenever AXMEM_* is
+  // unset. Running it under the ambient real environment previously caused a real, live, git-tracked
+  // ~/.claude/memory/dreams/receipts/*.tsv to pick up stray uncommitted lines during development of
+  // this script -- never repeat that. Every var below is one this codebase's OWN test suite
+  // (tests/full-env-isolation.sh) sets for the identical reason.
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-publish-selftest-'));
+  const axmemHome = path.join(tempHome, '.axmem');
+  const env = Object.assign({}, process.env, {
+    HOME: tempHome,
+    USERPROFILE: tempHome,
+    PMM_HOME: tempHome,
+    AXMEM_HOME: axmemHome,
+    AXMEM_MEMORY_DIR: path.join(axmemHome, 'memory'),
+    AXMEM_STATE_DIR: path.join(axmemHome, 'state'),
+    AXMEM_CONFIG: path.join(axmemHome, 'config.json'),
+  });
+  for (const k of Object.keys(env)) { if (/^PMM_/.test(k) && k !== 'PMM_HOME') delete env[k]; }
+  // npm has no argv-exec form on Windows (it's a .cmd shim) so this needs shell:true there; pass a
+  // single fixed string (no interpolated data) rather than an args array to avoid Node's
+  // shell-arg-escaping deprecation warning.
+  const res = process.platform === 'win32'
+    ? spawnSync('npm run selftest', { cwd: exportDir, env, encoding: 'utf8', shell: true })
+    : spawnSync('npm', ['run', 'selftest'], { cwd: exportDir, env, encoding: 'utf8' });
   const out = (res.stdout || '') + '\n' + (res.stderr || '');
   const ok = res.status === 0;
   log('GATE3 npm run selftest: exit=' + res.status + (ok ? ' -- PASS' : ' -- FAIL'));
   if (!ok) log('GATE3 raw output tail:\n' + out.split('\n').slice(-40).join('\n'));
+  rmrf(tempHome);
   return ok;
 }
 
