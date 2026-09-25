@@ -436,8 +436,17 @@ function runWire(target, extraArgs = [], envOverride = null) {
 function selfTest() {
   const T = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-hermes-wire-selftest-'));
   let ok = 0;
+  let total = 0;
+  let skipped = 0;
   const results = [];
-  function check(name, cond) { if (cond) { ok++; results.push(`  ok   ${name}`); } else { results.push(`  FAIL ${name}`); } }
+  function check(name, cond) { total++; if (cond) { ok++; results.push(`  ok   ${name}`); } else { results.push(`  FAIL ${name}`); } }
+  // A platform-conditional check group that genuinely cannot run on this
+  // platform (the .cmd/shell:true integration checks are Windows-only) —
+  // counted separately from ok/total so it neither inflates a pass nor,
+  // via the OLD hardcoded `ok === 26` check, gets silently miscounted as a
+  // failure just because fewer checks ran (CI ubuntu-latest bug: printed
+  // "24/26" — every executed check actually passed — yet still exited 1).
+  function skip(name) { skipped++; results.push(`  --   SKIP ${name}`); }
 
   // 0 (H3/L5, ECC ts/Opus acceptance mutation-arm fix: "matcher 改错" was
   // found to be a FALSE GREEN — wire/doctor/install-manifest self-tests all
@@ -667,7 +676,7 @@ function selfTest() {
     const after20 = fs.readFileSync(f20);
     check('20d (Opus M3) end-to-end: a rejecting real loader aborts the CLI write entirely (rc 3, file untouched)', r20.rc === 3 && Buffer.compare(before20, after20) === 0);
   } else {
-    check('20b-20d (Opus M3) fake-hermes CLI-integration tests skipped: not running on win32 (.cmd scripts are Windows-specific)', true);
+    skip('20b-20d (Opus M3) fake-hermes CLI-integration tests: not running on win32 (.cmd scripts are Windows-specific)');
   }
 
   // 21 (Opus L5): runHermesHooksList's execFileSync uses shell:true on
@@ -686,13 +695,15 @@ function selfTest() {
     const spacedResult = runHermesHooksList(spacedScript, 'a: 1\n');
     check('21 (Opus L5) hermesCmd containing a space in its path is correctly quoted under shell:true (not silently broken)', spacedResult.ok === true && /hooks listed ok/.test(spacedResult.output));
   } else {
-    check('21 (Opus L5) space-in-path hermesCmd test skipped: not running on win32 (shell:true .cmd quoting is Windows-specific)', true);
+    skip('21 (Opus L5) space-in-path hermesCmd test: not running on win32 (shell:true .cmd quoting is Windows-specific)');
   }
 
   console.log(results.join('\n'));
-  console.log(`hermes wire self-test ${ok}/26`);
+  console.log(skipped > 0
+    ? `hermes wire self-test ${ok}/${total} ok, ${skipped} skipped (non-win32: .cmd/shell:true integration checks unavailable)`
+    : `hermes wire self-test ${ok}/${total}`);
   try { fs.rmSync(T, { recursive: true, force: true }); } catch { /* ignore */ }
-  return ok === 26 ? 0 : 1;
+  return ok === total ? 0 : 1;
 }
 
 if (require.main === module) {
