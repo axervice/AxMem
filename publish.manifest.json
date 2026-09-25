@@ -105,7 +105,8 @@
     { "file": "guards/vendor/VENDOR.md", "findFile": "publish-overrides/patches/vendor-md.1.find.txt", "replaceFile": "publish-overrides/patches/vendor-md.1.replace.txt" },
 
     { "file": "package.json", "findFile": "publish-overrides/patches/package-json.1.find.txt", "replaceFile": "publish-overrides/patches/package-json.1.replace.txt" },
-    { "file": "package.json", "findFile": "publish-overrides/patches/package-json.2.find.txt", "replaceFile": "publish-overrides/patches/package-json.2.replace.txt" }
+    { "file": "package.json", "findFile": "publish-overrides/patches/package-json.2.find.txt", "replaceFile": "publish-overrides/patches/package-json.2.replace.txt" },
+    { "file": "package.json", "findFile": "publish-overrides/patches/package-json.3.find.txt", "replaceFile": "publish-overrides/patches/package-json.3.replace.txt" }
   ],
 
   "sanitize": {

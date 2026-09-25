@@ -1,0 +1,1 @@
+    "doctor": "bash bin/axmem doctor"

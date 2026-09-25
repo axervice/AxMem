@@ -1,0 +1,2 @@
+    "doctor": "bash bin/axmem doctor",
+    "publish:public": "node scripts/publish-public.cjs"
