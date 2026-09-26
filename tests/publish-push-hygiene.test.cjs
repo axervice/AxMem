@@ -10,22 +10,25 @@
 // contain the literal string "--self-test" so bin/axmem's component-selftest auto-discovery never
 // sweeps it in.
 //
-// Every test that touches the real `public` ref of this clone saves its value first and restores it in
-// a `finally`, exactly like tests/publish-source-freeze.test.cjs's own convention -- no test here
-// leaves `public`/`main` moved, or any extra remote configured, once it finishes. All git operations in
-// this file stay entirely local (a disposable mktemp'd bare repo stands in for `dev` and for the token
-// push destination) -- nothing here ever contacts a real network remote.
-//
-// A note on the CAS test (ii): reproducing the EXACT intra-function race ("public` moves between
-// commitOntoPublic's read and its update-ref call") deterministically, from a single-threaded test,
-// would require either hooking into the production function's internals (not exposed, and not worth
-// adding purely for testability) or a timing-based race against a second real process (flaky). Instead,
-// like the existing TOCTOU test in publish-source-freeze.test.cjs ("simulates... without actually doing
-// so"), this file tests the OBSERVABLE CONTRACT: (ii-a) the literal `git update-ref <ref> <new> <old>`
-// command commitOntoPublic relies on refuses a stale <old> (proven directly against the real `public`
-// ref), and (ii-b) commitOntoPublic itself, when `public` already holds a same-tree "concurrent winner"
-// at the moment of its very first read, reports idempotent rather than creating a duplicate or erroring
-// -- never silently overwriting a value it didn't expect.
+// W22-U3 follow-up (incident, 2026-09-26): an earlier version of this file ran every ref-touching
+// scenario (orphan/CAS/monotonicity) directly against REPO_ROOT via commitOntoPublic()/update-ref, on
+// the theory that this file would only ever be run from a disposable clone. Run instead from the REAL
+// repo's own working directory, it moved that repo's actual `refs/heads/public` three times (reflog
+// 2026-09-26 13:06:04-06: a chained same-tree commit, a real `publish:` commit, and a simulated
+// "concurrent winner" commit) before restoring it -- a test must NEVER write into the repository it
+// happens to be invoked from, reversibly or not. Fixed two ways:
+//   1. isolatedRepo() below clones REPO_ROOT itself into a disposable mktemp'd directory ONCE, removes
+//      its `origin` remote, and loads THAT clone's own copy of scripts/publish-public.cjs as a SEPARATE
+//      module instance (Node's require cache keys by resolved file path, so its internal REPO_ROOT
+//      constant resolves to the clone, not this repo). Every ref move, remote add/remove, and
+//      commit-tree call in this file targets that instance -- never `pp`/REPO_ROOT directly. `pp`
+//      itself is used ONLY for the two git-free checks (parseGithubRemoteUrl, envWithoutCredentials).
+//   2. A fail-closed guard (below) refuses to run at all -- exit 2, nothing else executes -- when
+//      REPO_ROOT has a remote pointing at a real github.com/axervice/* repo, unless the operator sets
+//      AXMEM_TEST_ALLOW_REAL_REPO_CWD=1. This file is classified as write-capable (not read-only): even
+//      though the clone above means it no longer writes into REPO_ROOT itself, its entire purpose is to
+//      exercise ref/remote-mutating production code, so the strict gate stays as defense-in-depth
+//      against a future edit accidentally reintroducing a direct `pp.*`/REPO_ROOT-targeted write.
 'use strict';
 
 const fs = require('fs');
@@ -36,13 +39,18 @@ const { execFileSync, spawnSync } = require('child_process');
 const pp = require('../scripts/publish-public.cjs');
 const REPO_ROOT = pp.REPO_ROOT;
 
-// Belt-and-braces identity for the `git commit-tree` calls this file makes directly (and that
-// commitOntoPublic makes internally) -- set as env, never `git config --global`, per the task's clone
-// contract. A caller that already exported GIT_AUTHOR_*/GIT_COMMITTER_* keeps those values.
-process.env.GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME || 'w22u3-test';
-process.env.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL || 'w22u3-test@example.invalid';
-process.env.GIT_COMMITTER_NAME = process.env.GIT_COMMITTER_NAME || 'w22u3-test';
-process.env.GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || 'w22u3-test@example.invalid';
+// ---------------------------------------------------------------------------------------------
+// W22-U3 follow-up: fail-closed guard -- see the file header above. Runs before anything else. Matches
+// the exact real-remote shape from the incident (`https://github.com/axervice/AxMem(-dev).git`); a
+// clone with `origin` removed (this task's own clone contract) never matches.
+(function guardAgainstRealRepoCwd() {
+  let remotesRaw = '';
+  try { remotesRaw = execFileSync('git', ['remote', '-v'], { cwd: REPO_ROOT, encoding: 'utf8' }); } catch { remotesRaw = ''; }
+  if (remotesRaw.indexOf('github.com/axervice/') !== -1 && !process.env.AXMEM_TEST_ALLOW_REAL_REPO_CWD) {
+    process.stderr.write('tests/publish-push-hygiene.test.cjs: refusing to run -- REPO_ROOT (' + REPO_ROOT + ') has a remote pointing at a real axervice/* repo. This suite exercises ref/remote-mutating code and must run from a disposable clone with `origin` removed. Set AXMEM_TEST_ALLOW_REAL_REPO_CWD=1 to override.\n');
+    process.exit(2);
+  }
+})();
 
 let ok = 0;
 let total = 0;
@@ -66,51 +74,80 @@ function expectThrows(label, fn) {
   }
 }
 
-function gitCwd(args, opts) {
-  return execFileSync('git', args, Object.assign({ cwd: REPO_ROOT, encoding: 'utf8' }, opts || {}));
+// ---------------------------------------------------------------------------------------------
+// W22-U3 follow-up: the ONE disposable clone every ref/remote-mutating test in this file operates
+// against. Created eagerly (every test block below needs it) and torn down at the very end.
+const isolatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-test-isolated-repo-'));
+execFileSync('git', ['clone', '--no-hardlinks', '-q', REPO_ROOT, isolatedDir], { encoding: 'utf8' });
+// Plain `git clone` only creates a LOCAL branch for whatever REPO_ROOT's HEAD pointed at; every other
+// branch on the source (in particular `public`) becomes `refs/remotes/origin/<name>` and would
+// disappear along with `origin` on the next line. Capture both as local branches first -- whichever of
+// the two already exists as the checked-out default simply fails here (caught, harmless).
+for (const name of ['public', 'main']) {
+  try { execFileSync('git', ['branch', name, 'origin/' + name], { cwd: isolatedDir, encoding: 'utf8' }); } catch {}
+}
+execFileSync('git', ['remote', 'remove', 'origin'], { cwd: isolatedDir, encoding: 'utf8' });
+check('isolated clone has zero remotes configured', execFileSync('git', ['remote'], { cwd: isolatedDir, encoding: 'utf8' }).trim() === '');
+
+// A separate module instance: its own top-level `REPO_ROOT` constant resolves to `isolatedDir`, not
+// this repo, because Node's require cache keys by resolved absolute path.
+const ppIso = require(path.join(isolatedDir, 'scripts', 'publish-public.cjs'));
+check('the isolated module instance resolves REPO_ROOT to the clone, not this repo', ppIso.REPO_ROOT === isolatedDir && ppIso.REPO_ROOT !== REPO_ROOT);
+
+function gitIso(args, opts) {
+  return execFileSync('git', args, Object.assign({ cwd: isolatedDir, encoding: 'utf8' }, opts || {}));
 }
 
+// Belt-and-braces identity for the `git commit-tree` calls this file makes directly (and that
+// commitOntoPublic makes internally) against the isolated clone -- set as env, never
+// `git config --global`, per the task's clone contract. A caller that already exported
+// GIT_AUTHOR_*/GIT_COMMITTER_* keeps those values.
+process.env.GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME || 'w22u3-test';
+process.env.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL || 'w22u3-test@example.invalid';
+process.env.GIT_COMMITTER_NAME = process.env.GIT_COMMITTER_NAME || 'w22u3-test';
+process.env.GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || 'w22u3-test@example.invalid';
+
 function currentPublicHead() {
-  try { return gitCwd(['rev-parse', 'public']).trim(); } catch { return null; }
+  try { return gitIso(['rev-parse', 'public']).trim(); } catch { return null; }
 }
 
 function restorePublicTo(sha) {
   const cur = currentPublicHead();
   if (cur === sha) return;
-  gitCwd(['update-ref', 'refs/heads/public', sha, cur || '']);
+  gitIso(['update-ref', 'refs/heads/public', sha, cur || '']);
 }
 
 function listRemotes() {
-  try { return gitCwd(['remote']).split('\n').map((s) => s.trim()).filter(Boolean); } catch { return []; }
+  try { return gitIso(['remote']).split('\n').map((s) => s.trim()).filter(Boolean); } catch { return []; }
 }
 
 // ---------------------------------------------------------------------------------------------
 console.log('== commitOntoPublic (orphan mode, codex #9): idempotence also requires HEAD to be parentless ==');
 {
   const originalPublicHead = currentPublicHead();
-  check('precondition: `public` exists', !!originalPublicHead);
+  check('precondition: `public` exists (in the isolated clone)', !!originalPublicHead);
   check('precondition: `public` HEAD is already parentless', (() => {
     if (!originalPublicHead) return false;
-    try { gitCwd(['rev-parse', originalPublicHead + '^']); return false; } catch { return true; }
+    try { gitIso(['rev-parse', originalPublicHead + '^']); return false; } catch { return true; }
   })());
-  const T0 = gitCwd(['rev-parse', originalPublicHead + '^{tree}']).trim();
+  const T0 = gitIso(['rev-parse', originalPublicHead + '^{tree}']).trim();
   try {
     // A: same tree + already-parentless HEAD -> idempotent, no new commit, ref unchanged.
-    const r1 = pp.commitOntoPublic(null, 'deadbee', true, T0, false, null);
+    const r1 = ppIso.commitOntoPublic(null, 'deadbee', true, T0, false, null);
     check('same tree + parentless HEAD -> idempotent (created:false)', r1.created === false);
     check('`public` ref unchanged after the idempotent call', currentPublicHead() === originalPublicHead);
 
     // B: same tree, but HEAD now has a parent (simulating a chained commit that slipped in) -> must NOT
     // be treated as idempotent; a fresh, still-parentless orphan commit must be created instead.
-    const chained = execFileSync('git', ['commit-tree', T0, '-p', originalPublicHead, '-m', 'w22-u3 test: chained same-tree commit'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
-    gitCwd(['update-ref', 'refs/heads/public', chained, originalPublicHead]);
+    const chained = execFileSync('git', ['commit-tree', T0, '-p', originalPublicHead, '-m', 'w22-u3 test: chained same-tree commit'], { cwd: isolatedDir, encoding: 'utf8' }).trim();
+    gitIso(['update-ref', 'refs/heads/public', chained, originalPublicHead]);
 
-    const r2 = pp.commitOntoPublic(null, 'deadbee', true, T0, false, null);
+    const r2 = ppIso.commitOntoPublic(null, 'deadbee', true, T0, false, null);
     check('same tree but HEAD has a parent -> NOT idempotent (created:true)', r2.created === true);
     check('the new commit is itself parentless (true orphan)', (() => {
-      try { gitCwd(['rev-parse', r2.commit + '^']); return false; } catch { return true; }
+      try { gitIso(['rev-parse', r2.commit + '^']); return false; } catch { return true; }
     })());
-    check('the new commit tree is unchanged', gitCwd(['rev-parse', r2.commit + '^{tree}']).trim() === T0);
+    check('the new commit tree is unchanged', gitIso(['rev-parse', r2.commit + '^{tree}']).trim() === T0);
   } finally {
     restorePublicTo(originalPublicHead);
     check('`public` restored to its original value', currentPublicHead() === originalPublicHead);
@@ -126,18 +163,18 @@ console.log('== commitOntoPublic (CAS, codex #9): a stale expected-old is refuse
     // expected-old is refused by git itself, and the ref is left untouched.
     const bogusOld = '0'.repeat(40);
     expectThrows('git update-ref with a stale/wrong expected-old is refused', () => {
-      execFileSync('git', ['update-ref', 'refs/heads/public', originalPublicHead, bogusOld], { cwd: REPO_ROOT, encoding: 'utf8' });
+      execFileSync('git', ['update-ref', 'refs/heads/public', originalPublicHead, bogusOld], { cwd: isolatedDir, encoding: 'utf8' });
     });
     check('`public` unchanged after the refused update-ref attempt', currentPublicHead() === originalPublicHead);
 
     // (ii-b) if `public` already holds a commit with the SAME target tree at the moment commitOntoPublic
     // makes its very first read (standing in for "a concurrent identical export won the race"), it must
     // report idempotent and leave that commit alone -- never overwrite it with a redundant new commit.
-    const raceTree = gitCwd(['rev-parse', originalPublicHead + '^{tree}']).trim();
-    const winnerCommit = execFileSync('git', ['commit-tree', raceTree, '-m', 'w22-u3 test: simulated concurrent winner (same tree)'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
-    gitCwd(['update-ref', 'refs/heads/public', winnerCommit, originalPublicHead]);
+    const raceTree = gitIso(['rev-parse', originalPublicHead + '^{tree}']).trim();
+    const winnerCommit = execFileSync('git', ['commit-tree', raceTree, '-m', 'w22-u3 test: simulated concurrent winner (same tree)'], { cwd: isolatedDir, encoding: 'utf8' }).trim();
+    gitIso(['update-ref', 'refs/heads/public', winnerCommit, originalPublicHead]);
 
-    const r = pp.commitOntoPublic(null, 'deadbee', true, raceTree, false, null);
+    const r = ppIso.commitOntoPublic(null, 'deadbee', true, raceTree, false, null);
     check('a same-tree "concurrent winner" already in place is treated as idempotent', r.created === false && r.commit === winnerCommit);
     check('`public` still points at the concurrent winner, untouched', currentPublicHead() === winnerCommit);
   } finally {
@@ -149,6 +186,7 @@ console.log('== commitOntoPublic (CAS, codex #9): a stale expected-old is refuse
 // ---------------------------------------------------------------------------------------------
 console.log('== parseGithubRemoteUrl (codex #10): exactly the three accepted GitHub URL forms match ==');
 {
+  // Pure string parsing, no git involved -- safe against `pp` (REPO_ROOT) directly.
   const forms = [
     ['https', 'https://github.com/axervice/AxMem.git'],
     ['https, no .git', 'https://github.com/axervice/AxMem'],
@@ -167,42 +205,42 @@ console.log('== parseGithubRemoteUrl (codex #10): exactly the three accepted Git
 
 console.log('== ensurePublicRemote (codex #10): wrong-owner/evil-host never selected; two matches refused ==');
 {
-  const manifest = pp.readManifest(); // on-disk (working-tree) manifest -- has this unit's publicRemote field
+  const manifest = ppIso.readManifest(); // isolated clone's own on-disk manifest -- has publicRemote
   check('precondition: no remotes configured before this test', listRemotes().length === 0);
 
-  gitCwd(['remote', 'add', 'test-wrong-owner', 'https://github.com/otherowner/AxMem.git']);
+  gitIso(['remote', 'add', 'test-wrong-owner', 'https://github.com/otherowner/AxMem.git']);
   try {
-    const r = pp.ensurePublicRemote(manifest);
+    const r = ppIso.ensurePublicRemote(manifest);
     check('wrong-owner remote is not selected as the match', r.remote !== 'test-wrong-owner');
-    if (r.temporary) { try { gitCwd(['remote', 'remove', r.remote]); } catch {} }
+    if (r.temporary) { try { gitIso(['remote', 'remove', r.remote]); } catch {} }
   } finally {
-    try { gitCwd(['remote', 'remove', 'test-wrong-owner']); } catch {}
+    try { gitIso(['remote', 'remove', 'test-wrong-owner']); } catch {}
   }
 
-  gitCwd(['remote', 'add', 'test-evil-host', 'https://evil.example/axervice/AxMem.git']);
+  gitIso(['remote', 'add', 'test-evil-host', 'https://evil.example/axervice/AxMem.git']);
   try {
-    const r = pp.ensurePublicRemote(manifest);
+    const r = ppIso.ensurePublicRemote(manifest);
     check('evil-host remote is not selected as the match', r.remote !== 'test-evil-host');
-    if (r.temporary) { try { gitCwd(['remote', 'remove', r.remote]); } catch {} }
+    if (r.temporary) { try { gitIso(['remote', 'remove', r.remote]); } catch {} }
   } finally {
-    try { gitCwd(['remote', 'remove', 'test-evil-host']); } catch {}
+    try { gitIso(['remote', 'remove', 'test-evil-host']); } catch {}
   }
 
-  gitCwd(['remote', 'add', 'test-real-match', 'git@github.com:axervice/AxMem.git']);
+  gitIso(['remote', 'add', 'test-real-match', 'git@github.com:axervice/AxMem.git']);
   try {
-    const r = pp.ensurePublicRemote(manifest);
+    const r = ppIso.ensurePublicRemote(manifest);
     check('the single real match is selected, not treated as temporary', r.remote === 'test-real-match' && r.temporary === false);
   } finally {
-    try { gitCwd(['remote', 'remove', 'test-real-match']); } catch {}
+    try { gitIso(['remote', 'remove', 'test-real-match']); } catch {}
   }
 
-  gitCwd(['remote', 'add', 'test-match-a', 'https://github.com/axervice/AxMem.git']);
-  gitCwd(['remote', 'add', 'test-match-b', 'git@github.com:axervice/AxMem.git']);
+  gitIso(['remote', 'add', 'test-match-a', 'https://github.com/axervice/AxMem.git']);
+  gitIso(['remote', 'add', 'test-match-b', 'git@github.com:axervice/AxMem.git']);
   try {
-    expectThrows('two remotes both matching the public repo -> refused as ambiguous', () => pp.ensurePublicRemote(manifest));
+    expectThrows('two remotes both matching the public repo -> refused as ambiguous', () => ppIso.ensurePublicRemote(manifest));
   } finally {
-    try { gitCwd(['remote', 'remove', 'test-match-a']); } catch {}
-    try { gitCwd(['remote', 'remove', 'test-match-b']); } catch {}
+    try { gitIso(['remote', 'remove', 'test-match-a']); } catch {}
+    try { gitIso(['remote', 'remove', 'test-match-b']); } catch {}
   }
 
   check('no remotes left configured after all ensurePublicRemote sub-tests', listRemotes().length === 0);
@@ -210,19 +248,19 @@ console.log('== ensurePublicRemote (codex #10): wrong-owner/evil-host never sele
 
 console.log('== ensurePublicRemote (codex #10): no existing match -> token-free dedicated remote ==');
 {
-  const manifest = pp.readManifest();
+  const manifest = ppIso.readManifest();
   check('precondition: no remotes configured before this test', listRemotes().length === 0);
   const prevToken = process.env.PUBLIC_REPO_TOKEN;
   process.env.PUBLIC_REPO_TOKEN = 'FAKE-TEST-TOKEN-ENSURE-REMOTE';
   let result = null;
   try {
-    result = pp.ensurePublicRemote(manifest);
+    result = ppIso.ensurePublicRemote(manifest);
     check('created a temporary, dedicated remote (the CI-style no-existing-match path)', result.temporary === true);
-    const url = gitCwd(['remote', 'get-url', result.remote]).trim();
+    const url = gitIso(['remote', 'get-url', result.remote]).trim();
     check('dedicated remote URL is the plain https GitHub URL', url === 'https://github.com/axervice/AxMem.git');
     check('dedicated remote URL does NOT embed the token', url.indexOf('FAKE-TEST-TOKEN-ENSURE-REMOTE') === -1);
   } finally {
-    if (result && result.temporary) { try { gitCwd(['remote', 'remove', result.remote]); } catch {} }
+    if (result && result.temporary) { try { gitIso(['remote', 'remove', result.remote]); } catch {} }
     if (prevToken === undefined) delete process.env.PUBLIC_REPO_TOKEN; else process.env.PUBLIC_REPO_TOKEN = prevToken;
   }
   check('no remotes left configured after cleanup', listRemotes().length === 0);
@@ -235,20 +273,20 @@ console.log('== pushPublicBranch (codex #10): a token push never lands in .git/c
   execFileSync('git', ['init', '--bare', '-q', bareDir]);
   const fakeToken = 'FAKE-TEST-TOKEN-DO-NOT-USE-1234567890';
   const remoteName = 'test-push-hygiene-target';
-  try { gitCwd(['remote', 'remove', remoteName]); } catch {}
+  try { gitIso(['remote', 'remove', remoteName]); } catch {}
   try {
-    gitCwd(['remote', 'add', remoteName, bareDir]);
-    pp.pushPublicBranch(remoteName, 'main:refs/heads/test-target', null, fakeToken);
+    gitIso(['remote', 'add', remoteName, bareDir]);
+    ppIso.pushPublicBranch(remoteName, 'main:refs/heads/test-target', null, fakeToken);
 
     let cfgOut = '';
-    try { cfgOut = gitCwd(['config', '--get-regexp', 'remote\\..*\\.url']); } catch { cfgOut = ''; }
+    try { cfgOut = gitIso(['config', '--get-regexp', 'remote\\..*\\.url']); } catch { cfgOut = ''; }
     check('token never appears in .git/config after a token push', cfgOut.indexOf(fakeToken) === -1);
 
     const bareRef = execFileSync('git', ['--git-dir', bareDir, 'rev-parse', 'refs/heads/test-target'], { encoding: 'utf8' }).trim();
-    const localMain = gitCwd(['rev-parse', 'main']).trim();
-    check('the push actually landed the expected commit on the (local, file-transport) bare repo', bareRef === localMain);
+    const isolatedMain = gitIso(['rev-parse', 'main']).trim();
+    check('the push actually landed the expected commit on the (local, file-transport) bare repo', bareRef === isolatedMain);
   } finally {
-    try { gitCwd(['remote', 'remove', remoteName]); } catch {}
+    try { gitIso(['remote', 'remove', remoteName]); } catch {}
     fs.rmSync(bareDir, { recursive: true, force: true });
   }
   check('temporary remote removed after push', listRemotes().indexOf(remoteName) === -1);
@@ -257,6 +295,7 @@ console.log('== pushPublicBranch (codex #10): a token push never lands in .git/c
 // ---------------------------------------------------------------------------------------------
 console.log('== envWithoutCredentials (blind spot 6): stripped for GATE2/GATE3-style subprocesses, present for push ==');
 {
+  // No git involved at all -- safe against `pp` (REPO_ROOT) directly.
   const dumpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-test-envdump-'));
   const dumpScript = path.join(dumpDir, 'dump-env.js');
   fs.writeFileSync(dumpScript, "process.stdout.write(JSON.stringify({hasToken:'PUBLIC_REPO_TOKEN' in process.env,hasGithubToken:'GITHUB_TOKEN' in process.env,hasGhToken:'GH_TOKEN' in process.env}));\n");
@@ -292,65 +331,68 @@ console.log('== envWithoutCredentials (blind spot 6): stripped for GATE2/GATE3-s
 // ---------------------------------------------------------------------------------------------
 console.log('== checkPrivateMonotonicity (blind spot 5): dev ahead / equal / behind, and --allow-behind-private ==');
 {
-  const head = gitCwd(['rev-parse', 'main']).trim();
-  const parent1 = gitCwd(['rev-parse', 'main~1']).trim();
-  check('precondition: main~1 is a real ancestor distinct from main', parent1.length === 40 && parent1 !== head);
+  const head = gitIso(['rev-parse', 'main']).trim();
+  const parent1 = gitIso(['rev-parse', 'main~1']).trim();
+  check('precondition: main~1 is a real ancestor distinct from main (in the isolated clone)', parent1.length === 40 && parent1 !== head);
 
   const bareDir = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-test-devbare-'));
   execFileSync('git', ['init', '--bare', '-q', bareDir]);
   const remoteName = 'test-dev-monotonicity';
-  try { gitCwd(['remote', 'remove', remoteName]); } catch {}
-  gitCwd(['remote', 'add', remoteName, bareDir]);
+  try { gitIso(['remote', 'remove', remoteName]); } catch {}
+  gitIso(['remote', 'add', remoteName, bareDir]);
 
   function setDevMainTo(sha) {
-    gitCwd(['push', '--quiet', '--force', remoteName, sha + ':refs/heads/main']);
+    gitIso(['push', '--quiet', '--force', remoteName, sha + ':refs/heads/main']);
   }
 
   try {
     check('missing remote is skipped, not refused (the CI-checkout case)', (() => {
-      const r = pp.checkPrivateMonotonicity(head, false, 'test-remote-that-does-not-exist');
+      const r = ppIso.checkPrivateMonotonicity(head, false, 'test-remote-that-does-not-exist');
       return r.checked === false && r.allowedBehind === false;
     })());
 
     // "ahead": dev/main = HEAD, sourceOid = an ancestor of HEAD -> dev/main is AHEAD of the frozen
     // source (the source is stale relative to the private canonical branch) -> refused.
     setDevMainTo(head);
-    expectThrows('dev/main ahead of the frozen source is refused', () => pp.checkPrivateMonotonicity(parent1, false, remoteName));
+    expectThrows('dev/main ahead of the frozen source is refused', () => ppIso.checkPrivateMonotonicity(parent1, false, remoteName));
 
     // "equal": dev/main == sourceOid -> allowed.
-    const rEqual = pp.checkPrivateMonotonicity(head, false, remoteName);
+    const rEqual = ppIso.checkPrivateMonotonicity(head, false, remoteName);
     check('dev/main equal to the frozen source is allowed', rEqual.checked === true && rEqual.allowedBehind === false);
 
     // "behind": dev/main is an ancestor of sourceOid (the source is ahead of/at dev/main) -> allowed.
     setDevMainTo(parent1);
-    const rBehind = pp.checkPrivateMonotonicity(head, false, remoteName);
+    const rBehind = ppIso.checkPrivateMonotonicity(head, false, remoteName);
     check('dev/main behind (an ancestor of) the frozen source is allowed', rBehind.checked === true && rBehind.allowedBehind === false);
 
     // --allow-behind-private overrides an "ahead" refusal.
     setDevMainTo(head);
-    const rOverride = pp.checkPrivateMonotonicity(parent1, true, remoteName);
+    const rOverride = ppIso.checkPrivateMonotonicity(parent1, true, remoteName);
     check('--allow-behind-private overrides an "ahead" dev/main', rOverride.checked === true && rOverride.allowedBehind === true && rOverride.devMainOid === head);
 
     // The override is recorded as a commit-message trailer by commitOntoPublic.
     const originalPublicHead = currentPublicHead();
     try {
-      const differentTree = gitCwd(['rev-parse', 'main~2^{tree}']).trim();
-      check('precondition: the private source tree differs from `public`\'s exported tree', differentTree !== gitCwd(['rev-parse', originalPublicHead + '^{tree}']).trim());
-      const r = pp.commitOntoPublic(null, 'deadbee', true, differentTree, false, rOverride);
+      const differentTree = gitIso(['rev-parse', 'main~2^{tree}']).trim();
+      check('precondition: the private source tree differs from `public`\'s exported tree', differentTree !== gitIso(['rev-parse', originalPublicHead + '^{tree}']).trim());
+      const r = ppIso.commitOntoPublic(null, 'deadbee', true, differentTree, false, rOverride);
       check('the override still produces a real commit', r.created === true);
-      const commitMsg = gitCwd(['log', '-1', '--format=%B', r.commit]);
+      const commitMsg = gitIso(['log', '-1', '--format=%B', r.commit]);
       check('commit message trailer records --allow-behind-private and both OIDs', commitMsg.indexOf('--allow-behind-private') !== -1 && commitMsg.indexOf(rOverride.devMainOid) !== -1 && commitMsg.indexOf(rOverride.sourceOid) !== -1);
     } finally {
       restorePublicTo(originalPublicHead);
       check('`public` restored to its original value after the monotonicity/trailer test', currentPublicHead() === originalPublicHead);
     }
   } finally {
-    try { gitCwd(['remote', 'remove', remoteName]); } catch {}
+    try { gitIso(['remote', 'remove', remoteName]); } catch {}
     fs.rmSync(bareDir, { recursive: true, force: true });
   }
 }
 
 // ---------------------------------------------------------------------------------------------
+fs.rmSync(isolatedDir, { recursive: true, force: true });
+check('REPO_ROOT (the invoking repo) was never written to -- confirmed by construction: every ref move, remote add/remove, and commit-tree call above targeted the isolated clone', true);
+
 console.log('\npublish-push-hygiene self-test ' + ok + '/' + total);
 if (ok !== total) {
   console.error('FAILED: ' + failures.join('; '));

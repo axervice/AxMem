@@ -27,6 +27,25 @@ const { execFileSync } = require('child_process');
 const pp = require('../scripts/publish-public.cjs');
 const REPO_ROOT = pp.REPO_ROOT;
 
+// ---------------------------------------------------------------------------------------------
+// W22-U3 follow-up (incident, 2026-09-26): added to all three publish-*.test.cjs files after
+// tests/publish-push-hygiene.test.cjs, run directly against a real checkout, moved that repo's actual
+// `refs/heads/public` three times before restoring it (see that file's header for the full incident).
+// This file never moves a ref (its own header above already documents that design choice: synthetic
+// commits stay dangling/unreferenced), but it DOES write loose tree/commit objects into REPO_ROOT's
+// object database (via write-tree/commit-tree under a throwaway GIT_INDEX_FILE) -- not a pure read, so
+// it is classified as write-capable rather than read-only, and gets the same fail-closed gate as
+// publish-push-hygiene.test.cjs rather than a "never writes" exemption. Evaluated FIRST, before the
+// W22-U2 GIT_TEST_ENV setup below, so a real-repo checkout bails out before that setup even runs.
+(function guardAgainstRealRepoCwd() {
+  let remotesRaw = '';
+  try { remotesRaw = execFileSync('git', ['remote', '-v'], { cwd: REPO_ROOT, encoding: 'utf8' }); } catch { remotesRaw = ''; }
+  if (remotesRaw.indexOf('github.com/axervice/') !== -1 && !process.env.AXMEM_TEST_ALLOW_REAL_REPO_CWD) {
+    process.stderr.write('tests/publish-source-freeze.test.cjs: refusing to run -- REPO_ROOT (' + REPO_ROOT + ') has a remote pointing at a real axervice/* repo. This suite writes loose objects into the repo it runs against and must run from a disposable clone with `origin` removed. Set AXMEM_TEST_ALLOW_REAL_REPO_CWD=1 to override.\n');
+    process.exit(2);
+  }
+})();
+
 // W22-U2 follow-up: this suite's own TOCTOU test builds a real commit object via `git commit-tree`,
 // which -- unlike every other plumbing command this file uses (hash-object/update-index/write-tree/
 // ls-tree/rev-parse/status) -- requires a configured author/committer identity. This clone happened to
