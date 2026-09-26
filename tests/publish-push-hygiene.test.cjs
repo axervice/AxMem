@@ -75,28 +75,91 @@ function expectThrows(label, fn) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// W22-U3 follow-up: the ONE disposable clone every ref/remote-mutating test in this file operates
-// against. Created eagerly (every test block below needs it) and torn down at the very end.
-const isolatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-test-isolated-repo-'));
-execFileSync('git', ['clone', '--no-hardlinks', '-q', REPO_ROOT, isolatedDir], { encoding: 'utf8' });
-// Plain `git clone` only creates a LOCAL branch for whatever REPO_ROOT's HEAD pointed at; every other
-// branch on the source (in particular `public`) becomes `refs/remotes/origin/<name>` and would
-// disappear along with `origin` on the next line. Capture both as local branches first -- whichever of
-// the two already exists as the checked-out default simply fails here (caught, harmless).
-for (const name of ['public', 'main']) {
-  try { execFileSync('git', ['branch', name, 'origin/' + name], { cwd: isolatedDir, encoding: 'utf8' }); } catch {}
-}
-execFileSync('git', ['remote', 'remove', 'origin'], { cwd: isolatedDir, encoding: 'utf8' });
-check('isolated clone has zero remotes configured', execFileSync('git', ['remote'], { cwd: isolatedDir, encoding: 'utf8' }).trim() === '');
+// W22-U3 follow-up #2: builds a disposable clone of `sourceRepo` and guarantees it ends up with a
+// LOCAL `public` branch, regardless of what `sourceRepo` itself has -- this file must never require the
+// INVOKING repo (REPO_ROOT) to have a `public` branch. Evidence this was a real gap: a disposable clone
+// of the real repo with only `main` checked out (a CI checkout, or a fresh contributor clone that never
+// fetched `public`) made this file crash with a raw git usage error instead of running. Falls back
+// through three tiers: (1) `public` is already a local branch on the source (rare -- only if the
+// source's checked-out HEAD happened to be `public` itself); (2) `public` exists as
+// `refs/remotes/origin/public` after cloning (the common case: the source has a local `public` branch
+// alongside whatever it has checked out); (3) neither exists -- synthesize a fresh, parentless orphan
+// `public` commit from the canonical empty tree (`git mktree` on empty input) directly inside the
+// clone, so every test below still has a `public` to work with. Returns `{dir, pp, git}`; `pp` is a
+// SEPARATE module instance whose internal `REPO_ROOT` constant resolves to `dir`, not this repo or
+// `sourceRepo` (Node's require cache keys by resolved absolute path).
+function setupIsolatedClone(sourceRepo) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-test-isolated-repo-'));
+  execFileSync('git', ['clone', '--no-hardlinks', '-q', sourceRepo, dir], { encoding: 'utf8' });
+  // Plain `git clone` only creates a LOCAL branch for whatever the source's HEAD pointed at; every
+  // other branch on the source (in particular `public`, and `main` when the source's HEAD is on some
+  // other branch) becomes `refs/remotes/origin/<name>` and would disappear along with `origin` on the
+  // next line. Capture both as local branches first -- whichever of the two already exists as the
+  // checked-out default simply fails here (caught, harmless); so does `public` when the source has none
+  // at all, which is exactly the gap tier 3 below closes.
+  for (const name of ['public', 'main']) {
+    try { execFileSync('git', ['branch', name, 'origin/' + name], { cwd: dir, encoding: 'utf8' }); } catch {}
+  }
+  execFileSync('git', ['remote', 'remove', 'origin'], { cwd: dir, encoding: 'utf8' });
 
-// A separate module instance: its own top-level `REPO_ROOT` constant resolves to `isolatedDir`, not
-// this repo, because Node's require cache keys by resolved absolute path.
-const ppIso = require(path.join(isolatedDir, 'scripts', 'publish-public.cjs'));
+  const hasLocalPublic = (() => {
+    try { execFileSync('git', ['rev-parse', '--verify', 'refs/heads/public'], { cwd: dir, encoding: 'utf8' }); return true; } catch { return false; }
+  })();
+  if (!hasLocalPublic) {
+    const emptyTree = execFileSync('git', ['mktree'], { cwd: dir, input: '', encoding: 'utf8' }).trim();
+    const synthetic = execFileSync('git', ['commit-tree', emptyTree, '-m', 'w22-u3 test: synthesized orphan `public` (the source repo had no `public` branch at all)'], { cwd: dir, encoding: 'utf8' }).trim();
+    execFileSync('git', ['update-ref', 'refs/heads/public', synthetic], { cwd: dir, encoding: 'utf8' });
+  }
+
+  const iso = require(path.join(dir, 'scripts', 'publish-public.cjs'));
+  return {
+    dir,
+    pp: iso,
+    git: (args, opts) => execFileSync('git', args, Object.assign({ cwd: dir, encoding: 'utf8' }, opts || {})),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('== setup self-check: setupIsolatedClone must work against a main-only source (no `public` at all) ==');
+{
+  // A REAL single-branch clone of REPO_ROOT's `main` -- not a synthetic fixture -- so it genuinely
+  // carries scripts/publish-public.cjs (setupIsolatedClone requires it from whatever it clones) exactly
+  // like a real CI checkout or a fresh contributor clone would. `--single-branch --branch main` means
+  // `origin/public` never even exists after cloning, not just "happens to be absent" -- this is the
+  // precise shape of the gap that was reported.
+  const mainOnlySource = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-test-main-only-src-'));
+  execFileSync('git', ['clone', '--no-hardlinks', '--single-branch', '--branch', 'main', '-q', REPO_ROOT, mainOnlySource], { encoding: 'utf8' });
+  check('precondition: the main-only source has no `public` branch, local or remote-tracking', (() => {
+    try { execFileSync('git', ['rev-parse', '--verify', 'refs/heads/public'], { cwd: mainOnlySource, encoding: 'utf8' }); return false; } catch {}
+    try { execFileSync('git', ['rev-parse', '--verify', 'refs/remotes/origin/public'], { cwd: mainOnlySource, encoding: 'utf8' }); return false; } catch {}
+    return true;
+  })());
+
+  let selfCheckIso = null;
+  try {
+    selfCheckIso = setupIsolatedClone(mainOnlySource);
+    check('setupIsolatedClone does not throw against a main-only source', true);
+    check('the resulting module instance actually loaded (scripts/publish-public.cjs was present)', typeof selfCheckIso.pp.commitOntoPublic === 'function');
+    const publicSha = selfCheckIso.git(['rev-parse', 'public']).trim();
+    check('a `public` branch was synthesized in the isolated clone', publicSha.length === 40);
+    check('the synthesized `public` is parentless (orphan)', (() => {
+      try { selfCheckIso.git(['rev-parse', publicSha + '^']); return false; } catch { return true; }
+    })());
+  } catch (e) {
+    check('setupIsolatedClone does not throw against a main-only source', false);
+    console.log('    (threw: ' + (e.message || e) + ')');
+  } finally {
+    if (selfCheckIso) fs.rmSync(selfCheckIso.dir, { recursive: true, force: true });
+    fs.rmSync(mainOnlySource, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The ONE disposable clone every OTHER ref/remote-mutating test below operates against. Created
+// eagerly (every remaining test block needs it) and torn down at the very end.
+const { dir: isolatedDir, pp: ppIso, git: gitIso } = setupIsolatedClone(REPO_ROOT);
+check('isolated clone has zero remotes configured', gitIso(['remote']).trim() === '');
 check('the isolated module instance resolves REPO_ROOT to the clone, not this repo', ppIso.REPO_ROOT === isolatedDir && ppIso.REPO_ROOT !== REPO_ROOT);
-
-function gitIso(args, opts) {
-  return execFileSync('git', args, Object.assign({ cwd: isolatedDir, encoding: 'utf8' }, opts || {}));
-}
 
 // Belt-and-braces identity for the `git commit-tree` calls this file makes directly (and that
 // commitOntoPublic makes internally) against the isolated clone -- set as env, never
