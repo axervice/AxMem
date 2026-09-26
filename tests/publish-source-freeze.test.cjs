@@ -27,6 +27,27 @@ const { execFileSync } = require('child_process');
 const pp = require('../scripts/publish-public.cjs');
 const REPO_ROOT = pp.REPO_ROOT;
 
+// W22-U2 follow-up: this suite's own TOCTOU test builds a real commit object via `git commit-tree`,
+// which -- unlike every other plumbing command this file uses (hash-object/update-index/write-tree/
+// ls-tree/rev-parse/status) -- requires a configured author/committer identity. This clone happened to
+// have a local `user.name`/`user.email` set, masking that every git call this test makes needs its OWN
+// self-sufficient identity: the real repo (and CI) will not have one, and `git commit-tree` fails
+// fail-closed with "unable to auto-detect email address" rather than silently using something wrong.
+// Every git invocation below (via gitCwd, and the one raw hash-object call) gets this env: fixed
+// GIT_AUTHOR_*/GIT_COMMITTER_* identity, GIT_CONFIG_NOSYSTEM=1, and HOME/USERPROFILE pointed at a
+// throwaway scratch directory -- so no host-level (or even repo-level, since NOSYSTEM+a fake HOME means
+// neither /etc/gitconfig nor ~/.gitconfig are consulted) git config can leak in or be depended on.
+const TEST_GIT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-test-githome-'));
+const GIT_TEST_ENV = Object.assign({}, process.env, {
+  HOME: TEST_GIT_HOME,
+  USERPROFILE: TEST_GIT_HOME,
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 'axmem-test',
+  GIT_AUTHOR_EMAIL: 'axmem-test@example.invalid',
+  GIT_COMMITTER_NAME: 'axmem-test',
+  GIT_COMMITTER_EMAIL: 'axmem-test@example.invalid',
+});
+
 let ok = 0;
 let total = 0;
 const failures = [];
@@ -50,7 +71,12 @@ function expectThrows(label, fn) {
 }
 
 function gitCwd(args, opts) {
-  return execFileSync('git', args, Object.assign({ cwd: REPO_ROOT, encoding: 'utf8' }, opts || {}));
+  // GIT_TEST_ENV is always the base env for every git call this file makes; a caller-supplied
+  // opts.env (e.g. the TOCTOU test's GIT_INDEX_FILE/GIT_DIR for its throwaway plumbing) is layered on
+  // TOP of it (opts.env never itself carries the identity keys, so they always survive the merge).
+  const merged = Object.assign({ cwd: REPO_ROOT, encoding: 'utf8' }, opts || {});
+  merged.env = Object.assign({}, GIT_TEST_ENV, (opts && opts.env) || {});
+  return execFileSync('git', args, merged);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -149,7 +175,7 @@ console.log('== resolveSourceOid: pinned via env override, never a live re-resol
   let syntheticCommit;
   try {
     gitCwd(['read-tree', 'main'], { env });
-    const markerSha = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: REPO_ROOT, input: 'w22-u2 toctou marker\n' }).toString('utf8').trim();
+    const markerSha = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: REPO_ROOT, env: GIT_TEST_ENV, input: 'w22-u2 toctou marker\n' }).toString('utf8').trim();
     gitCwd(['update-index', '--add', '--cacheinfo', '100644,' + markerSha + ',MARKER-OID-TEST.txt'], { env });
     const markerTree = gitCwd(['write-tree'], { env }).trim();
     syntheticCommit = gitCwd(['commit-tree', markerTree, '-p', 'main', '-m', 'w22-u2 test: synthetic marker commit (dangling, never referenced by any ref)']).trim();
@@ -360,6 +386,8 @@ console.log('== runExportCore: an early step1 failure leaves no temp dir behind 
     for (const n of newEntries) fs.rmSync(path.join(os.tmpdir(), n), { recursive: true, force: true });
   }
 }
+
+try { fs.rmSync(TEST_GIT_HOME, { recursive: true, force: true }); } catch {}
 
 // ---------------------------------------------------------------------------------------------
 console.log('\npublish-source-freeze self-test ' + ok + '/' + total);
