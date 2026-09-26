@@ -317,6 +317,22 @@ function mkdtempMarked(prefix) {
   return dir;
 }
 
+// W22-U2 fix: the export tree dir CANNOT itself carry the run marker directly -- treeHashOfDir()/
+// computeExportedPathList() walk exportDir's ENTIRE contents to build the committed tree and the GATE5
+// path list, so a marker file written straight into exportDir would ship as part of the public export
+// (confirmed in practice: GATE5 caught its own marker as an unexpected extra path the first time this
+// was tried). Instead, the marker lives on a PARENT "run" directory, one level up from a `tree/`
+// subdirectory that is the actual exportDir handed to step1 onward -- the sweep only ever inspects
+// direct children of tmpdir() (the run dir), never descends into `tree/`, so this does not change
+// step0_cleanupStaleTemp()'s behavior at all. Callers must clean up `runDir` (not just `exportDir`) so
+// the marker's own directory does not itself become a marker-less leftover.
+function createMarkedExportDir(prefix) {
+  const runDir = mkdtempMarked(prefix);
+  const treeDir = path.join(runDir, 'tree');
+  fs.mkdirSync(treeDir);
+  return { runDir: runDir, exportDir: treeDir };
+}
+
 function syncSleepMs(ms) {
   // Synchronous backoff between cleanup retries. main() is otherwise entirely synchronous (no promises/
   // timers in flight), so a blocking wait here is simpler and safer than restructuring the whole script
@@ -1061,7 +1077,7 @@ function gate5_pathSnapshot(exportDir, manifest) {
 function buildExportForPathListing(manifest, sourceOid) {
   const keepList = computeKeepList(sourceOid, manifest);
   validateManifestInputsAgainstFrozenSource(sourceOid, manifest, keepList);
-  const exportDir = mkdtempMarked(path.join(os.tmpdir(), TEMP_PREFIX + 'src-'));
+  const { runDir, exportDir } = createMarkedExportDir(path.join(os.tmpdir(), TEMP_PREFIX + 'src-'));
   try {
     step1_archiveMainToTemp(exportDir, manifest, sourceOid, keepList);
     step2_applyExclude(exportDir, manifest);
@@ -1071,7 +1087,7 @@ function buildExportForPathListing(manifest, sourceOid) {
     step6_sanitize(exportDir, manifest);
     return computeExportedPathList(exportDir);
   } finally {
-    rmrfRetrying(exportDir, 3);
+    rmrfRetrying(runDir, 3);
   }
 }
 
@@ -1222,7 +1238,7 @@ function getRemoteRefSha(remoteName, ref) {
 // failure there leaked the directory; now exportDir is created here, before the try, and step1 is the
 // FIRST call inside it, so any failure from step1 onward is guaranteed to reach the finally cleanup.
 function runExportCore(frozenManifest, sourceOid, keepList, sourceShortSha, orphan, push, allowedDirtyInputs) {
-  const exportDir = mkdtempMarked(path.join(os.tmpdir(), TEMP_PREFIX + 'src-'));
+  const { runDir, exportDir } = createMarkedExportDir(path.join(os.tmpdir(), TEMP_PREFIX + 'src-'));
   try {
     step1_archiveMainToTemp(exportDir, frozenManifest, sourceOid, keepList);
     step2_applyExclude(exportDir, frozenManifest);
@@ -1283,13 +1299,15 @@ function runExportCore(frozenManifest, sourceOid, keepList, sourceShortSha, orph
     // MED fix (review §7): retry-with-backoff + explicit separate reporting, so a cleanup failure
     // never masquerades as (or gets masked by) the export's own success/failure. This finally block
     // now actually runs on every die() path too -- see die()'s comment -- which it did not before, and
-    // (W22-U2, codex #12) now also runs on a failure INSIDE step1 itself, since exportDir is created
-    // before this try and step1 is the first call inside it.
-    const cleanup = rmrfRetrying(exportDir, 3);
+    // (W22-U2, codex #12) now also runs on a failure INSIDE step1 itself, since the run dir is created
+    // before this try and step1 is the first call inside it. Cleans up `runDir` (the marker's own
+    // parent), not just `exportDir` (its `tree/` subdirectory), so the marker's directory itself never
+    // becomes an unmarked leftover.
+    const cleanup = rmrfRetrying(runDir, 3);
     if (cleanup.ok) {
-      log('cleanup: removed export dir ' + exportDir + (cleanup.attempts > 1 ? (' (attempt ' + cleanup.attempts + ')') : ''));
+      log('cleanup: removed export dir ' + runDir + (cleanup.attempts > 1 ? (' (attempt ' + cleanup.attempts + ')') : ''));
     } else {
-      process.stderr.write('[publish-public] CLEANUP FAILED after ' + cleanup.attempts + ' attempt(s): could not remove ' + exportDir + ' -- ' + (cleanup.error && cleanup.error.message) + '\n');
+      process.stderr.write('[publish-public] CLEANUP FAILED after ' + cleanup.attempts + ' attempt(s): could not remove ' + runDir + ' -- ' + (cleanup.error && cleanup.error.message) + '\n');
       process.stderr.write('[publish-public] Remove this directory by hand. (Contents are the filtered export tree only -- excluded/paid-tier files were never archived into it, per step1 -- but it should not be left on disk.)\n');
       // Reported and flagged separately from EXPORT_TREE/DONE above: if the export itself succeeded,
       // those log lines already printed and remain true. This only marks the OVERALL run non-clean.
@@ -1409,6 +1427,7 @@ module.exports = {
   runExportCore,
   step0_cleanupStaleTemp,
   mkdtempMarked,
+  createMarkedExportDir,
   writeRunMarker,
   isPidAlive,
   TEMP_PREFIX,
