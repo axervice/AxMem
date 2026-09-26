@@ -95,7 +95,7 @@
   },
   "overlayBaselines": {
     "_comment": "MED-3 fix (review FAB-2026-09-25-w11-w12-review.md MED-3): drift-detection baseline for each entry in `overlays` above. Value is the git blob sha of `main`'s OWN tracked file at that same path (`git rev-parse main:<path>`) as of the moment the hand-curated overlay content under publish-overrides/ (or README.public.md etc.) was last reviewed against it. checkOverlayDrift() in scripts/publish-public.cjs recomputes this sha at the start of every export and dies (before archiving/committing anything) if it no longer matches -- the private source at that path moved since the overlay was last reviewed, so the overlay snapshot may now be stale. After reviewing the diff at that path and refreshing the overlay content if needed, re-baseline with: `node scripts/publish-public.cjs --update-overlay-baselines` (rewrites only this section of this manifest; does not run the rest of the export pipeline).",
-    "README.md": "3f2b8cb57f73f0c056ff993a3e5398f64c5b2b23",
+    "README.md": "0d71cc73d1115da8f602b934c8b0e66201802f18",
     "README.zh.md": "4925e5f26ae6e6c060bebef13088ed0657c0553f",
     "guards/guard-canary.sh": "ed7844bf4c759d1db7f4a0870c4cc7b8fc62bba7",
     "guards/specs/isolation-gate-contract.json": "a3a8b2025ee0a3c057927ad43f57d76586b6ac08",
