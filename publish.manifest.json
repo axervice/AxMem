@@ -10,6 +10,8 @@
   "_comment_source": "Reverse-engineered 2026-09-24 from the diff between public origin/main (592c4c3) and pre-cut-release (b862900). Every path below either appears as an add-only ('A') entry in `git diff --name-status 592c4c3 pre-cut-release` (exclude list) or as a modified ('M') / deleted-from-592c4c3 ('D', i.e. add-back) entry that needed a transform to reproduce 592c4c3's exact content.",
   "exclude": [
     "publish.manifest.json",
+    ".gitattributes",
+    "_comment_GITATTRIBUTES: 2026-09-26 W22-U2 -- belt-and-braces LF-pinning for this PRIVATE repo's own publish inputs (publish-overrides/**, publish.manifest.json, scripts/**, *.md), added alongside the real codex #6 fix (frozen-OID blob reads, immune to core.autocrlf regardless). Excluded here so this unit's export tree stays byte-identical to before it existed -- adding a public-tier .gitattributes (and re-baselining GATE5's path snapshot for it) is a separate, deliberate maintainer decision, not a side effect of this fix.",
     "scripts/**",
     ".github/workflows/publish-public.yml",
     "README.public.md",
@@ -70,7 +72,9 @@
     "CHANGELOG.public.md",
     "_comment_CHANGELOG_PUBLIC_DUP: 2026-09-26 W22 hotfix (codex finding #14) -- CHANGELOG.public.md is the hand-curated overlay SOURCE for CHANGELOG.md (see overlays.\"CHANGELOG.md\" below); step4_applyOverlays in scripts/publish-public.cjs reads it directly from this private repo's own working tree (path.join(REPO_ROOT, srcRel)), NOT from the filtered export directory, so excluding it here does not affect the overlay -- it only stops the source file from ALSO being shipped verbatim as its own redundant top-level CHANGELOG.public.md in the public tree (same treatment already given to the README.md overlay's own source files, README.public.md / README.zh.public.md, above).",
     "tests/publish-leak-scan.test.cjs",
-    "_comment_PUBLISH_LEAK_SCAN_TEST: 2026-09-26 W22-U1 -- unit-tests the exporter's own GATE4/GATE5/schema-validation logic via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; both of those are excluded from the public tree above, so this file has no free-tier value and would break if it ever shipped (its require target would not exist). Deliberately excluded here rather than left to rely on tests/'s general shipped status."
+    "_comment_PUBLISH_LEAK_SCAN_TEST: 2026-09-26 W22-U1 -- unit-tests the exporter's own GATE4/GATE5/schema-validation logic via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; both of those are excluded from the public tree above, so this file has no free-tier value and would break if it ever shipped (its require target would not exist). Deliberately excluded here rather than left to rely on tests/'s general shipped status.",
+    "tests/publish-source-freeze.test.cjs",
+    "_comment_PUBLISH_SOURCE_FREEZE_TEST: 2026-09-26 W22-U2 -- same rationale as _comment_PUBLISH_LEAK_SCAN_TEST directly above: unit-tests the exporter's source-OID freezing, frozen-blob reads, per-target overlay baseline update, and stale-temp sweep via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree)."
   ],
   "excludeExceptions": [
     "guards/fixtures/v3/trigger-write-gate-probe.cjs"

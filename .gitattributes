@@ -1,0 +1,14 @@
+# W22-U2 (Opus defense unit U2, codex #6 belt-and-braces): pin LF for every path the publish pipeline
+# treats as a byte-exact input. The ACTUAL fix for codex #6 (a fresh Windows checkout with
+# core.autocrlf=true corrupting find/replace and overlay content) is scripts/publish-public.cjs reading
+# every publish input from the frozen Git OID via `git show`/`git cat-file` -- which is immune to the
+# checkout's own core.autocrlf setting entirely, since that only affects files materialized onto disk,
+# never a blob read straight out of the object database. This file is added only as a second,
+# independent line of defense (per the defense doc's explicit instruction NOT to rely on .gitattributes
+# alone) and to keep a plain `git diff`/`git show` of these paths stable across contributors' local
+# autocrlf settings. Added only after confirming it does not reformat/touch any existing tracked blob
+# (`git add --renormalize` produced zero changes) -- see this unit's own build report.
+publish-overrides/** text eol=lf
+publish.manifest.json text eol=lf
+scripts/** text eol=lf
+*.md text eol=lf
