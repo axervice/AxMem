@@ -9,11 +9,17 @@
 // pre-cut-release @ b862900, 2026-09-24).
 //
 // Usage:
-//   node scripts/publish-public.cjs             # export + 3 gates + commit onto local `public` (no push)
+//   node scripts/publish-public.cjs             # export + gates 0-5 + commit onto local `public` (no push)
 //   node scripts/publish-public.cjs --push       # same, then `git push origin public:main`
 //   node scripts/publish-public.cjs --orphan     # commit as a fresh parentless commit (see manifest's
 //                                                 # "history" field -- "orphan" is the standing default,
 //                                                 # so this flag is rarely needed explicitly)
+//   node scripts/publish-public.cjs --update-overlay-baselines          # ack overlay drift (GATE0), no export
+//   node scripts/publish-public.cjs --update-path-snapshot --reason "X" # ack a public path-set change (GATE5), no export
+//
+// Gates: GATE0 overlay-drift, GATE1 residual sanitize-regex scan, GATE2 install-layout self-test,
+// GATE3 `npm run selftest`, GATE4 independent final-tree identity/denylist + mode/binary scan (W22-U1,
+// codex #1/#11/#13), GATE5 exported path-list snapshot (W22-U1, codex #4/#14).
 //
 // Discipline: this script must never read/write the real $HOME/.claude tree. Gate 2 (install-layout
 // self-test) always runs under HOME=USERPROFILE=PMM_HOME=<a fresh mkdtemp>, never the real profile.
@@ -45,9 +51,63 @@ function die(msg) {
   throw err;
 }
 
+// ---------------------------------------------------------------------------------------------
+// W22-U1 fix (codex #11): every top-level field this script actually reads, kept in sync by hand.
+// validateManifestSchema() dies on any OTHER top-level key (typo'd field name, a field renamed here
+// but not there, ...) instead of silently ignoring it -- the exact "declared but not consumed" bug
+// class finding #11 found in `sourceBranch`/`residualScanPatterns`/etc.
+const ALLOWED_TOP_LEVEL_KEYS = new Set([
+  '$schema', 'version', 'auto', 'publicRepo', 'publicBranch', 'sourceBranch', 'history',
+  'exclude', 'excludeExceptions', 'addFiles', 'overlays', 'overlayBaselines', 'replacements',
+  'sanitizeLiteralFallback', 'sanitize', 'denylist', 'binaryAllowlist', 'publicPathSnapshot',
+  'gates', 'knownDivergencesFromCurrentOriginMain',
+]);
+
+function validateRuleList(list, label, requirePattern) {
+  if (list == null) return;
+  if (!Array.isArray(list)) die('manifest schema: "' + label + '" must be an array');
+  const seen = new Set();
+  for (const entry of list) {
+    if (isCommentEntry(entry)) continue;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) die('manifest schema: "' + label + '" has a non-object, non-comment entry: ' + JSON.stringify(entry));
+    if (typeof entry.id !== 'string' || entry.id.length === 0) die('manifest schema: "' + label + '" entry missing non-empty string "id": ' + JSON.stringify(entry));
+    if (seen.has(entry.id)) die('manifest schema: "' + label + '" has duplicate rule id "' + entry.id + '"');
+    seen.add(entry.id);
+    if (requirePattern === 'required') {
+      if (typeof entry.pattern !== 'string' || entry.pattern.length === 0) die('manifest schema: "' + label + '" entry "' + entry.id + '" has empty/missing "pattern"');
+    } else if (requirePattern === 'kind-or-pattern') {
+      const hasKind = typeof entry.kind === 'string' && entry.kind.length > 0;
+      const hasPattern = typeof entry.pattern === 'string' && entry.pattern.length > 0;
+      if (!hasKind && !hasPattern) die('manifest schema: "' + label + '" entry "' + entry.id + '" needs either a non-empty "kind" or a non-empty "pattern"');
+      if (hasPattern && typeof entry.replace !== 'string') die('manifest schema: "' + label + '" entry "' + entry.id + '" has "pattern" but is missing string "replace"');
+    }
+  }
+}
+
+function validateManifestSchema(manifest) {
+  if (!manifest || typeof manifest !== 'object') die('manifest schema: root is not an object');
+  for (const key of Object.keys(manifest)) {
+    if (key.indexOf('_comment') === 0) continue;
+    if (!ALLOWED_TOP_LEVEL_KEYS.has(key)) die('manifest schema: unknown top-level field "' + key + '" (typo, or a field this script no longer reads -- see ALLOWED_TOP_LEVEL_KEYS)');
+  }
+  validateRuleList(manifest.sanitize && manifest.sanitize.rules, 'sanitize.rules', 'kind-or-pattern');
+  validateRuleList(manifest.denylist && manifest.denylist.identityLiterals, 'denylist.identityLiterals', 'required');
+  validateRuleList(manifest.denylist && manifest.denylist.internalNames, 'denylist.internalNames', 'required');
+  return manifest;
+}
+
 function readManifest() {
   const raw = fs.readFileSync(MANIFEST_PATH, 'utf8');
-  return JSON.parse(raw);
+  const manifest = JSON.parse(raw);
+  validateManifestSchema(manifest);
+  return manifest;
+}
+
+// Resolves a manifest-declared path against REPO_ROOT, except an already-absolute path (used by
+// unit tests to point publicPathSnapshot.file at a scratch fixture outside the repo) which passes
+// through unchanged -- plain path.join() would otherwise silently concatenate instead of resolving.
+function resolveManifestPath(rel) {
+  return path.isAbsolute(rel) ? rel : path.join(REPO_ROOT, rel);
 }
 
 function git(args, opts) {
@@ -329,37 +389,47 @@ function uniqStrings(arr) {
   return out;
 }
 
-function buildSanitizeRules(manifest) {
-  const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const fallback = (manifest && manifest.sanitizeLiteralFallback) || {};
-  const usernames = uniqStrings([os.userInfo().username].concat(fallback.usernames || []));
-  const hostnames = uniqStrings([os.hostname()].concat(fallback.hostnames || []));
+function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-  const rules = [];
-  for (const u of usernames) {
-    const userEsc = escRe(u);
-    rules.push({ id: 'home-username-path:' + u, re: new RegExp('((?:[A-Za-z]:[\\\\/]|/)Users[\\\\/])' + userEsc + '([\\\\/])', 'g'), replace: '$1<user>$2' });
-    rules.push({ id: 'bare-username:' + u, re: new RegExp('(["\'`\\s(])' + userEsc + '(["\'`\\s).,;])', 'g'), replace: '$1<user>$2' });
+// W22-U1 fix (codex #11, CONFIRMED): publish.manifest.json has always DECLARED a `sanitize.rules`
+// array (id/description/pattern/flags/replace, plus 3 "kind"-based entries for the machine-derived
+// username/hostname rules), but buildSanitizeRules() below never actually read it -- it re-derived an
+// independent, hand-duplicated copy of the same 4 literal rules from scratch every time, so editing
+// manifest.sanitize.rules (adding, changing, or removing a pattern) was a silent no-op. That is
+// exactly the bug class finding #1 depended on staying invisible. compileSanitizeRule() now does the
+// actual reading: every entry in manifest.sanitize.rules compiles into one or more live RegExp
+// rules, and the 3 "kind"-based entries are where the machine-derived (os.userInfo()/os.hostname())
+// + sanitizeLiteralFallback union logic now lives (previously correct in spirit but wired to a
+// hardcoded list, not to the manifest's own declared rule ids).
+function compileSanitizeRule(entry, manifest) {
+  const id = entry.id;
+  const fallback = (manifest && manifest.sanitizeLiteralFallback) || {};
+  if (entry.kind === 'username-path' || entry.kind === 'username-bare') {
+    const usernames = uniqStrings([os.userInfo().username].concat(fallback.usernames || []));
+    return usernames.map((u) => {
+      const userEsc = escRe(u);
+      if (entry.kind === 'username-path') {
+        return { id: id + ':' + u, declaredId: id, re: new RegExp('((?:[A-Za-z]:[\\\\/]|/)Users[\\\\/])' + userEsc + '([\\\\/])', 'g'), replace: '$1<user>$2' };
+      }
+      return { id: id + ':' + u, declaredId: id, re: new RegExp('(["\'`\\s(])' + userEsc + '(["\'`\\s).,;])', 'g'), replace: '$1<user>$2' };
+    });
   }
-  for (const h of hostnames) {
-    const hostEsc = escRe(h);
-    rules.push({ id: 'hostname:' + h, re: new RegExp('\\b' + hostEsc + '\\b', 'g'), replace: '<mach>' });
+  if (entry.kind === 'hostname') {
+    const hostnames = uniqStrings([os.hostname()].concat(fallback.hostnames || []));
+    return hostnames.map((h) => ({ id: id + ':' + h, declaredId: id, re: new RegExp('\\b' + escRe(h) + '\\b', 'g'), replace: '<mach>' }));
   }
-  rules.push({ id: 'lan-ip', re: /192\.168\.1\.151/g, replace: '10.0.0.1' });
-  rules.push({ id: 'd-rag-path', re: /D:[\\/]RAG/gi, replace: 'D:/example-project' });
-  // [Builder W9, 2026-09-25] Blanket rename, ANY occurrence -- not just inside a real absolute
-  // path. Supersedes the old narrower 'desktop-axervice-booking-real-path' rule (username-redaction
-  // there is already covered by home-username-path above; this rule now handles the project-name
-  // half unconditionally, including test-fixture repo= values and comments). The private source
-  // fixtures were also renamed directly (guards/pmm-trigger-recall.cjs/.sh, guards/fixtures/v3/
-  // trigger-write-gate-probe.cjs), so this is defense-in-depth, not the primary mechanism. KNOWN
-  // INTENTIONAL divergence from today's origin/main -- see manifest knownDivergencesFromCurrentOriginMain.
-  rules.push({ id: 'axervice-booking-repo-name', re: /axervice-booking/g, replace: 'example-project' });
-  // Deliberately a hardcoded literal, unlike the dynamic rules above -- 'Jax' is a personal name
-  // embedded in prose/comments across the tree, not derivable from any os.userInfo()/os.hostname()
-  // API. Word-boundary match so it never touches an already-mapped compound like a
-  // 'JaxStuuu'-style hostname (the hostname rules above already handle that).
-  rules.push({ id: 'author-first-name', re: /\bJax\b/g, replace: 'the maintainer' });
+  // Literal/pattern-based rule -- validateManifestSchema() already guaranteed a non-empty string
+  // "pattern" and a string "replace" before this ever runs, so no defensive re-check needed here.
+  return [{ id: id, declaredId: id, re: new RegExp(entry.pattern, entry.flags || 'g'), replace: entry.replace }];
+}
+
+function buildSanitizeRules(manifest) {
+  const entries = (manifest && manifest.sanitize && manifest.sanitize.rules) || [];
+  let rules = [];
+  for (const entry of entries) {
+    if (isCommentEntry(entry)) continue;
+    rules = rules.concat(compileSanitizeRule(entry, manifest));
+  }
   return rules;
 }
 
@@ -386,7 +456,15 @@ function step6_sanitize(exportDir, manifest) {
 
 // ---------------------------------------------------------------------------------------------
 function gate1_residualScan(exportDir, manifest) {
-  const rules = buildSanitizeRules(manifest);
+  const allRules = buildSanitizeRules(manifest);
+  // W22-U1 fix (codex #11): manifest.gates.residualScanPatterns was declared but never read -- GATE1
+  // always scanned with the full compiled rule set regardless of what this field said, so removing an
+  // id from it (or a maintainer expecting it to narrow the scan) changed nothing. Now an explicit
+  // allow-list of declared sanitize.rules ids: present means "GATE1 checks exactly these ids" (each
+  // compiled sub-rule carries its parent's declared id via .declaredId, so this filters correctly even
+  // for the per-value username/hostname rules); absent/omitted means "check everything compiled".
+  const allowedIds = manifest.gates && Array.isArray(manifest.gates.residualScanPatterns) ? new Set(manifest.gates.residualScanPatterns) : null;
+  const rules = allowedIds ? allRules.filter((r) => allowedIds.has(r.declaredId)) : allRules;
   const files = [];
   walk(exportDir, '', files);
   const findings = [];
@@ -556,8 +634,190 @@ function treeHashOfDir(exportDir) {
   return tree;
 }
 
-function commitOntoPublic(exportDir, privateShortSha, orphan) {
-  const newTree = treeHashOfDir(exportDir);
+// ---------------------------------------------------------------------------------------------
+// W22-U1 GATE4 (codex #1/#11/#13, Opus defense unit U1 "独立最终树扫描"): an independently-coded
+// scanner over the FINAL COMMITTED git tree object's raw blob bytes (git ls-tree + git cat-file
+// against the tree treeHashOfDir() already built, never a working-directory walk), deliberately NOT
+// reusing buildSanitizeRules()'s replacement loop -- codex #1's whole finding was that "sanitize and
+// GATE1 scan share the same incomplete rule set" let a real leak report GATE1=0 for months. GATE4
+// checks two manifest-declared lists (denylist.identityLiterals -- the same identity strings
+// sanitize.rules already redacts, re-checked here as independent confirmation the redaction actually
+// worked -- and denylist.internalNames -- private codenames/tags that have NO redaction rule at all
+// by design, because the files that carried them are fully excluded or literal-patched instead), plus
+// machine-derived username/hostname (kept as an ADDITIONAL source per spec, same union pattern as
+// sanitize.rules' "kind" entries). It also refuses any non-blob tree entry (gitlink/submodule),
+// any symlink (mode 120000), any unexpected file mode, and any NUL-containing blob not explicitly
+// named in manifest.binaryAllowlist (codex #13: symlinks and binary/UTF-16 content bypassed
+// step6_sanitize/gate1 entirely because walk() only visits fs.Dirent.isFile() and isProbablyText()
+// treats any NUL byte as "not text, skip"). Every blob -- text OR binary/allowlisted -- is ALSO
+// scanned for each pattern's raw UTF-16LE/BE byte encoding regardless of allowlist status: an
+// allowlisted binary asset (e.g. a PDF/font) can still leak identity through UTF-16BE-encoded
+// metadata strings (a real PDF /Info convention), so exempting allowlisted binaries from this second
+// pass would reopen exactly the gap #13 closes for text files.
+function buildGate4Patterns(manifest) {
+  const fallback = (manifest && manifest.sanitizeLiteralFallback) || {};
+  const usernames = uniqStrings([os.userInfo().username].concat(fallback.usernames || []));
+  const hostnames = uniqStrings([os.hostname()].concat(fallback.hostnames || []));
+  const patterns = [];
+  for (const u of usernames) patterns.push({ id: 'identity:dynamic-username:' + u, text: u, mode: 'substring', caseSensitive: false });
+  for (const h of hostnames) patterns.push({ id: 'identity:dynamic-hostname:' + h, text: h, mode: 'substring', caseSensitive: false });
+  const identityLiterals = (manifest.denylist && manifest.denylist.identityLiterals) || [];
+  for (const entry of identityLiterals) {
+    if (isCommentEntry(entry)) continue;
+    patterns.push({ id: 'identity:' + entry.id, text: entry.pattern, mode: entry.match || 'substring', caseSensitive: !!entry.caseSensitive });
+  }
+  const internalNames = (manifest.denylist && manifest.denylist.internalNames) || [];
+  for (const entry of internalNames) {
+    if (isCommentEntry(entry)) continue;
+    patterns.push({ id: 'denylist:' + entry.id, text: entry.pattern, mode: entry.match || 'substring', caseSensitive: !!entry.caseSensitive });
+  }
+  return patterns;
+}
+
+function patternRegex(p) {
+  const flags = 'g' + (p.caseSensitive ? '' : 'i');
+  const escaped = escRe(p.text);
+  return p.mode === 'word' ? new RegExp('\\b' + escaped + '\\b', flags) : new RegExp(escaped, flags);
+}
+
+function utf16leBuf(s) { return Buffer.from(s, 'utf16le'); }
+function utf16beBuf(s) {
+  const le = utf16leBuf(s);
+  const be = Buffer.alloc(le.length);
+  for (let i = 0; i < le.length; i += 2) { be[i] = le[i + 1]; be[i + 1] = le[i]; }
+  return be;
+}
+
+// Byte-level scan of ONE blob's raw content against every pattern: (a) a UTF-8/ASCII text regex pass
+// (word-bounded or substring, case-(in)sensitive per pattern) and (b) a raw UTF-16LE/BE byte-substring
+// containment pass, run unconditionally on every blob regardless of whether (a) found anything or
+// whether the blob is on the binary allowlist -- see this function's caller for why.
+function gate4ScanBlob(buf, patterns) {
+  const hits = [];
+  const utf8Text = buf.toString('utf8');
+  for (const p of patterns) {
+    if (patternRegex(p).test(utf8Text)) hits.push(p.id + ' (utf8)');
+  }
+  for (const p of patterns) {
+    const le = utf16leBuf(p.text);
+    if (le.length && buf.includes(le)) hits.push(p.id + ' (utf16le)');
+    const be = utf16beBuf(p.text);
+    if (be.length && buf.includes(be)) hits.push(p.id + ' (utf16be)');
+  }
+  return hits;
+}
+
+function gate4_finalTreeScan(treeHash, manifest) {
+  const patterns = buildGate4Patterns(manifest);
+  const binaryAllowlist = ((manifest.binaryAllowlist || []).filter((p) => !isCommentEntry(p)));
+  const lsOut = git(['ls-tree', '-r', treeHash]);
+  const lines = lsOut.split('\n').filter(Boolean);
+  const findings = [];
+  for (const line of lines) {
+    const m = line.match(/^(\d+) (\S+) ([0-9a-f]+)\t(.*)$/);
+    if (!m) { findings.push({ path: '(unparseable)', issue: 'GATE4 could not parse ls-tree line: ' + line }); continue; }
+    const mode = m[1], type = m[2], sha = m[3], filePath = m[4];
+    if (type !== 'blob') { findings.push({ path: filePath, issue: 'refused: non-blob tree entry (type=' + type + ', mode=' + mode + ') -- gitlink/submodule not allowed in the public export' }); continue; }
+    if (mode === '120000') { findings.push({ path: filePath, issue: 'refused: symlink (mode 120000) not allowed in the public export' }); continue; }
+    if (mode !== '100644' && mode !== '100755') { findings.push({ path: filePath, issue: 'refused: unexpected file mode ' + mode }); continue; }
+    const buf = git(['cat-file', 'blob', sha], { encoding: 'buffer', maxBuffer: 1024 * 1024 * 512 });
+    if (buf.includes(0) && !matchesAny(filePath, binaryAllowlist)) {
+      findings.push({ path: filePath, issue: 'refused: binary blob (contains a NUL byte) not on manifest.binaryAllowlist' });
+    }
+    for (const hit of gate4ScanBlob(buf, patterns)) findings.push({ path: filePath, issue: 'identity/denylist match: ' + hit });
+  }
+  log('GATE4 final-tree scan: ' + lines.length + ' tree entr(ies) checked against ' + patterns.length + ' pattern(s), ' + findings.length + ' finding(s)');
+  return findings;
+}
+
+// ---------------------------------------------------------------------------------------------
+// W22-U1 GATE5 (codex #4/#14, Opus U1 "path allowlist快照"): the exported tree's path list must
+// exactly match a maintainer-reviewed baseline file (manifest.publicPathSnapshot.file). Both lists
+// are ordered with a case-insensitive sort key (so ordering is stable and diffable regardless of a
+// platform's own string-sort semantics for mixed-case paths), but the actual pass/fail comparison is
+// an EXACT (case-preserving) string match at every position, over the full array (never a
+// de-duplicated Set) -- this is what makes both required failure modes fire: an added/removed path
+// changes the array length; a same-count CASE-ONLY rename (e.g. `docs/Readme.md` replacing
+// `docs/README.md`) changes a string at one position without changing the length, and would be
+// invisible to a purely lowercase-folded comparison (folding both sides to the same key makes them
+// look identical) -- exact comparison is what actually catches it. This also still closes codex #4's
+// case-variant-escape gap (e.g. a stray `Scripts/x.cjs` next to an excluded `scripts/**`): that is
+// simply an EXTRA array entry, which the length/content check catches regardless of case-folding.
+function pathSortKey(p) { return p.toLowerCase() + '\u0000' + p; } // case-insensitive primary key, exact secondary tie-break
+
+function computeExportedPathList(exportDir) {
+  const files = [];
+  walk(exportDir, '', files);
+  return files.map((p) => p.replace(/\\/g, '/')).sort((a, b) => {
+    const ka = pathSortKey(a), kb = pathSortKey(b);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+}
+
+function pathSnapshotFile(manifest) {
+  const rel = manifest.publicPathSnapshot && manifest.publicPathSnapshot.file;
+  if (!rel) die('publish.manifest.json: publicPathSnapshot.file is not set');
+  return resolveManifestPath(rel);
+}
+
+function readPathSnapshotFile(manifest) {
+  const filePath = pathSnapshotFile(manifest);
+  if (!fs.existsSync(filePath)) return null;
+  const lines = fs.readFileSync(filePath, 'utf8').split('\n').map((s) => s.replace(/\r$/, '')).filter((s) => s.length > 0);
+  return lines.sort((a, b) => { const ka = pathSortKey(a), kb = pathSortKey(b); return ka < kb ? -1 : ka > kb ? 1 : 0; });
+}
+
+function gate5_pathSnapshot(exportDir, manifest) {
+  const filePath = pathSnapshotFile(manifest);
+  const expected = readPathSnapshotFile(manifest);
+  if (expected === null) die('GATE5 path snapshot: ' + filePath + ' does not exist -- run `node scripts/publish-public.cjs --update-path-snapshot --reason "<text>"` once to establish the baseline');
+  const current = computeExportedPathList(exportDir);
+  let same = current.length === expected.length;
+  if (same) { for (let i = 0; i < current.length; i++) { if (current[i] !== expected[i]) { same = false; break; } } }
+  if (!same) {
+    die(
+      'GATE5 path snapshot mismatch: exported tree has ' + current.length + ' path(s), baseline (' + filePath + ') has ' + expected.length + ' (exact, case-preserving full-list compare over a case-insensitively-sorted order -- catches an added/removed path AND a same-count case-only rename/escape). ' +
+      'Review the exported path list, then re-run `node scripts/publish-public.cjs --update-path-snapshot --reason "<text>"` to see the exact +/- diff and record the new baseline.'
+    );
+  }
+  log('GATE5 path snapshot: OK (' + current.length + ' path(s) match baseline ' + filePath + ')');
+}
+
+// Builds a throwaway export (steps 1-6 only, no gates/commit) purely to read off the resulting path
+// list -- addFiles/overlays can add paths main's own tree never had, so the baseline must reflect the
+// FULLY assembled export dir, not just step1's keep-list.
+function buildExportForPathListing(manifest) {
+  const exportDir = step1_archiveMainToTemp(manifest);
+  try {
+    step2_applyExclude(exportDir, manifest);
+    step3_applyAddFiles(exportDir, manifest);
+    step4_applyOverlays(exportDir, manifest);
+    step5_applyReplacements(exportDir, manifest);
+    step6_sanitize(exportDir, manifest);
+    return computeExportedPathList(exportDir);
+  } finally {
+    rmrfRetrying(exportDir, 3);
+  }
+}
+
+function updatePathSnapshot(manifest, reason) {
+  const filePath = pathSnapshotFile(manifest);
+  const before = readPathSnapshotFile(manifest) || [];
+  const after = buildExportForPathListing(manifest);
+  const beforeSet = new Set(before);
+  const afterSet = new Set(after);
+  const added = after.filter((p) => !beforeSet.has(p));
+  const removed = before.filter((p) => !afterSet.has(p));
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, after.join('\n') + '\n', 'utf8');
+  log('--update-path-snapshot: wrote ' + after.length + ' path(s) to ' + filePath + ' (reason: ' + reason + ')');
+  log('  +' + added.length + ' added, -' + removed.length + ' removed:');
+  for (const p of added) log('    + ' + p);
+  for (const p of removed) log('    - ' + p);
+}
+
+function commitOntoPublic(exportDir, privateShortSha, orphan, precomputedTree) {
+  const newTree = precomputedTree || treeHashOfDir(exportDir);
   let publicHead = null;
   try { publicHead = git(['rev-parse', 'public']).trim(); } catch { publicHead = null; }
   let publicTree = null;
@@ -637,6 +897,19 @@ function main() {
     return;
   }
 
+  // W22-U1: --update-path-snapshot is the GATE5 analogue of --update-overlay-baselines above -- a
+  // standalone, explicit "I have reviewed the path-set change" action that does not also run the
+  // export. Requires --reason so the manifest.publicPathSnapshot._comment's re-baseline instructions
+  // can't be followed reflexively without the operator writing down WHY the path set changed.
+  if (process.argv.includes('--update-path-snapshot')) {
+    const reasonIdx = process.argv.indexOf('--reason');
+    const reason = reasonIdx !== -1 ? process.argv[reasonIdx + 1] : null;
+    if (!reason || reason.indexOf('-') === 0) die('--update-path-snapshot requires a non-empty --reason "<text>" (why the public path set changed)');
+    updatePathSnapshot(manifest, reason);
+    log('DONE (path snapshot updated -- re-run without this flag to export)');
+    return;
+  }
+
   // GATE0, runs before anything is archived/exported/committed (see checkOverlayDrift()'s comment).
   checkOverlayDrift(manifest);
 
@@ -662,7 +935,17 @@ function main() {
     const g3 = gate3_npmSelftest(exportDir);
     if (!g3) die('GATE3 npm run selftest failed -- aborting, no commit made');
 
-    const result = commitOntoPublic(exportDir, privateShortSha, orphan);
+    // Tree hash computed ONCE here and threaded through to both GATE4 and commitOntoPublic, so the
+    // object GATE4 scans (and GATE5 measures paths from, via exportDir which is what produced it) is
+    // provably the exact same tree that gets committed -- not a second, separately-recomputed one.
+    const newTree = treeHashOfDir(exportDir);
+
+    const g4 = gate4_finalTreeScan(newTree, manifest);
+    if (g4.length) die('GATE4 final-tree scan found ' + g4.length + ' finding(s), aborting, no commit made:\n' + g4.map((f) => '  - ' + f.path + ': ' + f.issue).join('\n'));
+
+    gate5_pathSnapshot(exportDir, manifest);
+
+    const result = commitOntoPublic(exportDir, privateShortSha, orphan, newTree);
 
     if (push) {
       const remoteName = ensurePublicRemote(manifest);
@@ -712,6 +995,7 @@ function main() {
 // require.main !== module in that case. Behavior when invoked as `node scripts/publish-public.cjs`
 // (require.main === module) is unchanged.
 module.exports = {
+  REPO_ROOT,
   buildSanitizeRules,
   gate1_residualScan,
   step6_sanitize,
@@ -720,6 +1004,15 @@ module.exports = {
   overlayTargets,
   blobShaAtRef,
   readManifest,
+  validateManifestSchema,
+  buildGate4Patterns,
+  gate4_finalTreeScan,
+  computeExportedPathList,
+  pathSnapshotFile,
+  gate5_pathSnapshot,
+  updatePathSnapshot,
+  resolveManifestPath,
+  git,
   main,
 };
 

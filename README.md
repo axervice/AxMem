@@ -178,20 +178,51 @@ tracking its `origin/main`) is a mechanical export, never edited directly.
 
 `npm run publish:public` runs `scripts/publish-public.cjs`: it archives
 `main`'s tree, applies `publish.manifest.json` (exclude / add / overlay /
-literal-patch / sanitize), runs three gates (residual PII scan, an
-install-layout self-test of the exported guards against
-`guards/specs/isolation-gate-contract.json`, and `npm run selftest` against
-the exported tree), and — only if all three pass — commits the result onto
-the local `public` branch (idempotent: an unchanged export tree produces no
-new commit). It never pushes on its own; pass `--push` to also push
-`public` to `origin main`. A GitHub Actions workflow
+literal-patch / sanitize), runs six gates, and — only if all pass — commits
+the result onto the local `public` branch (idempotent: an unchanged export
+tree produces no new commit). It never pushes on its own; pass `--push` to
+also push `public` to `origin main`. A GitHub Actions workflow
 (`.github/workflows/publish-public.yml`) can run the same script on every
 push to `main` once `auto: true` is set in the manifest and a
 `PUBLIC_REPO_TOKEN` secret (a PAT with push access to `axervice/AxMem`) is
 configured on this repo.
 
+The gates, in order:
+
+- **GATE0** — overlay drift: each `overlays` target's baseline blob sha
+  (`overlayBaselines`) must still match `main`'s own file at that path.
+- **GATE1** — residual scan: the sanitize regexes compiled from
+  `sanitize.rules` (filtered to `gates.residualScanPatterns` when that list
+  is present) must find zero matches in the exported, sanitized tree.
+- **GATE2** — install-layout self-test of the exported `guards/` against
+  `guards/specs/isolation-gate-contract.json`.
+- **GATE3** — `npm run selftest` against the exported tree.
+- **GATE4** *(W22-U1)* — an independently-coded scan of the final committed
+  git tree object's raw blob bytes (`git ls-tree` + `git cat-file`, never a
+  working-directory walk or `buildSanitizeRules()`'s own replacement loop):
+  every blob is checked against `denylist.identityLiterals` (the same
+  identity strings `sanitize.rules` redacts, re-verified independently) and
+  `denylist.internalNames` (private codenames/tags with no redaction rule
+  at all, by design — the files that carried them are fully excluded or
+  literal-patched instead) as UTF-8 and UTF-16LE/BE byte patterns; any
+  symlink, gitlink/submodule, or unexpected file mode is refused outright;
+  any NUL-containing blob is refused unless its path is on
+  `binaryAllowlist`.
+- **GATE5** *(W22-U1)* — the exported path list must exactly match the
+  maintainer-reviewed baseline in `publicPathSnapshot.file`
+  (`publish-overrides/public-paths.snapshot.txt`), catching both an
+  unreviewed added/removed path and a same-count case-variant rename or
+  exclude-glob escape. Re-baseline deliberately with
+  `node scripts/publish-public.cjs --update-path-snapshot --reason "<why>"`
+  (prints the added/removed diff; refuses to run without `--reason`).
+
 `publish.manifest.json` and `publish-overrides/` document *why* each path
 is excluded or transformed — see their own comments before editing either.
+Both `sanitize.rules` and `denylist.*` are compiled and enforced straight
+from the manifest (schema-validated on every read: unknown top-level
+fields, duplicate rule ids, or empty patterns abort before anything is
+archived) — there is no separate hardcoded rule list in the script to fall
+out of sync with it.
 
 ## License
 

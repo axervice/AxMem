@@ -74,7 +74,10 @@
     "_comment_KNOWN_PROBLEMS: 2026-09-26 W22 hotfix (codex finding #1, CODEX-2026-09-26-export-pipeline-review.md) -- this is internal work-tracking (a running P-numbered defect/problem log for this repo's own build), not free-tier material, same rationale as docs/BACKLOG.md and docs/audits/** above. It also names real private-repo/project identifiers verbatim in its entries (e.g. 'project:jax-looprig', 'axervice:m6-booking', 'dee/RAG') that the sanitize.rules regex layer below does not cover (those rules target OS username/hostname/path patterns, not arbitrary internal project tags) -- excluding outright is simpler and safer than adding narrow per-string sanitize rules for a file that has no free-tier value in the first place.",
 
     "CHANGELOG.public.md",
-    "_comment_CHANGELOG_PUBLIC_DUP: 2026-09-26 W22 hotfix (codex finding #14) -- CHANGELOG.public.md is the hand-curated overlay SOURCE for CHANGELOG.md (see overlays.\"CHANGELOG.md\" below); step4_applyOverlays in scripts/publish-public.cjs reads it directly from this private repo's own working tree (path.join(REPO_ROOT, srcRel)), NOT from the filtered export directory, so excluding it here does not affect the overlay -- it only stops the source file from ALSO being shipped verbatim as its own redundant top-level CHANGELOG.public.md in the public tree (same treatment already given to the README.md overlay's own source files, README.public.md / README.zh.public.md, above)."
+    "_comment_CHANGELOG_PUBLIC_DUP: 2026-09-26 W22 hotfix (codex finding #14) -- CHANGELOG.public.md is the hand-curated overlay SOURCE for CHANGELOG.md (see overlays.\"CHANGELOG.md\" below); step4_applyOverlays in scripts/publish-public.cjs reads it directly from this private repo's own working tree (path.join(REPO_ROOT, srcRel)), NOT from the filtered export directory, so excluding it here does not affect the overlay -- it only stops the source file from ALSO being shipped verbatim as its own redundant top-level CHANGELOG.public.md in the public tree (same treatment already given to the README.md overlay's own source files, README.public.md / README.zh.public.md, above).",
+
+    "tests/publish-leak-scan.test.cjs",
+    "_comment_PUBLISH_LEAK_SCAN_TEST: 2026-09-26 W22-U1 -- unit-tests the exporter's own GATE4/GATE5/schema-validation logic via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; both of those are excluded from the public tree above, so this file has no free-tier value and would break if it ever shipped (its require target would not exist). Deliberately excluded here rather than left to rely on tests/'s general shipped status."
   ],
   "excludeExceptions": [
     "guards/fixtures/v3/trigger-write-gate-probe.cjs"
@@ -164,12 +167,51 @@
       { "id": "lan-ip", "pattern": "192\\.168\\.1\\.151", "flags": "g", "replace": "10.0.0.1" },
       { "id": "d-rag-path", "pattern": "D:[\\\\/]RAG", "flags": "gi", "replace": "D:/example-project" },
       { "id": "axervice-booking-repo-name", "description": "2026-09-25 Jax ruling -- ANY occurrence of the real personal-project directory name 'axervice-booking' (not just inside a real absolute path -- also test-fixture repo= values, comments, etc.) -> 'example-project'. Supersedes and replaces the old narrower 'desktop-axervice-booking-real-path' rule (username-redaction there is already covered by home-username-path above; this rule now handles the project-name half unconditionally). KNOWN INTENTIONAL divergence from today's origin/main (592c4c3), which still ships the OLD narrow-scoped behavior (byte-identical test fixture text in guards/pmm-trigger-recall.sh) -- see knownDivergencesFromCurrentOriginMain below. The private source fixtures themselves were also renamed to 'example-project' directly (guards/pmm-trigger-recall.cjs/.sh, guards/fixtures/v3/trigger-write-gate-probe.cjs), so this rule is now defense-in-depth, not the primary mechanism.", "pattern": "axervice-booking", "flags": "g", "replace": "example-project" },
-      { "id": "author-first-name", "description": "2026-09-25 Jax ruling -- the maintainer's bare first name 'Jax' (word-boundary match, so it never touches an already-mapped compound like a 'JaxStuuu'-style hostname, which the dynamic hostname rule above already handles) -> 'the maintainer'. Deliberately a hardcoded literal, unlike every other rule here -- 'Jax' is a personal name embedded in prose/comments across the tree, not derivable from any os.userInfo()/os.hostname() API the way the dynamic rules are.", "pattern": "\\bJax\\b", "flags": "g", "replace": "the maintainer" }
+      { "id": "author-first-name", "description": "2026-09-25 Jax ruling -- the maintainer's bare first name 'Jax' (word-boundary match, so it never touches an already-mapped compound like a 'JaxStuuu'-style hostname, which the dynamic hostname rule above already handles) -> 'the maintainer'. Deliberately a hardcoded literal, unlike every other rule here -- 'Jax' is a personal name embedded in prose/comments across the tree, not derivable from any os.userInfo()/os.hostname() API the way the dynamic rules are.", "pattern": "\\bJax\\b", "flags": "g", "replace": "the maintainer" },
+      { "id": "axmem-dev-repo-name", "description": "2026-09-26 W22-U1 fix (codex #11 manifest-driven pass) -- the private dev repo's own name 'AxMem-dev' (distinct from the public 'AxMem' repo this exports to), referenced in .github/workflows/publish-public.yml and docs/NORTH-STAR.md/docs/P2-CC-PERFECT-SPEC.md, all three already fully excluded above so this currently has 0 hits in the shipped tree -- added here (and to denylist.identityLiterals for GATE4) as defense-in-depth for the day a shipped file mentions it. Case-insensitive substring, not word-bounded (repo names appear inside URLs/paths too).", "pattern": "AxMem-dev", "flags": "gi", "replace": "AxMem" }
     ]
   },
 
+  "denylist": {
+    "_comment": "2026-09-26 W22-U1 (codex #1/#11/#13/#14, Opus defense unit U1) -- two lists consumed ONLY by GATE4 (scripts/publish-public.cjs gate4_finalTreeScan), an independently-coded scanner over the FINAL committed git tree's raw blob bytes (git ls-tree + git cat-file), never buildSanitizeRules()'s replacement loop -- see that function's own comment for why 'sanitize and scan share the same incomplete rules' must not be able to happen again. `identityLiterals` restates (as plain literal/word patterns, not the capture-group regexes step6_sanitize uses) the same identity strings sanitize.rules above already redacts, so GATE4 independently re-checks that redaction actually worked. `internalNames` is the class of private codenames/tags that have NO redaction rule at all by design (KNOWN-PROBLEMS.md is fully excluded; the two hooks/*.sh hits are fixed via literal `replacements` above) -- GATE4 fails the export if ANY of them ever reappears in the final tree, from any source (a future edit, a new file, a reverted patch). `match`: 'substring' (bare containment) or 'word' (ASCII \\b-bounded, for short tokens like 'Dee'/'Jax' that would otherwise collide with ordinary English words like 'deep'). `caseSensitive`: default false; 'Jax' is true per 2026-09-26 W22-U1 spec (it is the author's real git user.name literal, not a generic OS-derived value, so it is not folded case-insensitively the way jax-x/JaxStuuu are).",
+    "identityLiterals": [
+      { "id": "os-username", "pattern": "jax-x", "match": "substring", "caseSensitive": false },
+      { "id": "os-hostname", "pattern": "JaxStuuu", "match": "substring", "caseSensitive": false },
+      { "id": "author-first-name", "pattern": "Jax", "match": "word", "caseSensitive": true },
+      { "id": "lan-ip", "pattern": "192.168.1.151", "match": "substring", "caseSensitive": false },
+      { "id": "d-rag-path-fwd", "pattern": "D:/RAG", "match": "substring", "caseSensitive": false },
+      { "id": "d-rag-path-back", "pattern": "D:\\RAG", "match": "substring", "caseSensitive": false },
+      { "id": "axervice-booking-repo-name", "pattern": "axervice-booking", "match": "substring", "caseSensitive": false },
+      { "id": "axmem-dev-repo-name", "pattern": "AxMem-dev", "match": "substring", "caseSensitive": false }
+    ],
+    "internalNames": [
+      { "id": "looprig", "pattern": "looprig", "match": "substring", "caseSensitive": false },
+      { "id": "jax-looprig", "pattern": "jax-looprig", "match": "substring", "caseSensitive": false },
+      { "id": "freelance", "pattern": "freelance", "match": "substring", "caseSensitive": false },
+      { "id": "m6-booking", "pattern": "m6-booking", "match": "substring", "caseSensitive": false },
+      { "id": "dee-rag-path", "pattern": "dee/RAG", "match": "substring", "caseSensitive": false },
+      { "id": "xiao-d-project", "pattern": "小D", "match": "substring", "caseSensitive": false },
+      { "id": "dee-project", "pattern": "Dee", "match": "word", "caseSensitive": false },
+      { "id": "cold-email-zh", "pattern": "冷邮件", "match": "substring", "caseSensitive": false },
+      { "id": "gsd-paused", "pattern": "gsd-paused", "match": "substring", "caseSensitive": false },
+      { "id": "upwork", "pattern": "upwork", "match": "substring", "caseSensitive": false },
+      { "id": "axervice-namespace-prefix", "pattern": "axervice:", "match": "substring", "caseSensitive": false },
+      { "id": "keen-jennings", "pattern": "keen-jennings", "match": "substring", "caseSensitive": false },
+      { "id": "keenj-tag", "pattern": ".keenj", "match": "substring", "caseSensitive": false }
+    ]
+  },
+
+  "binaryAllowlist": [
+    "_comment: 2026-09-26 W22-U1 -- glob patterns (same tiny matcher as exclude/excludeExceptions) naming the only paths GATE4 permits to contain a NUL byte in the final tree (e.g. a shipped font/image/PDF asset). Empty today -- this repo currently ships zero binary files (0 symlinks, 0 NUL-containing blobs per the codex/Opus review's own clean-surface findings) -- so any NUL-containing blob dies the export until a maintainer deliberately adds its path here."
+  ],
+
+  "publicPathSnapshot": {
+    "_comment": "2026-09-26 W22-U1 (codex #4/#14, Opus U1 'path allowlist snapshot') -- `file` is a repo-relative (or, for tests, absolute) path to a newline-joined list of every path GATE5 (scripts/publish-public.cjs gate5_pathSnapshot) expects in the final exported tree. Both sides are ordered with a case-insensitive sort key for stable diffing, but the pass/fail check itself is an EXACT (case-preserving) full-array comparison -- this is what catches BOTH an ordinary added/removed path AND a same-count case-ONLY rename (a pure lowercase-folded compare would treat e.g. docs/README.md -> docs/Readme.md as unchanged), while still closing the case-variant exclude-glob escape, codex #4 (e.g. a stray `Scripts/x.cjs` next to excluded `scripts/**`), since that is simply an extra array entry either way. Re-baseline after a deliberate path-set change with: `node scripts/publish-public.cjs --update-path-snapshot --reason \"<why>\"` (prints the added/removed diff, refuses to run without --reason).",
+    "file": "publish-overrides/public-paths.snapshot.txt"
+  },
+
   "gates": {
-    "residualScanPatterns": ["home-username-path", "bare-username", "hostname", "lan-ip", "d-rag-path", "axervice-booking-repo-name", "author-first-name"],
+    "residualScanPatterns": ["home-username-path", "bare-username", "hostname", "lan-ip", "d-rag-path", "axervice-booking-repo-name", "author-first-name", "axmem-dev-repo-name"],
     "installLayoutSelfTest": {
       "guard": "pmm-isolation-gate.cjs",
       "args": ["--self-test", "--contract", "specs/isolation-gate-contract.json"],
