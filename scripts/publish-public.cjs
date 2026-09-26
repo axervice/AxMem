@@ -113,6 +113,21 @@ function validateProcessTraceRules(scrub) {
       die('manifest schema: "scrub.processTraces.extensions" must be an array of non-empty strings');
     }
   }
+  // W22-U1b GATE4 follow-up (2026-09-26): a file whose exact BASENAME appears in `filenames` (dotfiles
+  // like `.gitignore`/`.gitattributes`/`.npmignore` that have no separate extension to match on) is also
+  // in scope, wherever it appears in the tree. `paths` is the same idea for an exact repo-relative path
+  // (an extensionless script the manifest author knows the syntax of, e.g. `bin/axmem`) -- see
+  // resolveScrubKind()'s own comment for why both are treated as '#'-comment (bash) syntax.
+  if (pt.filenames != null) {
+    if (!Array.isArray(pt.filenames) || pt.filenames.some((e) => typeof e !== 'string' || e.length === 0)) {
+      die('manifest schema: "scrub.processTraces.filenames" must be an array of non-empty strings');
+    }
+  }
+  if (pt.paths != null) {
+    if (!Array.isArray(pt.paths) || pt.paths.some((e) => typeof e !== 'string' || e.length === 0)) {
+      die('manifest schema: "scrub.processTraces.paths" must be an array of non-empty strings');
+    }
+  }
   const rules = pt.rules;
   if (rules == null) return;
   if (!Array.isArray(rules)) die('manifest schema: "scrub.processTraces.rules" must be an array');
@@ -127,6 +142,16 @@ function validateProcessTraceRules(scrub) {
     if (entry.mode !== 'drop-line' && entry.mode !== 'replace') die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has invalid "mode" (must be "drop-line" or "replace"): ' + JSON.stringify(entry.mode));
     if (entry.mode === 'replace' && (typeof entry.replace !== 'string' || entry.replace.length === 0)) {
       die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has mode "replace" but is missing non-empty string "replace"');
+    }
+    // W22-U1b GATE4 follow-up: an optional `fallback` on a "drop-line" rule -- {mode:"replace", with:
+    // "<text>"} -- used ONLY when the matched line turns out not to be droppable (a code line, or a
+    // syntax this file's classifier does not recognize as comment/documentation). Only valid on
+    // "drop-line" rules (a "replace" rule has no line-deletion step to fall back FROM).
+    if (entry.fallback != null) {
+      if (entry.mode !== 'drop-line') die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has "fallback" but mode is not "drop-line" (fallback only applies when the line turns out not to be droppable)');
+      if (typeof entry.fallback !== 'object' || Array.isArray(entry.fallback)) die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has a "fallback" that is not an object');
+      if (entry.fallback.mode !== 'replace') die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has "fallback.mode" other than "replace": ' + JSON.stringify(entry.fallback.mode));
+      if (typeof entry.fallback.with !== 'string' || entry.fallback.with.length === 0) die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has "fallback" but is missing non-empty string "fallback.with"');
     }
   }
 }
@@ -716,7 +741,7 @@ function step5_applyReplacements(exportDir, manifest, sourceOid) {
 // step6_sanitize's later identity substitution has nothing left to do at any spot this step already
 // neutralized.
 function compileProcessTraceRule(entry) {
-  return { id: entry.id, re: new RegExp(entry.pattern, entry.flags || 'g'), mode: entry.mode, replace: entry.replace };
+  return { id: entry.id, re: new RegExp(entry.pattern, entry.flags || 'g'), mode: entry.mode, replace: entry.replace, fallback: entry.fallback || null };
 }
 
 function buildProcessTraceRules(manifest) {
@@ -738,6 +763,50 @@ function hasProcessTraceExtension(rel, extensions) {
   return extensions.some((ext) => rel.endsWith(ext));
 }
 
+// W22-U1b GATE4 follow-up (2026-09-26, real bug: GATE4's independent final-tree scan caught
+// `.gitignore`'s ".codex-reviews" ignore-entry and `bin/axmem`'s "codex(gf) LOW #8" citation both
+// SHIPPING UNSCRUBBED -- step5b_scrubProcessTraces() never even looked at either file, because
+// hasProcessTraceExtension() only matches a SUFFIX against `extensions`, and neither `.gitignore`
+// (a dotfile with no separate extension) nor `bin/axmem` (an extensionless shebang script, per
+// package.json's own `"bin": {"axmem": "bin/axmem"}`) ends in any of .sh/.cjs/.js/.md/.json/.txt/.yml.
+// The rules that matched in GATE4 (codex-reviews-dir, codex-mode-finding-citation) were already valid
+// "replace" rules with correct replacement text the whole time -- they simply never ran on these two
+// paths. Two new manifest-driven lists close this without hardcoding either filename into this
+// function: `filenames` (exact basenames, matched wherever they occur -- covers `.gitignore` and its
+// siblings `.gitattributes`/`.npmignore`) and `paths` (exact repo-relative paths -- covers a SPECIFIC
+// extensionless script like `bin/axmem`, where a maintainer has to know its syntax anyway since there
+// is no extension to infer it from).
+function processTraceFilenames(manifest) {
+  const names = manifest && manifest.scrub && manifest.scrub.processTraces && manifest.scrub.processTraces.filenames;
+  return Array.isArray(names) ? names : [];
+}
+
+function processTracePaths(manifest) {
+  const paths = manifest && manifest.scrub && manifest.scrub.processTraces && manifest.scrub.processTraces.paths;
+  return Array.isArray(paths) ? paths : [];
+}
+
+// Maps a recognized extension to the comment/documentation SYNTAX KIND classifyLinesForDropEligibility()
+// understands -- kept as its own table (rather than passing the raw extension through) so a `filenames`/
+// `paths` match (which has no extension at all) can still be assigned a kind below.
+const PROCESS_TRACE_EXT_KIND = { '.sh': 'hash', '.yml': 'hash', '.cjs': 'js', '.js': 'js', '.md': 'prose', '.txt': 'prose', '.json': 'json' };
+
+// Resolves ONE path to a syntax "kind" ('hash' | 'js' | 'prose' | 'json') for scrub purposes, or null if
+// this path is out of scope entirely (step5b skips it). A `paths` or `filenames` match is always treated
+// as 'hash' (bash-style '#' comments) -- true for every real entry today (`.gitignore`/`.gitattributes`/
+// `.npmignore` all use '#'; `bin/axmem` is a bash script) -- documented here so a maintainer adding some
+// OTHER extensionless file to either list knows this assumption before relying on drop-line mode there.
+function resolveScrubKind(rel, manifest) {
+  const norm = rel.split('\\').join('/');
+  const base = path.basename(norm);
+  if (processTracePaths(manifest).some((p) => p.split('\\').join('/') === norm)) return 'hash';
+  if (processTraceFilenames(manifest).includes(base)) return 'hash';
+  for (const ext of processTraceExtensions(manifest)) {
+    if (norm.endsWith(ext)) return PROCESS_TRACE_EXT_KIND[ext] || null;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------------------------
 // 'drop-line' mode may only delete a line that is a comment/documentation line for its file's own
 // syntax -- never a line that is (or could be) executable code/data a program actually reads. This is a
@@ -746,21 +815,23 @@ function hasProcessTraceExtension(rel, extensions) {
 // classifies EVERY line up front, before any rule is applied, so a rule's drop-line check is a plain
 // array lookup.
 //
-// Recognized as comment/documentation, per extension:
-//   .sh / .yml   -- the line's trimmed text starts with '#'
-//   .cjs / .js   -- the line's trimmed text starts with '//', OR the line is entirely inside a `/* ... */`
-//                   block (a block that opens and closes on the same line also counts)
-//   .md / .txt   -- every line counts as documentation/prose, EXCEPT a line inside a fenced code block
-//                   (opened/closed by a ``` or ~~~ line) -- code fences are code, not prose
-//   .json        -- ONLY a line that is a `"_comment...": "..."` key/value pair (the convention this
-//                   repo's own manifest already uses for comment-only JSON entries) -- any other JSON
-//                   line (a real data field, even a string-typed one like "notes"/"authored_by") is
-//                   data, not a comment, and must go through 'replace' instead
-function classifyLinesForDropEligibility(ext, lines) {
+// Recognized as comment/documentation, per syntax kind (see resolveScrubKind() for how a path maps to
+// one of these -- by extension, or by a `filenames`/`paths` manifest match):
+//   'hash'  (.sh / .yml / a `filenames` or `paths` match, e.g. `.gitignore` or `bin/axmem`)
+//                -- the line's trimmed text starts with '#'
+//   'js'    (.cjs / .js) -- the line's trimmed text starts with '//', OR the line is entirely inside a
+//                `/* ... */` block (a block that opens and closes on the same line also counts)
+//   'prose' (.md / .txt) -- every line counts as documentation/prose, EXCEPT a line inside a fenced code
+//                block (opened/closed by a ``` or ~~~ line) -- code fences are code, not prose
+//   'json'  (.json) -- ONLY a line that is a `"_comment...": "..."` key/value pair (the convention this
+//                repo's own manifest already uses for comment-only JSON entries) -- any other JSON line
+//                (a real data field, even a string-typed one like "notes"/"authored_by") is data, not a
+//                comment, and must go through 'replace' instead
+function classifyLinesForDropEligibility(kind, lines) {
   const eligible = new Array(lines.length).fill(false);
-  if (ext === '.sh' || ext === '.yml') {
+  if (kind === 'hash') {
     for (let i = 0; i < lines.length; i++) eligible[i] = /^\s*#/.test(lines[i]);
-  } else if (ext === '.cjs' || ext === '.js') {
+  } else if (kind === 'js') {
     let inBlock = false;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -780,7 +851,7 @@ function classifyLinesForDropEligibility(ext, lines) {
         if (closed === -1) inBlock = true;
       }
     }
-  } else if (ext === '.md' || ext === '.txt') {
+  } else if (kind === 'prose') {
     let inFence = false;
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
@@ -788,45 +859,64 @@ function classifyLinesForDropEligibility(ext, lines) {
       if (isFenceMarker) { eligible[i] = true; inFence = !inFence; continue; }
       eligible[i] = !inFence;
     }
-  } else if (ext === '.json') {
+  } else if (kind === 'json') {
     for (let i = 0; i < lines.length; i++) eligible[i] = /^\s*"_comment[^"]*"\s*:\s*".*"\s*,?\s*$/.test(lines[i]);
   }
-  // Any other extension (shouldn't occur -- processTraceExtensions() gates which files reach this
-  // function at all): no line is drop-eligible, so a drop-line rule match there fails closed too.
+  // Any other/unrecognized kind (shouldn't occur -- resolveScrubKind() gates which files reach this
+  // function at all, returning null otherwise): no line is drop-eligible, so a drop-line rule match
+  // there fails closed too (or falls back, if the rule declares a `fallback`).
   return eligible;
+}
+
+// Applies one rule's `fallback` ({mode:"replace", with}) to a SINGLE line -- used only when a drop-line
+// rule matched a line that classifyLinesForDropEligibility() says is NOT droppable. Returns the modified
+// line and how many times the pattern matched on it (0 if, oddly, a second lastIndex-reset test no
+// longer matches -- shouldn't happen, but the caller only counts/logs what actually changed).
+function applyProcessTraceFallback(rule, line) {
+  rule.re.lastIndex = 0;
+  let count = 0;
+  const next = line.replace(rule.re, () => { count++; return rule.fallback.with; });
+  return { line: next, count };
 }
 
 function step5b_scrubProcessTraces(exportDir, manifest) {
   const rules = buildProcessTraceRules(manifest);
   if (!rules.length) { log('scrub (process traces): 0 rule(s) configured, nothing to do'); return; }
-  const extensions = processTraceExtensions(manifest);
   const files = [];
   walk(exportDir, '', files);
   let touched = 0;
-  const perRule = new Map(); // id -> { replaced, droppedLines }
-  for (const rule of rules) perRule.set(rule.id, { replaced: 0, droppedLines: 0 });
+  const perRule = new Map(); // id -> { replaced, droppedLines, fallbackReplaced }
+  for (const rule of rules) perRule.set(rule.id, { replaced: 0, droppedLines: 0, fallbackReplaced: 0 });
   for (const rel of files) {
-    if (!hasProcessTraceExtension(rel, extensions)) continue;
+    const kind = resolveScrubKind(rel, manifest);
+    if (!kind) continue;
     const abs = path.join(exportDir, rel);
     const buf = fs.readFileSync(abs);
     if (!isProbablyText(buf)) continue;
     const original = buf.toString('utf8');
-    const ext = extensions.find((e) => rel.endsWith(e)) || '';
     let lines = original.split('\n');
     let eligible = null; // computed lazily, only if a drop-line rule actually matches this file
     let fileChanged = false;
     for (const rule of rules) {
       if (rule.mode === 'drop-line') {
-        if (eligible === null) eligible = classifyLinesForDropEligibility(ext, lines);
+        if (eligible === null) eligible = classifyLinesForDropEligibility(kind, lines);
         const kept = [];
         for (let i = 0; i < lines.length; i++) {
           rule.re.lastIndex = 0;
           if (rule.re.test(lines[i])) {
             if (!eligible[i]) {
+              if (rule.fallback) {
+                const applied = applyProcessTraceFallback(rule, lines[i]);
+                perRule.get(rule.id).fallbackReplaced += applied.count;
+                fileChanged = fileChanged || applied.count > 0;
+                kept.push(applied.line); // keep the (neutralized) line -- do not delete it
+                continue;
+              }
               die('scrub.processTraces rule "' + rule.id + '" (mode=drop-line) matched a CODE line, not a ' +
                 'comment/documentation line, at ' + rel + ':' + (i + 1) + ' -- refusing to silently delete code ' +
-                'or ship the trace. Add a "replace" rule instead (or exclude this path), or fix the rule\'s ' +
-                'regex if it is over-matching. Line: ' + JSON.stringify(lines[i]));
+                'or ship the trace. Add a "fallback" ({mode:"replace",with:...}) to this rule, add a separate ' +
+                '"replace" rule instead (or exclude this path), or fix the rule\'s regex if it is ' +
+                'over-matching. Line: ' + JSON.stringify(lines[i]));
             }
             perRule.get(rule.id).droppedLines++;
             fileChanged = true;
@@ -858,7 +948,7 @@ function step5b_scrubProcessTraces(exportDir, manifest) {
   }
   const summary = rules.map((r) => {
     const s = perRule.get(r.id);
-    return r.id + '=' + s.replaced + 'r/' + s.droppedLines + 'd';
+    return r.id + '=' + s.replaced + 'r/' + s.droppedLines + 'd' + (s.fallbackReplaced ? ('/' + s.fallbackReplaced + 'fb') : '');
   }).join(', ');
   log('scrub (process traces): touched ' + touched + ' file(s) across ' + rules.length + ' rule(s) -- ' + summary);
 }
@@ -1832,6 +1922,10 @@ module.exports = {
   buildProcessTraceRules,
   processTraceExtensions,
   hasProcessTraceExtension,
+  processTraceFilenames,
+  processTracePaths,
+  resolveScrubKind,
+  applyProcessTraceFallback,
   classifyLinesForDropEligibility,
   step5b_scrubProcessTraces,
   validateProcessTraceRules,

@@ -50,14 +50,22 @@ function makeExportDir(files) {
   return dir;
 }
 
-function rule(id, pattern, mode, replace, flags) {
-  return { id, pattern, flags: flags || 'g', mode, replace };
+function rule(id, pattern, mode, replace, flags, fallback) {
+  const r = { id, pattern, flags: flags || 'g', mode, replace };
+  if (fallback) r.fallback = fallback;
+  return r;
 }
 
 // A minimal, self-contained fixture manifest -- deliberately NOT the real publish.manifest.json, so
 // these tests stay stable even as the real rule set evolves.
-function fixtureManifest(rules, extensions) {
-  return { scrub: { processTraces: { extensions: extensions || ['.sh', '.cjs', '.js', '.md', '.json', '.txt', '.yml'], rules } } };
+function fixtureManifest(rules, opts) {
+  opts = opts || {};
+  return { scrub: { processTraces: {
+    extensions: opts.extensions || ['.sh', '.cjs', '.js', '.md', '.json', '.txt', '.yml'],
+    filenames: opts.filenames || [],
+    paths: opts.paths || [],
+    rules,
+  } } };
 }
 
 console.log('== manifest schema validation ==');
@@ -184,7 +192,7 @@ console.log('== drop-line mode: code-line match FAILS the export (path:line) =='
 
 console.log('== extensions gating ==');
 {
-  const manifest = fixtureManifest([rule('trace', 'TRACE-MARKER', 'replace', '(x)')], ['.sh']);
+  const manifest = fixtureManifest([rule('trace', 'TRACE-MARKER', 'replace', '(x)')], { extensions: ['.sh'] });
   const dir = makeExportDir({ 'a.sh': '# TRACE-MARKER\n', 'a.py': '# TRACE-MARKER\n' });
   pp.step5b_scrubProcessTraces(dir, manifest);
   check('a file whose extension is not in processTraces.extensions is left untouched', fs.readFileSync(path.join(dir, 'a.py'), 'utf8').includes('TRACE-MARKER'));
@@ -239,6 +247,113 @@ console.log('== GATE4 processTrace pattern group ==');
   const tree2 = buildTree([clean, scrubbed]);
   const findings2 = pp.gate4_finalTreeScan(tree2, fixtureManifestForGate4);
   check('a properly-scrubbed file produces no processTrace finding', !findings2.some((f) => /processTrace:/.test(f.issue)));
+}
+
+// ---------------------------------------------------------------------------------------------
+// 2026-09-26 GATE4 follow-up: real end-to-end export caught `.gitignore`'s ".codex-reviews" ignore-entry
+// and `bin/axmem`'s "codex(gf) LOW #8" citation both shipping unscrubbed -- step5b never scanned either
+// file at all, because hasProcessTraceExtension() only matches a SUFFIX and neither path ends in any of
+// .sh/.cjs/.js/.md/.json/.txt/.yml. These tests reproduce that exact real-shaped failure (RED without
+// the `filenames`/`paths` fix) and confirm the fix (GREEN with it).
+console.log('== filenames/paths: dotfiles and extensionless scripts are in scope ==');
+{
+  // RED: without `filenames`, a `.gitignore`-shaped file is invisible to step5b entirely.
+  {
+    const manifest = fixtureManifest([rule('codex-reviews-dir', '\\.codex-reviews', 'replace', '.review-notes')]);
+    const dir = makeExportDir({ '.gitignore': 'node_modules/\n.codex-reviews/\n' });
+    pp.step5b_scrubProcessTraces(dir, manifest);
+    check('RED (pre-fix shape): a .gitignore-like dotfile with no `filenames` entry is left untouched', fs.readFileSync(path.join(dir, '.gitignore'), 'utf8').includes('.codex-reviews'));
+  }
+  // GREEN: with `filenames: ['.gitignore']`, the same file gets scrubbed.
+  {
+    const manifest = fixtureManifest([rule('codex-reviews-dir', '\\.codex-reviews', 'replace', '.review-notes')], { filenames: ['.gitignore'] });
+    const dir = makeExportDir({ '.gitignore': 'node_modules/\n.codex-reviews/\n' });
+    pp.step5b_scrubProcessTraces(dir, manifest);
+    const out = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
+    check('GREEN: a .gitignore matched via `filenames` is scrubbed, the real ignore entry survives renamed', !out.includes('.codex-reviews') && out.includes('.review-notes/') && out.includes('node_modules/'));
+  }
+  // RED: an extensionless shebang script (bin/axmem-shaped) is invisible without `paths`.
+  {
+    const manifest = fixtureManifest([rule('codex-finding', 'codex\\([a-z]+\\)\\s*(?:HIGH|LOW|MEDIUM)?\\s*#\\d+', 'replace', '(review finding)')]);
+    const dir = makeExportDir({ 'bin/axmem': "#!/usr/bin/env bash\n# [codex(gf) LOW #8, 2026-09-17] quoting fix\necho hi\n" });
+    pp.step5b_scrubProcessTraces(dir, manifest);
+    check('RED (pre-fix shape): an extensionless script with no `paths` entry is left untouched', fs.readFileSync(path.join(dir, 'bin/axmem'), 'utf8').includes('codex(gf)'));
+  }
+  // GREEN: with `paths: ['bin/axmem']`, the same file gets scrubbed (and is classified 'hash'/bash for
+  // drop-line purposes, per resolveScrubKind()'s documented default for a `paths` match).
+  {
+    const manifest = fixtureManifest([rule('codex-finding', 'codex\\([a-z]+\\)\\s*(?:HIGH|LOW|MEDIUM)?\\s*#\\d+', 'replace', '(review finding)')], { paths: ['bin/axmem'] });
+    const dir = makeExportDir({ 'bin/axmem': "#!/usr/bin/env bash\n# [codex(gf) LOW #8, 2026-09-17] quoting fix\necho hi\n" });
+    pp.step5b_scrubProcessTraces(dir, manifest);
+    const out = fs.readFileSync(path.join(dir, 'bin/axmem'), 'utf8');
+    check('GREEN: bin/axmem matched via `paths` is scrubbed, rest of the script survives', out.includes('(review finding)') && !out.includes('codex(gf)') && out.includes('echo hi'));
+  }
+  check('resolveScrubKind: a `filenames` match resolves to the hash-comment kind', pp.resolveScrubKind('.gitignore', { scrub: { processTraces: { filenames: ['.gitignore'] } } }) === 'hash');
+  check('resolveScrubKind: a `paths` match resolves to the hash-comment kind', pp.resolveScrubKind('bin/axmem', { scrub: { processTraces: { paths: ['bin/axmem'] } } }) === 'hash');
+  check('resolveScrubKind: an unmatched extensionless path resolves to null (out of scope)', pp.resolveScrubKind('bin/other-tool', { scrub: { processTraces: {} } }) === null);
+}
+
+console.log('== drop-line classifier: ignore-file syntax (.gitignore/.gitattributes/.npmignore) ==');
+{
+  const manifest = fixtureManifest([rule('trace', 'TRACE-MARKER', 'drop-line')], { filenames: ['.gitignore'] });
+  const dir = makeExportDir({ '.gitignore': '# TRACE-MARKER internal note\nnode_modules/\n.env\n' });
+  pp.step5b_scrubProcessTraces(dir, manifest);
+  const out = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
+  check('a "#" comment line in an ignore-file is dropped whole', !out.includes('TRACE-MARKER') && out.includes('node_modules/') && out.includes('.env'));
+
+  expectThrows('a real ignore-pattern line (not a comment) is refused, not silently dropped', () => {
+    const m = fixtureManifest([rule('trace', 'TRACE-MARKER', 'drop-line')], { filenames: ['.gitignore'] });
+    const d = makeExportDir({ '.gitignore': 'node_modules/\nTRACE-MARKER/\n' });
+    pp.step5b_scrubProcessTraces(d, m);
+  });
+}
+
+console.log('== fallback: a drop-line rule that hits a non-droppable line neutralizes in place instead of failing ==');
+{
+  // RED equivalent (already covered above by expectThrows without a fallback) -- these confirm the
+  // fallback actually fires and the file otherwise stays intact, for the two real-shaped cases the
+  // ruling's follow-up named: an ignore-file pattern line, and a code-line string literal.
+  {
+    const manifest = fixtureManifest([rule('trace', 'TRACE-MARKER', 'drop-line', null, 'g', { mode: 'replace', with: '(x)' })], { filenames: ['.gitignore'] });
+    const dir = makeExportDir({ '.gitignore': 'node_modules/\nTRACE-MARKER/\n.env\n' });
+    pp.step5b_scrubProcessTraces(dir, manifest);
+    const out = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
+    check('fallback on an ignore-pattern line: substring replaced, line (and file) survives', out.includes('(x)/') && !out.includes('TRACE-MARKER') && out.includes('node_modules/') && out.includes('.env'));
+  }
+  {
+    const manifest = fixtureManifest([rule('trace', 'TRACE-MARKER', 'drop-line', null, 'g', { mode: 'replace', with: '(y)' })]);
+    const dir = makeExportDir({ 'guards/x.cjs': "'use strict';\nconst TOKEN = 'TRACE-MARKER';\nconsole.log(TOKEN);\n" });
+    pp.step5b_scrubProcessTraces(dir, manifest);
+    const out = fs.readFileSync(path.join(dir, 'guards/x.cjs'), 'utf8');
+    check('fallback on a code-line string literal: substring replaced, code structure survives', out.includes("const TOKEN = '(y)';") && out.includes('console.log(TOKEN);'));
+  }
+  // A rule that ALSO matches a real comment line elsewhere in the same file: comment lines still drop
+  // normally, only the non-droppable line falls back.
+  {
+    const manifest = fixtureManifest([rule('trace', 'TRACE-MARKER', 'drop-line', null, 'g', { mode: 'replace', with: '(z)' })]);
+    const dir = makeExportDir({ 'guards/x.sh': '#!/usr/bin/env bash\n# TRACE-MARKER in a comment\nVAR="TRACE-MARKER"\necho "$VAR"\n' });
+    pp.step5b_scrubProcessTraces(dir, manifest);
+    const out = fs.readFileSync(path.join(dir, 'guards/x.sh'), 'utf8');
+    check('mixed file: the comment line is dropped AND the code line falls back to replace, both in one pass', !out.includes('# TRACE-MARKER') && out.includes('VAR="(z)"') && out.includes('echo "$VAR"'));
+  }
+}
+
+console.log('== fallback schema validation ==');
+{
+  expectThrows('"fallback" on a "replace"-mode rule is rejected', () => {
+    pp.validateProcessTraceRules({ processTraces: { rules: [rule('r1', 'x', 'replace', 'y', 'g', { mode: 'replace', with: 'z' })] } });
+  });
+  expectThrows('"fallback.mode" other than "replace" is rejected', () => {
+    pp.validateProcessTraceRules({ processTraces: { rules: [rule('r1', 'x', 'drop-line', null, 'g', { mode: 'drop-line', with: 'z' })] } });
+  });
+  expectThrows('"fallback" missing "with" is rejected', () => {
+    pp.validateProcessTraceRules({ processTraces: { rules: [rule('r1', 'x', 'drop-line', null, 'g', { mode: 'replace' })] } });
+  });
+  check('a valid drop-line + fallback rule passes schema validation', (() => {
+    try { pp.validateProcessTraceRules({ processTraces: { rules: [rule('r1', 'x', 'drop-line', null, 'g', { mode: 'replace', with: 'y' })] } }); return true; } catch (e) { console.log('    (' + e.message + ')'); return false; }
+  })());
+  // The real publish.manifest.json's new `filenames`/`paths` fields must validate cleanly too.
+  check('real publish.manifest.json filenames/paths pass schema validation', (() => { try { pp.readManifest(); return true; } catch (e) { console.log('    (real manifest error: ' + e.message + ')'); return false; } })());
 }
 
 console.log('\npublish-process-trace self-test ' + ok + '/' + total);
