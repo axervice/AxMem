@@ -150,14 +150,57 @@ console.log('== checkInputsClean: dirty publish input is refused; --allow-dirty-
     check('the dirty path is named in the result', !!(result && result.dirty.some((l) => l.indexOf('pmm-size-watch.1.find.txt') !== -1)));
     check('the result is marked "allowed"', !!(result && result.allowed === true));
 
+    // NOTE: deliberately no byte-for-byte comparison against `originalBuf` (a fs.readFileSync of the
+    // CHECKED-OUT working-tree file) here -- on a real `core.autocrlf=true` machine the checkout is
+    // CRLF while the git blob readFrozenBlob() actually reads is always LF (git blobs are stored
+    // exactly as committed, never checkout-line-ending-dependent), so that comparison would fail for a
+    // reason that has nothing to do with the uncommitted-edit behavior under test. It would just be
+    // re-introducing, inside the TEST, the exact working-tree/checkout dependence the exporter itself
+    // no longer has. The absence of the marker string is enough to prove the uncommitted edit did not
+    // leak through; readFrozenBlob's byte-exactness against a KNOWN, git-committed value (independent
+    // of any working-tree checkout) is covered on its own further down by the dedicated
+    // "readFrozenBlob: byte-exact against a KNOWN fixture" test.
     const frozenBuf = pp.readFrozenBlob(sourceOid, patchRelPath, 'test');
     check('readFrozenBlob returns the COMMITTED content, not the uncommitted edit', frozenBuf.toString('utf8').indexOf('UNCOMMITTED-EDIT-MARKER') === -1);
-    check('readFrozenBlob content is byte-identical to the original committed file', Buffer.compare(frozenBuf, originalBuf) === 0);
   } finally {
     fs.writeFileSync(patchAbsPath, originalBuf);
   }
   const statusAfter = gitCwd(['status', '--porcelain', '--', patchRelPath]);
   check('the patch file is restored to a clean state', statusAfter.trim() === '');
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('== readFrozenBlob: byte-exact against a KNOWN fixture this test commits itself (never a working-tree read) ==');
+{
+  // The oracle here is a buffer this test LITERALLY constructed in memory, committed into this repo's
+  // own object database as a real blob via plumbing (never touching the working tree, any real ref, or
+  // any file `fs.readFileSync` could read back with checkout-dependent line endings). This is the
+  // env-independent way to assert readFrozenBlob()'s byte-exactness -- comparing against a
+  // fs.readFileSync of a checked-out path would silently depend on this machine's core.autocrlf.
+  const KNOWN_BYTES = Buffer.from('W22-U2 known-bytes fixture\r\nCRLF-in-content-on-purpose\nplain-LF-line\n\x00binary-marker\x00\n', 'binary');
+  const fixtureRelPath = 'FIXTURE-KNOWN-BYTES-W22-U2-TEST.bin';
+
+  const idxDir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-test-fixture-idx-'));
+  const tmpIndex2 = path.join(idxDir2, 'index');
+  const env2 = Object.assign({}, GIT_TEST_ENV, { GIT_INDEX_FILE: tmpIndex2, GIT_DIR: path.join(REPO_ROOT, '.git') });
+  let fixtureCommit, fixtureBlobSha;
+  try {
+    fixtureBlobSha = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: REPO_ROOT, env: env2, input: KNOWN_BYTES }).toString('utf8').trim();
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', '100644,' + fixtureBlobSha + ',' + fixtureRelPath], { cwd: REPO_ROOT, env: env2 });
+    const fixtureTree = execFileSync('git', ['write-tree'], { cwd: REPO_ROOT, env: env2, encoding: 'utf8' }).trim();
+    fixtureCommit = execFileSync('git', ['commit-tree', fixtureTree, '-m', 'w22-u2 test: known-bytes fixture commit (dangling, never referenced by any ref)'], { cwd: REPO_ROOT, env: env2, encoding: 'utf8' }).trim();
+  } finally {
+    fs.rmSync(idxDir2, { recursive: true, force: true });
+  }
+
+  const got = pp.readFrozenBlob(fixtureCommit, fixtureRelPath, 'test');
+  check('readFrozenBlob returns bytes byte-identical to what this test itself committed (bytes chosen to include CRLF, LF, and NUL, regardless of this machine\'s core.autocrlf)', Buffer.compare(got, KNOWN_BYTES) === 0);
+
+  // Independent cross-check via a raw `git cat-file -p <sha>` call -- a different invocation than the
+  // one readFrozenBlob() makes internally (which resolves the sha via `git ls-tree`), never via
+  // fs.readFileSync of any checked-out path.
+  const viaCatFile = execFileSync('git', ['cat-file', '-p', fixtureBlobSha], { cwd: REPO_ROOT, env: GIT_TEST_ENV, encoding: 'buffer' });
+  check('an independently-fetched `git cat-file -p` of the same blob sha matches readFrozenBlob\'s result', Buffer.compare(viaCatFile, got) === 0);
 }
 
 // ---------------------------------------------------------------------------------------------
