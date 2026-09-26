@@ -108,8 +108,12 @@ echo "dev-test.sh: source repo = $SOURCE_REPO"
 
 # ---------------------------------------------------------------------------------------------
 # Dirty-input check, mirroring scripts/publish-public.cjs's own checkInputsClean() gate -- run
-# against the SOURCE repo, before anything is cloned. allowDirty is always passed as `true` to the
-# exporter's own function so it never throws; THIS script decides whether the result is fatal.
+# against the SOURCE repo, before anything is cloned. This calls the exporter's own
+# collectInputPathsForDirtyCheck() (the exact input-path list) and git() (the exact autocrlf-safe git
+# invocation) directly, rather than checkInputsClean(manifest, true) itself -- that convenience
+# wrapper unconditionally logs its own "--allow-dirty-inputs set..." WARNING line to stdout as soon as
+# allowDirty is true, which would print a misleading warning even on the refuse path (this script,
+# not the exporter, decides whether dirty inputs are fatal here).
 DIRTY_CHECK_OUT="$(node -e '
   const path = require("path");
   const repo = process.argv[1];
@@ -117,9 +121,12 @@ DIRTY_CHECK_OUT="$(node -e '
   try { pp = require(path.join(repo, "scripts", "publish-public.cjs")); }
   catch (e) { process.stdout.write("SKIP-NO-EXPORTER: " + (e && e.message) + "\n"); process.exit(0); }
   const manifest = pp.readManifest();
-  const result = pp.checkInputsClean(manifest, true);
-  if (result.dirty.length) {
-    process.stdout.write("DIRTY\n" + result.dirty.join("\n") + "\n");
+  const paths = pp.collectInputPathsForDirtyCheck(manifest);
+  let out = "";
+  try { out = pp.git(["status", "--porcelain", "--"].concat(paths)); } catch (e) { out = ""; }
+  const dirty = out.split("\n").map((l) => l.replace(/\r$/, "")).filter((l) => l.trim().length > 0);
+  if (dirty.length) {
+    process.stdout.write("DIRTY\n" + dirty.join("\n") + "\n");
     process.exit(3);
   }
   process.stdout.write("CLEAN\n");
