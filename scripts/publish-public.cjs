@@ -91,10 +91,45 @@ function die(msg) {
 // class finding #11 found in `sourceBranch`/`residualScanPatterns`/etc.
 const ALLOWED_TOP_LEVEL_KEYS = new Set([
   '$schema', 'version', 'auto', 'publicRepo', 'publicRemote', 'publicBranch', 'sourceBranch', 'history',
-  'exclude', 'excludeExceptions', 'addFiles', 'overlays', 'overlayBaselines', 'replacements',
+  'exclude', 'excludeExceptions', 'addFiles', 'overlays', 'overlayBaselines', 'replacements', 'scrub',
   'sanitizeLiteralFallback', 'sanitize', 'denylist', 'binaryAllowlist', 'publicPathSnapshot',
   'gates', 'knownDivergencesFromCurrentOriginMain',
 ]);
+
+// W22-U1b (Jax ruling A): schema validation for manifest.scrub.processTraces -- every rule needs a
+// non-empty string id (unique) and non-empty string pattern; mode must be exactly 'drop-line' or
+// 'replace'; 'replace' mode additionally requires a non-empty string `replace` field ('drop-line' does
+// not use one -- it deletes the line instead of substituting text). Mirrors validateRuleList()'s shape
+// for sanitize.rules/denylist.* above, but as its own function since the mode/replace-required-iff-mode
+// relationship does not fit that function's existing 'required' / 'kind-or-pattern' cases.
+function validateProcessTraceRules(scrub) {
+  if (scrub == null) return;
+  if (typeof scrub !== 'object' || Array.isArray(scrub)) die('manifest schema: "scrub" must be an object');
+  const pt = scrub.processTraces;
+  if (pt == null) return;
+  if (typeof pt !== 'object' || Array.isArray(pt)) die('manifest schema: "scrub.processTraces" must be an object');
+  if (pt.extensions != null) {
+    if (!Array.isArray(pt.extensions) || pt.extensions.some((e) => typeof e !== 'string' || e.length === 0)) {
+      die('manifest schema: "scrub.processTraces.extensions" must be an array of non-empty strings');
+    }
+  }
+  const rules = pt.rules;
+  if (rules == null) return;
+  if (!Array.isArray(rules)) die('manifest schema: "scrub.processTraces.rules" must be an array');
+  const seen = new Set();
+  for (const entry of rules) {
+    if (isCommentEntry(entry)) continue;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) die('manifest schema: "scrub.processTraces.rules" has a non-object, non-comment entry: ' + JSON.stringify(entry));
+    if (typeof entry.id !== 'string' || entry.id.length === 0) die('manifest schema: "scrub.processTraces.rules" entry missing non-empty string "id": ' + JSON.stringify(entry));
+    if (seen.has(entry.id)) die('manifest schema: "scrub.processTraces.rules" has duplicate rule id "' + entry.id + '"');
+    seen.add(entry.id);
+    if (typeof entry.pattern !== 'string' || entry.pattern.length === 0) die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has empty/missing "pattern"');
+    if (entry.mode !== 'drop-line' && entry.mode !== 'replace') die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has invalid "mode" (must be "drop-line" or "replace"): ' + JSON.stringify(entry.mode));
+    if (entry.mode === 'replace' && (typeof entry.replace !== 'string' || entry.replace.length === 0)) {
+      die('manifest schema: "scrub.processTraces.rules" entry "' + entry.id + '" has mode "replace" but is missing non-empty string "replace"');
+    }
+  }
+}
 
 function validateRuleList(list, label, requirePattern) {
   if (list == null) return;
@@ -126,6 +161,7 @@ function validateManifestSchema(manifest) {
   validateRuleList(manifest.sanitize && manifest.sanitize.rules, 'sanitize.rules', 'kind-or-pattern');
   validateRuleList(manifest.denylist && manifest.denylist.identityLiterals, 'denylist.identityLiterals', 'required');
   validateRuleList(manifest.denylist && manifest.denylist.internalNames, 'denylist.internalNames', 'required');
+  validateProcessTraceRules(manifest.scrub);
   // publicRemote's shape is validated in ensurePublicRemote() itself, at the point it is actually used
   // (--push only) -- not here, so a minimal/fixture manifest that never pushes (e.g. this script's own
   // unit tests) does not need to carry a field it has no use for, matching how publicRepo/publicBranch/
@@ -673,6 +709,161 @@ function step5_applyReplacements(exportDir, manifest, sourceOid) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// W22-U1b (Jax ruling A, 2026-09-26): strips PROCESS TRACES (decision-attribution prose and internal
+// review narrative -- see publish.manifest.json's scrub._comment for the full rationale) from every
+// exported text file. Runs AFTER step5_applyReplacements and BEFORE step6_sanitize (per the build spec):
+// a rule here sees the pre-sanitize text (e.g. still literal 'Jax', not yet 'the maintainer'), and
+// step6_sanitize's later identity substitution has nothing left to do at any spot this step already
+// neutralized.
+function compileProcessTraceRule(entry) {
+  return { id: entry.id, re: new RegExp(entry.pattern, entry.flags || 'g'), mode: entry.mode, replace: entry.replace };
+}
+
+function buildProcessTraceRules(manifest) {
+  const entries = (manifest && manifest.scrub && manifest.scrub.processTraces && manifest.scrub.processTraces.rules) || [];
+  const rules = [];
+  for (const entry of entries) {
+    if (isCommentEntry(entry)) continue;
+    rules.push(compileProcessTraceRule(entry));
+  }
+  return rules;
+}
+
+function processTraceExtensions(manifest) {
+  const exts = manifest && manifest.scrub && manifest.scrub.processTraces && manifest.scrub.processTraces.extensions;
+  return Array.isArray(exts) && exts.length ? exts : ['.sh', '.cjs', '.js', '.md', '.json', '.txt', '.yml'];
+}
+
+function hasProcessTraceExtension(rel, extensions) {
+  return extensions.some((ext) => rel.endsWith(ext));
+}
+
+// ---------------------------------------------------------------------------------------------
+// 'drop-line' mode may only delete a line that is a comment/documentation line for its file's own
+// syntax -- never a line that is (or could be) executable code/data a program actually reads. This is a
+// single forward pass over the file's lines (needed for JS block-comment and Markdown fenced-code-block
+// state, both of which depend on everything seen so far in the file, not just the current line) that
+// classifies EVERY line up front, before any rule is applied, so a rule's drop-line check is a plain
+// array lookup.
+//
+// Recognized as comment/documentation, per extension:
+//   .sh / .yml   -- the line's trimmed text starts with '#'
+//   .cjs / .js   -- the line's trimmed text starts with '//', OR the line is entirely inside a `/* ... */`
+//                   block (a block that opens and closes on the same line also counts)
+//   .md / .txt   -- every line counts as documentation/prose, EXCEPT a line inside a fenced code block
+//                   (opened/closed by a ``` or ~~~ line) -- code fences are code, not prose
+//   .json        -- ONLY a line that is a `"_comment...": "..."` key/value pair (the convention this
+//                   repo's own manifest already uses for comment-only JSON entries) -- any other JSON
+//                   line (a real data field, even a string-typed one like "notes"/"authored_by") is
+//                   data, not a comment, and must go through 'replace' instead
+function classifyLinesForDropEligibility(ext, lines) {
+  const eligible = new Array(lines.length).fill(false);
+  if (ext === '.sh' || ext === '.yml') {
+    for (let i = 0; i < lines.length; i++) eligible[i] = /^\s*#/.test(lines[i]);
+  } else if (ext === '.cjs' || ext === '.js') {
+    let inBlock = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (inBlock) {
+        eligible[i] = true;
+        if (line.indexOf('*/') !== -1) inBlock = false;
+        continue;
+      }
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//')) { eligible[i] = true; continue; }
+      if (trimmed.startsWith('/*')) {
+        eligible[i] = true;
+        // Only stays "still inside a block" if this line's own '/*' is not also closed by a '*/'
+        // later on the SAME line (a one-line /* ... */ comment).
+        const opened = line.indexOf('/*');
+        const closed = line.indexOf('*/', opened + 2);
+        if (closed === -1) inBlock = true;
+      }
+    }
+  } else if (ext === '.md' || ext === '.txt') {
+    let inFence = false;
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      const isFenceMarker = /^(```|~~~)/.test(trimmed);
+      if (isFenceMarker) { eligible[i] = true; inFence = !inFence; continue; }
+      eligible[i] = !inFence;
+    }
+  } else if (ext === '.json') {
+    for (let i = 0; i < lines.length; i++) eligible[i] = /^\s*"_comment[^"]*"\s*:\s*".*"\s*,?\s*$/.test(lines[i]);
+  }
+  // Any other extension (shouldn't occur -- processTraceExtensions() gates which files reach this
+  // function at all): no line is drop-eligible, so a drop-line rule match there fails closed too.
+  return eligible;
+}
+
+function step5b_scrubProcessTraces(exportDir, manifest) {
+  const rules = buildProcessTraceRules(manifest);
+  if (!rules.length) { log('scrub (process traces): 0 rule(s) configured, nothing to do'); return; }
+  const extensions = processTraceExtensions(manifest);
+  const files = [];
+  walk(exportDir, '', files);
+  let touched = 0;
+  const perRule = new Map(); // id -> { replaced, droppedLines }
+  for (const rule of rules) perRule.set(rule.id, { replaced: 0, droppedLines: 0 });
+  for (const rel of files) {
+    if (!hasProcessTraceExtension(rel, extensions)) continue;
+    const abs = path.join(exportDir, rel);
+    const buf = fs.readFileSync(abs);
+    if (!isProbablyText(buf)) continue;
+    const original = buf.toString('utf8');
+    const ext = extensions.find((e) => rel.endsWith(e)) || '';
+    let lines = original.split('\n');
+    let eligible = null; // computed lazily, only if a drop-line rule actually matches this file
+    let fileChanged = false;
+    for (const rule of rules) {
+      if (rule.mode === 'drop-line') {
+        if (eligible === null) eligible = classifyLinesForDropEligibility(ext, lines);
+        const kept = [];
+        for (let i = 0; i < lines.length; i++) {
+          rule.re.lastIndex = 0;
+          if (rule.re.test(lines[i])) {
+            if (!eligible[i]) {
+              die('scrub.processTraces rule "' + rule.id + '" (mode=drop-line) matched a CODE line, not a ' +
+                'comment/documentation line, at ' + rel + ':' + (i + 1) + ' -- refusing to silently delete code ' +
+                'or ship the trace. Add a "replace" rule instead (or exclude this path), or fix the rule\'s ' +
+                'regex if it is over-matching. Line: ' + JSON.stringify(lines[i]));
+            }
+            perRule.get(rule.id).droppedLines++;
+            fileChanged = true;
+            continue; // drop this line -- do not push it into `kept`
+          }
+          kept.push(lines[i]);
+        }
+        lines = kept;
+        eligible = null; // line indices shifted -- force recompute if another drop-line rule runs after this
+      } else {
+        // 'replace': safe everywhere (comment, prose, JSON string value, or a code-line string literal)
+        // -- only the matched substring changes, nothing structural. Applied to the whole file content
+        // at once (not line-by-line) so a rule may span line-internal context freely.
+        const content = lines.join('\n');
+        rule.re.lastIndex = 0;
+        let count = 0;
+        const next = content.replace(rule.re, () => { count++; return rule.replace; });
+        if (count > 0) {
+          perRule.get(rule.id).replaced += count;
+          fileChanged = true;
+          lines = next.split('\n');
+        }
+      }
+    }
+    if (fileChanged) {
+      fs.writeFileSync(abs, lines.join('\n'), 'utf8');
+      touched++;
+    }
+  }
+  const summary = rules.map((r) => {
+    const s = perRule.get(r.id);
+    return r.id + '=' + s.replaced + 'r/' + s.droppedLines + 'd';
+  }).join(', ');
+  log('scrub (process traces): touched ' + touched + ' file(s) across ' + rules.length + ' rule(s) -- ' + summary);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Sanitize rules for username/hostname are the UNION of two sources:
 //  1. DYNAMIC: derived from the machine actually running this script (os.userInfo()/os.hostname())
 //     -- correct when the export runs on the author's own machine.
@@ -1015,10 +1206,23 @@ function buildGate4Patterns(manifest) {
     if (isCommentEntry(entry)) continue;
     patterns.push({ id: 'denylist:' + entry.id, text: entry.pattern, mode: entry.match || 'substring', caseSensitive: !!entry.caseSensitive });
   }
+  // W22-U1b (Jax ruling A): the SAME regexes step5b_scrubProcessTraces() just applied, re-checked here
+  // as independent confirmation the scrub actually worked -- same "sanitize and the gate that verifies
+  // it must not share the one incomplete rule set" discipline as the identity/denylist patterns above
+  // (codex #1's original finding). mode 'regex' (below) uses entry.pattern AS a regex source directly
+  // (never escRe()'d -- these already ARE regexes, unlike the literal identityLiterals/internalNames
+  // strings above), so it fires regardless of whether step5b's own rule ran in 'replace' or 'drop-line'
+  // mode, or whether a rule was ever applied to this exact path at all.
+  const processTraceRules = (manifest.scrub && manifest.scrub.processTraces && manifest.scrub.processTraces.rules) || [];
+  for (const entry of processTraceRules) {
+    if (isCommentEntry(entry)) continue;
+    patterns.push({ id: 'processTrace:' + entry.id, text: entry.pattern, mode: 'regex', flags: entry.flags || 'g' });
+  }
   return patterns;
 }
 
 function patternRegex(p) {
+  if (p.mode === 'regex') return new RegExp(p.text, p.flags || 'g');
   const flags = 'g' + (p.caseSensitive ? '' : 'i');
   const escaped = escRe(p.text);
   return p.mode === 'word' ? new RegExp('\\b' + escaped + '\\b', flags) : new RegExp(escaped, flags);
@@ -1042,7 +1246,16 @@ function gate4ScanBlob(buf, patterns) {
   for (const p of patterns) {
     if (patternRegex(p).test(utf8Text)) hits.push(p.id + ' (utf8)');
   }
+  // The raw UTF-16LE/BE byte-substring pass only makes sense for a LITERAL identity/denylist string
+  // (identityLiterals/internalNames, and the dynamic username/hostname entries) -- p.text there IS the
+  // exact string being hunted for. A 'regex' pattern's p.text is regex SOURCE (e.g. containing `\b`,
+  // `(?:...)`, alternation) -- there is no single literal string to re-encode as UTF-16 bytes, so this
+  // pass is skipped for those (the UTF-8 regex pass above already covers them; a process-trace comment
+  // hiding as UTF-16-encoded bytes is not a real-world case this rule set is defending against, unlike
+  // an author identity string, which sanitize.rules/GATE1/GATE4's other groups already treat as a real
+  // exfiltration vector).
   for (const p of patterns) {
+    if (p.mode === 'regex') continue;
     const le = utf16leBuf(p.text);
     if (le.length && buf.includes(le)) hits.push(p.id + ' (utf16le)');
     const be = utf16beBuf(p.text);
@@ -1142,6 +1355,7 @@ function buildExportForPathListing(manifest, sourceOid) {
     step3_applyAddFiles(exportDir, manifest, sourceOid);
     step4_applyOverlays(exportDir, manifest, sourceOid);
     step5_applyReplacements(exportDir, manifest, sourceOid);
+    step5b_scrubProcessTraces(exportDir, manifest);
     step6_sanitize(exportDir, manifest);
     return computeExportedPathList(exportDir);
   } finally {
@@ -1453,6 +1667,7 @@ function runExportCore(frozenManifest, sourceOid, keepList, sourceShortSha, orph
     step3_applyAddFiles(exportDir, frozenManifest, sourceOid);
     step4_applyOverlays(exportDir, frozenManifest, sourceOid);
     step5_applyReplacements(exportDir, frozenManifest, sourceOid);
+    step5b_scrubProcessTraces(exportDir, frozenManifest);
     step6_sanitize(exportDir, frozenManifest);
 
     const residual = gate1_residualScan(exportDir, frozenManifest);
@@ -1612,6 +1827,14 @@ module.exports = {
   buildSanitizeRules,
   gate1_residualScan,
   step6_sanitize,
+  // W22-U1b exports, primarily for tests/publish-process-trace.test.cjs:
+  compileProcessTraceRule,
+  buildProcessTraceRules,
+  processTraceExtensions,
+  hasProcessTraceExtension,
+  classifyLinesForDropEligibility,
+  step5b_scrubProcessTraces,
+  validateProcessTraceRules,
   checkOverlayDrift,
   updateOverlayBaseline,
   overlayTargets,

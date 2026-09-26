@@ -78,7 +78,9 @@
     "tests/publish-source-freeze.test.cjs",
     "_comment_PUBLISH_SOURCE_FREEZE_TEST: 2026-09-26 W22-U2 -- same rationale as _comment_PUBLISH_LEAK_SCAN_TEST directly above: unit-tests the exporter's source-OID freezing, frozen-blob reads, per-target overlay baseline update, and stale-temp sweep via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree).",
     "tests/publish-push-hygiene.test.cjs",
-    "_comment_PUBLISH_PUSH_HYGIENE_TEST: 2026-09-26 W22-U3 -- same rationale as _comment_PUBLISH_LEAK_SCAN_TEST/_comment_PUBLISH_SOURCE_FREEZE_TEST above: unit-tests the exporter's orphan-CAS, remote-parsing/token-hygiene, and dev/main-monotonicity logic via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree; confirmed by a real GATE3 failure -- MODULE_NOT_FOUND on '../scripts/publish-public.cjs' -- before this entry was added)."
+    "_comment_PUBLISH_PUSH_HYGIENE_TEST: 2026-09-26 W22-U3 -- same rationale as _comment_PUBLISH_LEAK_SCAN_TEST/_comment_PUBLISH_SOURCE_FREEZE_TEST above: unit-tests the exporter's orphan-CAS, remote-parsing/token-hygiene, and dev/main-monotonicity logic via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree; confirmed by a real GATE3 failure -- MODULE_NOT_FOUND on '../scripts/publish-public.cjs' -- before this entry was added).",
+    "tests/publish-process-trace.test.cjs",
+    "_comment_PUBLISH_PROCESS_TRACE_TEST: 2026-09-26 W22-U1b -- same rationale as the three _comment_PUBLISH_*_TEST entries above: unit-tests the new scrub.processTraces step (step5b_scrubProcessTraces), its comment/doc-line drop-line classifier, and the GATE4 processTraces pattern group via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree)."
   ],
   "excludeExceptions": [
     "guards/fixtures/v3/trigger-write-gate-probe.cjs"
@@ -245,6 +247,115 @@
       "replaceFile": "publish-overrides/patches/package-json.3.replace.txt"
     }
   ],
+  "scrub": {
+    "_comment": "2026-09-26 W22-U1b (Jax ruling A) -- strips PROCESS TRACES from the exported text, applied to every file matching processTraces.extensions, AFTER `replacements` and BEFORE `sanitize` (so a rule here sees the pre-sanitize text -- e.g. still literal 'Jax', not yet 'the maintainer' -- and sanitize's later identity substitution has nothing left to do at a spot this step already neutralized). Two categories per the ruling: (1) decision references that name WHO made an internal call ('Jax/the maintainer/主脑 拍板/裁定/批准/...'), and (2) review narrative that names internal report files or review rounds (OPUS-/FAB-/CODEX-/AUDIT-YYYY-MM-DD report filenames, 'codex 终审/复审/评审/#N', 'Opus 验收/裁决/复现/审计', 'fab 盲攻', 'W\\d-X builder'/'建造任务X' unit labels, MED/HIGH/LOW-N severity-ids cited inside a parenthesised review reference, review-<timestamp> report ids, the '.codex-reviews' review-ledger dirname). '主脑' (the orchestrating session role in the private multi-agent build protocol) was found during the real-tree scan this section is built from -- not named in the ruling's own examples, but the same class of internal-process actor reference as 'the maintainer', so folded into rule 1 and given its own broad fallback (rule 4) rather than left as a residual leak; flagged in the W22-U1b build report as an extension beyond the ruling's literal list, not a silent scope expansion.",
+    "processTraces": {
+      "_comment_extensions": "Text files only, matched by extension (case-sensitive, matches the literal suffix). Same tiny set the ruling named.",
+      "extensions": [".sh", ".cjs", ".js", ".md", ".json", ".txt", ".yml"],
+      "_comment_rules": "Ordered list of {id, pattern, flags, mode, replace?}. mode='replace' substitutes the regex match with neutral wording, anywhere in the file (comment, prose, JSON string value, or a code-line string literal -- safe everywhere since only the matched substring changes, nothing structural). mode='drop-line' deletes the WHOLE line and is only permitted when that line is a comment/documentation line for its file type (bash/yml '#', JS '//' or inside a '/* */' block, Markdown prose outside a fenced code block, or a JSON '_comment*' key's string value) -- a drop-line rule that matches a code line FAILS the export (path:line named in the error) instead of silently deleting code or shipping the trace; see step5b_scrubProcessTraces()/isDroppableLine() in scripts/publish-public.cjs. Every rule below is 'replace': the real corpus (per the scan this list was built from) always mixes the trace into a line that also carries real technical content worth keeping, so 'replace' (neutralize in place) was judged safer than 'drop-line' (lose the whole line) for all 14 -- drop-line's mechanism is still implemented and covered by tests/publish-process-trace.test.cjs with synthetic fixtures, per the build spec's own acceptance requirement, even though no *real* rule below currently exercises it.",
+      "rules": [
+        {
+          "id": "decision-attribution-verb",
+          "pattern": "(?:Jax|the maintainer|主脑)(?:\\s*\\d{4}(?:-\\d{2}){0,2})?[^\\n]{0,15}(?:批准|裁定|拍板|全批|发起审批|审批|裁决|批审|批)",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "(project decision)"
+        },
+        {
+          "id": "per-user-maintainer-note",
+          "pattern": "per user \\((?:the maintainer|Jax)[^)\\n]{0,60}\\)",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "per project decision"
+        },
+        {
+          "id": "decision-lu-shorthand",
+          "pattern": "\\((?:the maintainer|Jax),\\s*路\\d+\\)",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "(project decision)"
+        },
+        {
+          "id": "orchestrator-role-name",
+          "_comment": "Broad fallback for any '主脑' occurrence not already consumed by rule 1 above (e.g. an imperative like '请让主脑把它加进 ALLOW_PROD' -- user-facing guard output text, not a past-tense decision citation). Same identity-role treatment sanitize.rules' own 'author-first-name' entry already gives bare 'Jax'.",
+          "pattern": "主脑",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "the maintainer"
+        },
+        {
+          "id": "review-report-filename",
+          "pattern": "\\b(?:OPUS|FAB|CODEX|AUDIT|ECC-[A-Z]+)-20\\d\\d-\\d\\d-\\d\\d[\\w.-]*",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "(review report)"
+        },
+        {
+          "id": "blind-attack-round",
+          "pattern": "(?:fab\\s*)?盲攻",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "(adversarial review round)"
+        },
+        {
+          "id": "codex-verdict-citation",
+          "pattern": "codex\\s*(?:终审|复审|评审|审查|#\\d+)",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "(review)"
+        },
+        {
+          "id": "codex-mode-finding-citation",
+          "pattern": "codex\\([a-z]+\\)\\s*(?:HIGH|MEDIUM|MED|LOW)?\\s*#\\d+",
+          "flags": "gi",
+          "mode": "replace",
+          "replace": "(review finding)"
+        },
+        {
+          "id": "opus-verdict",
+          "pattern": "Opus\\s*(?:验收|裁决|复现|审计)",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "(review)"
+        },
+        {
+          "id": "build-unit-builder",
+          "pattern": "(?:W\\d{1,2}-[A-Z]\\b\\s*builder|builder\\s*W\\d{1,2}-[A-Z]\\b)",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "builder"
+        },
+        {
+          "id": "build-task-letter",
+          "pattern": "建造任务\\s?[A-Z]\\b",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "(build task)"
+        },
+        {
+          "id": "severity-id-review-paren",
+          "pattern": "\\([^()\\n]{0,100}\\b(?:MEDIUM|MED|HIGH|LOW)-\\d+\\b[^()\\n]{0,100}\\)",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "(review finding)"
+        },
+        {
+          "id": "review-timestamp-id",
+          "pattern": "review-\\d{8}T\\d{6}Z",
+          "flags": "g",
+          "mode": "replace",
+          "replace": "review-<redacted>"
+        },
+        {
+          "id": "codex-reviews-dir",
+          "pattern": "\\.codex-reviews",
+          "flags": "g",
+          "mode": "replace",
+          "replace": ".review-notes"
+        }
+      ]
+    }
+  },
   "sanitizeLiteralFallback": {
     "_comment": "LOW-1 fix (review FAB-2026-09-25-w11-w12-review.md LOW-1): the dynamic os.userInfo().username/os.hostname() rules below are only correct when the MACHINE RUNNING THE EXPORT is the machine whose identity needs scrubbing. On the CI runner (.github/workflows/publish-public.yml, ubuntu-latest) that is false -- the runner's own username/hostname are irrelevant; what needs to stay scrubbed is the AUTHOR's identity literals already baked into private-repo prose/strings/comments. This section is the hardcoded fallback so gate1_residualScan/step6_sanitize do not go blind on a host whose os.userInfo()/os.hostname() differ from the author's. Values taken from the author's own machine (see buildSanitizeRules() dynamic derivation on that machine, and the pre-existing per-file `replacements` patches for guards/bash-pipe-exitcode-watch.cjs, guards/pipe-gate-v2-acceptance.cjs, guards/pmm-bash-impression.cjs, which already strip these same literals from their known occurrences upstream of sanitize/gate1 -- this section is the union/fallback layer, not a replacement for those). This file is in `exclude` above (publish.manifest.json is never shipped to the public tree), so these literals never reach `public`.",
     "usernames": [

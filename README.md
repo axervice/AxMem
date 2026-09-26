@@ -178,7 +178,7 @@ tracking its `origin/main`) is a mechanical export, never edited directly.
 
 `npm run publish:public` runs `scripts/publish-public.cjs`: it archives
 `main`'s tree, applies `publish.manifest.json` (exclude / add / overlay /
-literal-patch / sanitize), runs six gates, and — only if all pass — commits
+literal-patch / process-trace scrub / sanitize), runs six gates, and — only if all pass — commits
 the result onto the local `public` branch (idempotent: an unchanged export
 tree produces no new commit; in orphan history mode, idempotence also
 requires `public` HEAD to already be parentless, and the ref is moved with a
@@ -207,6 +207,23 @@ CI-driven publish already shipped. Override with `--allow-behind-private`
 for a deliberate exception (e.g. republishing an older tag); the override is
 recorded in the commit message trailer (W22-U3, blind spot 5).
 
+Between `replacements` and `sanitize`, `scrub.processTraces` (2026-09-26,
+Jax ruling A) strips PROCESS TRACES the earlier steps don't touch: decision
+references that name who made an internal call (`Jax`/`the maintainer`/`主脑`
++ `拍板`/`裁定`/`批准`/...), and review narrative (internal report filenames
+like `OPUS-2026-…`/`FAB-2026-…`/`CODEX-2026-…`/`AUDIT-…`, `codex 终审/复审/
+评审/#N`, `Opus 验收/裁决/复现/审计`, `fab 盲攻`, build-unit labels, severity-id
+review citations, review timestamps, the `.codex-reviews` ledger dirname).
+Manifest-driven, ordered `{id, pattern, flags, mode, replace?}` rules: `mode:
+"replace"` substitutes the match anywhere (safe in a comment, in prose, in a
+JSON string value, or inside a code-line string literal); `mode: "drop-line"`
+deletes the whole line but ONLY when it classifies as a comment/documentation
+line for that file's syntax (bash/yml `#`, JS `//` or inside `/* */`,
+Markdown prose outside a fenced code block, or a JSON `_comment*` key) — a
+`drop-line` rule that matches a real code line fails the export loudly,
+naming the exact `path:line`, instead of silently deleting code or shipping
+the trace.
+
 The gates, in order:
 
 - **GATE0** — overlay drift: each `overlays` target's baseline blob sha
@@ -221,13 +238,17 @@ The gates, in order:
   git tree object's raw blob bytes (`git ls-tree` + `git cat-file`, never a
   working-directory walk or `buildSanitizeRules()`'s own replacement loop):
   every blob is checked against `denylist.identityLiterals` (the same
-  identity strings `sanitize.rules` redacts, re-verified independently) and
+  identity strings `sanitize.rules` redacts, re-verified independently),
   `denylist.internalNames` (private codenames/tags with no redaction rule
   at all, by design — the files that carried them are fully excluded or
-  literal-patched instead) as UTF-8 and UTF-16LE/BE byte patterns; any
-  symlink, gitlink/submodule, or unexpected file mode is refused outright;
-  any NUL-containing blob is refused unless its path is on
-  `binaryAllowlist`.
+  literal-patched instead), and `scrub.processTraces.rules` (the same
+  process-trace regexes above, re-checked against the final tree as
+  independent confirmation the scrub step actually worked) as UTF-8 (plus
+  UTF-16LE/BE byte patterns for the literal identity/denylist entries — a
+  process-trace regex has no single literal string to re-encode, so that
+  pass is UTF-8-only for that group); any symlink, gitlink/submodule, or
+  unexpected file mode is refused outright; any NUL-containing blob is
+  refused unless its path is on `binaryAllowlist`.
 - **GATE5** *(W22-U1)* — the exported path list must exactly match the
   maintainer-reviewed baseline in `publicPathSnapshot.file`
   (`publish-overrides/public-paths.snapshot.txt`), catching both an
