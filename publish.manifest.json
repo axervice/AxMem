@@ -68,7 +68,13 @@
     "docs/audits/**",
     "guards/specs/PIPE-GATE-BRIEF.md",
     "guards/specs/PIPE-GATE-V2-REPAIR-BRIEF.md",
-    "_comment_INTERNAL_TRACES: 2026-09-24 Jax ruling -- internal work-tracking/review-brief material with no free-tier value: the private backlog, the full docs/audits/ review-report tree, and the two guards/specs/ pipe-gate review briefs (contract JSON files and M-SPEC docs under guards/specs/ are kept -- e.g. isolation-gate-contract.json, RECALL-LOOP-M-SPEC.md, pipe-gate-v2-*.json -- those are technical references shipped code/comments actually cite, not review narrative)"
+    "_comment_INTERNAL_TRACES: 2026-09-24 Jax ruling -- internal work-tracking/review-brief material with no free-tier value: the private backlog, the full docs/audits/ review-report tree, and the two guards/specs/ pipe-gate review briefs (contract JSON files and M-SPEC docs under guards/specs/ are kept -- e.g. isolation-gate-contract.json, RECALL-LOOP-M-SPEC.md, pipe-gate-v2-*.json -- those are technical references shipped code/comments actually cite, not review narrative)",
+
+    "guards/specs/KNOWN-PROBLEMS.md",
+    "_comment_KNOWN_PROBLEMS: 2026-09-26 W22 hotfix (codex finding #1, CODEX-2026-09-26-export-pipeline-review.md) -- this is internal work-tracking (a running P-numbered defect/problem log for this repo's own build), not free-tier material, same rationale as docs/BACKLOG.md and docs/audits/** above. It also names real private-repo/project identifiers verbatim in its entries (e.g. 'project:jax-looprig', 'axervice:m6-booking', 'dee/RAG') that the sanitize.rules regex layer below does not cover (those rules target OS username/hostname/path patterns, not arbitrary internal project tags) -- excluding outright is simpler and safer than adding narrow per-string sanitize rules for a file that has no free-tier value in the first place.",
+
+    "CHANGELOG.public.md",
+    "_comment_CHANGELOG_PUBLIC_DUP: 2026-09-26 W22 hotfix (codex finding #14) -- CHANGELOG.public.md is the hand-curated overlay SOURCE for CHANGELOG.md (see overlays.\"CHANGELOG.md\" below); step4_applyOverlays in scripts/publish-public.cjs reads it directly from this private repo's own working tree (path.join(REPO_ROOT, srcRel)), NOT from the filtered export directory, so excluding it here does not affect the overlay -- it only stops the source file from ALSO being shipped verbatim as its own redundant top-level CHANGELOG.public.md in the public tree (same treatment already given to the README.md overlay's own source files, README.public.md / README.zh.public.md, above)."
   ],
   "excludeExceptions": [
     "guards/fixtures/v3/trigger-write-gate-probe.cjs"
@@ -129,6 +135,14 @@
     { "file": "guards/pmm-trigger-recall.cjs", "findFile": "publish-overrides/patches/pmm-trigger-recall.3.find.txt", "replaceFile": "publish-overrides/patches/pmm-trigger-recall.3.replace.txt" },
 
     { "file": "guards/vendor/VENDOR.md", "findFile": "publish-overrides/patches/vendor-md.1.find.txt", "replaceFile": "publish-overrides/patches/vendor-md.1.replace.txt" },
+
+    "_comment_pmm-size-watch: 2026-09-26 W22 hotfix (codex finding #1, plus a wider follow-up pass after review flagged more hits on the same two lines) -- hooks/pmm-size-watch.sh (kept/shipped, not excluded) carries two adjacent changelog-style comment lines naming real private side-project/context codenames verbatim ('RAG', '小D', 'Dee', '冷邮件', 'Freelance', 'Looprig') that are not covered by any sanitize.rules regex (those target OS username/hostname/path patterns, not arbitrary project codenames). Rewrites just those tokens to the neutral placeholder 'example-project' (same placeholder the existing axervice-booking-repo-name sanitize rule already uses elsewhere in this manifest) or to '等' (etc.), leaving the rest of each line's technical content (dates, token-count history, the bare 'Axervice' name which is this repo's own umbrella product name, not a leaked codename) untouched.",
+    { "file": "hooks/pmm-size-watch.sh", "findFile": "publish-overrides/patches/pmm-size-watch.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-size-watch.1.replace.txt" },
+    { "file": "hooks/pmm-size-watch.sh", "findFile": "publish-overrides/patches/pmm-size-watch.2.find.txt", "replaceFile": "publish-overrides/patches/pmm-size-watch.2.replace.txt" },
+
+    "_comment_pmm-entry-length-watch: 2026-09-26 W22 hotfix follow-up (review found hits codex missed) -- hooks/pmm-entry-length-watch.sh (kept/shipped, not excluded) has two comment lines illustrating a real namespace-prefix ambiguity bug using real internal namespace/tag literals verbatim ('axervice:gsd-paused', '[[gsd-paused]]', 'rag:', 'upwork:'). Rewrites both lines' example tag/namespace tokens to generic placeholders ('example-tag', 'example-project', 'ns1'/'ns2') while preserving the illustrative point being made (bracket-without-namespace vs bracket-with-namespace-prefix causes false positives in the dangling-reference scan this comment is documenting).",
+    { "file": "hooks/pmm-entry-length-watch.sh", "findFile": "publish-overrides/patches/pmm-entry-length-watch.1.find.txt", "replaceFile": "publish-overrides/patches/pmm-entry-length-watch.1.replace.txt" },
+    { "file": "hooks/pmm-entry-length-watch.sh", "findFile": "publish-overrides/patches/pmm-entry-length-watch.2.find.txt", "replaceFile": "publish-overrides/patches/pmm-entry-length-watch.2.replace.txt" },
 
     { "file": "package.json", "findFile": "publish-overrides/patches/package-json.1.find.txt", "replaceFile": "publish-overrides/patches/package-json.1.replace.txt" },
     { "file": "package.json", "findFile": "publish-overrides/patches/package-json.2.find.txt", "replaceFile": "publish-overrides/patches/package-json.2.replace.txt" },

@@ -1,0 +1,1 @@
+# 2026-07-04: raised 80000->90000 per user (Jax, 路2). 现 4 大活跃项目(Axervice/RAG/小D/Dee)
