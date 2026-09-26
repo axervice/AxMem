@@ -40,6 +40,17 @@
 #     of surfacing later as a confusing failure inside the clone.
 #   - A full export (--export) runs `npm run selftest` internally (GATE3) and takes roughly 10 minutes.
 #
+# One machine, one run at a time (W24-U2 follow-up, 2026-09-26): `bin/axmem selftest`'s per-component
+# self-tests run under a HARDCODED 240s `timeout` (bin/axmem is not owned by this script, so that
+# ceiling cannot be made configurable from here). Under heavy concurrent CPU load -- e.g. two clones
+# each running `npm run selftest` at the same time, or a second dev-test.sh invocation on the same
+# machine -- a component that normally finishes in well under 240s (confirmed: tests/isolation-real-
+# configs.sh, otherwise green) can be starved past that ceiling and report a spurious FAIL that has
+# nothing to do with the code under test. This is a real, reproduced failure mode, not a hypothetical:
+# do not loop-retry a FAIL here without first checking for concurrent selftest/dev-test.sh activity on
+# the same machine. Run at most one `npm run selftest` / `bash scripts/dev-test.sh` at a time per
+# machine; if several builders share a machine, coordinate so their runs don't overlap.
+#
 # Recursion guard: this script writes a marker file at the root of every disposable clone it creates.
 # If the repo this script is itself running from carries that marker, it refuses to run -- it must never
 # be invoked against its own temp clone output (that would compound clones without bound).
@@ -61,6 +72,10 @@ Usage: bash scripts/dev-test.sh [--export] [--keep] [--ref <rev>] [--allow-dirty
   --allow-tree-change     with --export, do not fail if the exported tree differs from the source repo's
                           published `public` tree
   -h, --help              show this help
+
+Note: run at most ONE `npm run selftest` / dev-test.sh at a time per machine. bin/axmem selftest's
+per-component self-tests have a hardcoded 240s timeout; heavy concurrent load can push an otherwise-
+healthy component past it and produce a spurious FAIL unrelated to the code under test.
 EOF
 }
 
