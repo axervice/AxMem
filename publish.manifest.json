@@ -76,7 +76,9 @@
     "tests/publish-leak-scan.test.cjs",
     "_comment_PUBLISH_LEAK_SCAN_TEST: 2026-09-26 W22-U1 -- unit-tests the exporter's own GATE4/GATE5/schema-validation logic via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; both of those are excluded from the public tree above, so this file has no free-tier value and would break if it ever shipped (its require target would not exist). Deliberately excluded here rather than left to rely on tests/'s general shipped status.",
     "tests/publish-source-freeze.test.cjs",
-    "_comment_PUBLISH_SOURCE_FREEZE_TEST: 2026-09-26 W22-U2 -- same rationale as _comment_PUBLISH_LEAK_SCAN_TEST directly above: unit-tests the exporter's source-OID freezing, frozen-blob reads, per-target overlay baseline update, and stale-temp sweep via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree)."
+    "_comment_PUBLISH_SOURCE_FREEZE_TEST: 2026-09-26 W22-U2 -- same rationale as _comment_PUBLISH_LEAK_SCAN_TEST directly above: unit-tests the exporter's source-OID freezing, frozen-blob reads, per-target overlay baseline update, and stale-temp sweep via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree).",
+    "tests/publish-push-hygiene.test.cjs",
+    "_comment_PUBLISH_PUSH_HYGIENE_TEST: 2026-09-26 W22-U3 -- same rationale as _comment_PUBLISH_LEAK_SCAN_TEST/_comment_PUBLISH_SOURCE_FREEZE_TEST above: unit-tests the exporter's orphan-CAS, remote-parsing/token-hygiene, and dev/main-monotonicity logic via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree; confirmed by a real GATE3 failure -- MODULE_NOT_FOUND on '../scripts/publish-public.cjs' -- before this entry was added)."
   ],
   "excludeExceptions": [
     "guards/fixtures/v3/trigger-write-gate-probe.cjs"
