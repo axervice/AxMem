@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  selftest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: axmem selftest (isolated HOME, no external dependencies)
+        shell: bash
+        run: |
+          T="$(mktemp -d)"
+          echo "isolated HOME: $T"
+          HOME="$T" USERPROFILE="$T" PMM_HOME="$T" AXMEM_HOME="$T/.axmem" npm run selftest
+
+      - name: axmem doctor (fresh, isolated HOME)
+        shell: bash
+        run: |
+          T="$(mktemp -d)"
+          HOME="$T" USERPROFILE="$T" PMM_HOME="$T" AXMEM_HOME="$T/.axmem" bash bin/axmem init
+          HOME="$T" USERPROFILE="$T" PMM_HOME="$T" AXMEM_HOME="$T/.axmem" npm run doctor

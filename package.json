@@ -1,0 +1,43 @@
+{
+  "name": "axmem",
+  "version": "0.1.0",
+  "description": "Deterministic guardrails for AI coding agents (Claude Code first).",
+  "license": "Apache-2.0",
+  "private": false,
+  "bin": {
+    "axmem": "bin/axmem"
+  },
+  "files": [
+    "bin",
+    "core",
+    "lib",
+    "lifecycle",
+    "adapters",
+    "hooks",
+    "retrieval",
+    "guards",
+    "docs",
+    "tests",
+    "install.sh",
+    "axmem.config.example.json",
+    "classes.md.example"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "selftest": "bash bin/axmem selftest",
+    "doctor": "bash bin/axmem doctor"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/axervice/AxMem.git"
+  },
+  "keywords": [
+    "claude-code",
+    "memory",
+    "guardrails",
+    "hooks",
+    "agent-safety"
+  ]
+}

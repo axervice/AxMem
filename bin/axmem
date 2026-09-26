@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# axmem — single entry point. (P1, 2026-09-13)
+set -u
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$BIN")"
+
+# [Builder W9, 2026-09-24] `selftest` fail-closed self-isolation: a bare
+# `npm run selftest` / `bash bin/axmem selftest` with no isolation env vars
+# set must NEVER write into the real $HOME/.axmem (a prior round, W8,
+# proved exactly this class of mistake — an un-isolated self-test run
+# silently wrote a real, live home directory). This check runs BEFORE
+# lib/prelude.sh is sourced below on purpose: prelude.sh's own trailing
+# `mkdir -p "$AXMEM_STATE_DIR"` is an unconditional side effect on every
+# single invocation, so detecting the problem only after sourcing it would
+# already be too late to prevent it. Heuristic: HOME and any of
+# AXMEM_HOME/AXMEM_MEMORY_DIR/AXMEM_STATE_DIR that are explicitly set must
+# all already live under the OS temp dir (the convention every isolated
+# caller in this repo — CI's workflow, this file's own test harnesses, the
+# builder-mandated manual-run prefix — already uses); if any of them
+# doesn't, self-isolate under a freshly minted temp HOME instead of
+# proceeding. AXMEM_SELFTEST_ISOLATED=1 is this script's own re-exec
+# sentinel (not a caller-facing opt-out) — it exists solely to make the
+# single re-exec below terminate deterministically instead of depending on
+# the prefix check matching its own freshly-normalized path exactly.
+if [ "${1:-}" = "selftest" ] && [ "${AXMEM_SELFTEST_ISOLATED:-}" != "1" ]; then
+  _w9_systmp="${TMPDIR:-${TEMP:-${TMP:-/tmp}}}"
+  _w9_systmp="$(cd "$_w9_systmp" 2>/dev/null && pwd || printf '%s' "$_w9_systmp")"
+  _w9_isolated=1
+  case "${HOME:-}" in
+    "$_w9_systmp"*) : ;;
+    *) _w9_isolated=0 ;;
+  esac
+  for _w9_v in "${AXMEM_HOME:-}" "${AXMEM_MEMORY_DIR:-}" "${AXMEM_STATE_DIR:-}"; do
+    if [ -n "$_w9_v" ]; then
+      case "$_w9_v" in
+        "$_w9_systmp"*) : ;;
+        *) _w9_isolated=0 ;;
+      esac
+    fi
+  done
+  if [ "$_w9_isolated" -ne 1 ]; then
+    _w9_iso="$(mktemp -d)"
+    _w9_iso="$(cygpath -m "$_w9_iso" 2>/dev/null || printf '%s' "$_w9_iso")"
+    echo "axmem selftest: no isolated HOME detected (fail-closed) — self-isolating under $_w9_iso so the real home is never touched" >&2
+    exec env \
+      HOME="$_w9_iso" USERPROFILE="$_w9_iso" PMM_HOME="$_w9_iso" \
+      AXMEM_HOME="$_w9_iso/.axmem" \
+      AXMEM_MEMORY_DIR="$_w9_iso/mem" \
+      AXMEM_STATE_DIR="$_w9_iso/state" \
+      AXMEM_CONFIG="$_w9_iso/axmem.json" \
+      AXMEM_SELFTEST_ISOLATED=1 \
+      bash "$BIN/axmem" selftest
+  fi
+fi
+
+. "$ROOT/lib/prelude.sh"
+
+# D1 (P1 2.1, 2026-09-16): adapters.hermes.memory_md is RETIRED — AxMem never
+# reads/writes Hermes MEMORY.md/USER.md/SOUL.md (single-writer rule); the
+# Hermes adapter now wires through adapters.hermes.config_yaml instead. Every
+# axmem invocation is "startup" for this diagnostic (single entry point).
+_hermes_memory_md="$(axmem_cfg adapters.hermes.memory_md '')"
+[ -n "$_hermes_memory_md" ] && echo "axmem: DEPRECATED — adapters.hermes.memory_md is retired (P1 D1); AxMem never reads/writes Hermes memory files. Set adapters.hermes.config_yaml instead and remove memory_md from config.json." >&2
+
+# P1 2.3 §2.3 ⑥: startup recovery runs before EVERY axmem command (including
+# doctor) — a leftover restore journal must never be silently ignored. Cheap
+# no-op when AXMEM_STATE_DIR/restore/ doesn't exist (the overwhelming common
+# case), so this never slows down a normal invocation.
+_recovery="$(node "$ROOT/lifecycle/restore.cjs" --recover-on-startup "$AXMEM_STATE_DIR" 2>&1)"; _recovery_rc=$?
+if [ "$_recovery_rc" -ne 0 ]; then
+  printf '%s\n' "$_recovery" >&2
+  exit 3
+elif [ -n "$_recovery" ]; then
+  printf '%s\n' "$_recovery" >&2
+fi
+
+usage() {
+  cat <<'EOF'
+axmem <command>
+  init                create AXMEM_HOME, config.json (from example), memory skeleton
+  doctor              verify runtime, config, skeleton + fast self-tests
+  gate [--block]      write-gate (hook mode reads hook JSON on stdin)
+  receipt <sub...>    add | pending | cover | stop-check | session-lamp | from-hook
+  lint [--strict]     pointer integrity (dangling refs / broken paths)
+  trigger             moment-triggered recall (hook mode; --format=text)
+  precommit           commit-boundary gate (wire as git pre-commit hook)
+  canary              feed every registered guard a known input; stamp on green
+  redundancy [--report|--json]   four countable repeat-yourself proxies (R1-R4)
+  fingerprint <init|check|refresh "<reason>">   guard-code drift roster
+  classify --map <tsv> [--dry]   bulk-insert Class: lines from tag<TAB>class rows
+  selftest            run every component self-test
+  config get <k> <d>  read a config value
+  version
+EOF
+}
+
+case "${1:-}" in
+  init)
+    # [Opus L7, 2026-09-17] Every step below used to run unconditionally,
+    # with the branch's own exit code coming ONLY from the trailing echo
+    # (which always succeeds) — a real mkdir/cp failure partway through
+    # (permission denied, disk full, a read-only target) was silently
+    # swallowed: `axmem init` still printed "ready" and exited 0. Each
+    # step now ORs a failure into $_init_rc instead, and the branch exits
+    # with it explicitly.
+    _init_rc=0
+    mkdir -p "$AXMEM_HOME" "$AXMEM_MEMORY_DIR" "$AXMEM_STATE_DIR" || _init_rc=1
+    { [ -f "$AXMEM_CONFIG" ] || cp "$ROOT/axmem.config.example.json" "$AXMEM_CONFIG"; } || _init_rc=1
+    for f in decisions lessons standinginstructions; do
+      { [ -f "$AXMEM_MEMORY_DIR/$f.md" ] || printf '## Index\n\n## Entries\n' > "$AXMEM_MEMORY_DIR/$f.md"; } || _init_rc=1
+      { [ -f "$AXMEM_MEMORY_DIR/$f-archive.md" ] || printf '# %s archive (retire = move, never delete)\n' "$f" > "$AXMEM_MEMORY_DIR/$f-archive.md"; } || _init_rc=1
+    done
+    { [ -f "$AXMEM_MEMORY_DIR/progress.md" ] || printf '# Progress\n\n## Active\n\n## Ledger\n' > "$AXMEM_MEMORY_DIR/progress.md"; } || _init_rc=1
+    # Lesson-class taxonomy: a generic starter set, not an empty skeleton —
+    # a fresh classes.md with zero hubs would make B6's "Class target not
+    # defined" fire on the very first classified lesson anyone writes.
+    { [ -f "$AXMEM_MEMORY_DIR/classes.md" ] || cp "$ROOT/classes.md.example" "$AXMEM_MEMORY_DIR/classes.md"; } || _init_rc=1
+    mkdir -p "$AXMEM_MEMORY_DIR/receipts" || _init_rc=1
+    if [ "$_init_rc" -eq 0 ]; then
+      echo "axmem init: $AXMEM_HOME ready (config: $AXMEM_CONFIG)"
+    else
+      echo "axmem init: FAILED — one or more setup steps could not complete (see errors above)" >&2
+    fi
+    exit "$_init_rc"
+    ;;
+  doctor)
+    fail=0
+    # [LOW] `eval` ran the check string directly in THIS shell — able to
+    # mutate its variables (including `fail` itself, or `$ROOT`/`$AXMEM_*`),
+    # redefine `chk`, or otherwise corrupt the calling script's state for
+    # every check that runs after it. `bash -c` parses the exact same
+    # string (compound operators like `&&` inside the check strings below
+    # still work identically) but in a fresh subshell, so nothing it does
+    # can leak back into this script's environment.
+    # [codex(gf) LOW #8, 2026-09-17] Every path used to be STRING-CONCATENATED
+    # into the command, wrapped in single quotes ('$ROOT/...') — a path
+    # containing a literal single quote (a real, if unusual, filesystem
+    # path — Windows and POSIX both allow it) prematurely closed that
+    # quoting, splitting the rest of the path into unintended shell syntax.
+    # Reproduced directly: a temp AXMEM_HOME containing "it's a quote"
+    # broke "memory skeleton" and "state dir writable" (init/config/
+    # migrate/restore/uninstall/upgrade were all unaffected — none of them
+    # build a command STRING this way). Fixed by never interpolating a
+    # path into the command TEXT at all: `chk` now takes the command
+    # template plus any path/value arguments SEPARATELY, and passes them
+    # to the inner `bash -c` as real positional parameters ($1, $2, ...) —
+    # a positional parameter's VALUE is substituted verbatim, never
+    # re-parsed as shell syntax, so no character it contains (a quote, a
+    # space, anything) can break the template.
+    chk() {
+      local _label="$1"; local _cmd="$2"; shift 2
+      if bash -c "$_cmd" _ "$@" >/dev/null 2>&1; then echo "  ok   $_label"; else echo "  FAIL $_label"; fail=1; fi
+    }
+    echo "axmem doctor:"
+    chk "node runtime"            "command -v node"
+    chk "git runtime"             "command -v git"
+    chk "config parses"           'node "$1" get "$2" 0' "$ROOT/lib/prelude.cjs" '$schema_version'
+    chk "memory skeleton"         '[ -f "$1/decisions.md" ] && [ -f "$1/lessons.md" ]' "$AXMEM_MEMORY_DIR"
+    chk "state dir writable"      'touch "$1/.doctor-probe" && rm "$1/.doctor-probe"' "$AXMEM_STATE_DIR"
+    chk "write-gate self-test"    'bash "$1" --self-test' "$ROOT/core/write-gate.sh"
+    chk "receipt self-test"       'bash "$1" --self-test' "$ROOT/core/receipt.sh"
+    chk "pointer-lint self-test"  'bash "$1" --self-test' "$ROOT/core/pointer-lint.sh"
+    chk "trigger self-test"       'bash "$1" --self-test' "$ROOT/core/trigger-recall.sh"
+    chk "canary runner self-test" 'bash "$1" --self-test' "$ROOT/core/canary.sh"
+    _cc_settings="$(axmem_cfg adapters.claude_code.settings_json "$HOME/.claude/settings.json")"
+    if [ -f "$_cc_settings" ]; then
+      # P1 2.4: per-entry identity verification (was a single crude
+      # 'axmem|AxMem' substring grep, which could not tell "wired" from
+      # "some unrelated line happens to mention axmem").
+      _cc_report="$(node -e "
+        const m = require(process.argv[1]);
+        const rows = m.verifyWiring(process.argv[2]); // no root override: must match main()'s own ROOT constant exactly
+        for (const r of rows) console.log((r.ok ? 'ok  ' : 'FAIL') + ' ' + r.event + '/' + (r.matcher||'-') + ' matches=' + r.matches);
+        process.exit(rows.every(r => r.ok) ? 0 : 1);
+      " "$ROOT/adapters/claude-code/merge-hooks.cjs" "$_cc_settings")"; _cc_rc=$?
+      if [ "$_cc_rc" -eq 0 ]; then
+        echo "  ok   claude-code adapter wired (all entries verified 1:1)"
+      else
+        echo "  --   claude-code adapter partially wired or not wired:"
+        printf '%s\n' "$_cc_report" | while IFS= read -r _l; do echo "         $_l"; done
+      fi
+    else
+      echo "  --   claude-code adapter not wired (optional; install.sh --claude-code to wire)"
+    fi
+    _codex_agents="$(axmem_cfg adapters.codex.agents_md "$HOME/.codex/AGENTS.md")"
+    if [ -f "$_codex_agents" ] && grep -q '<!-- axmem:begin -->' "$_codex_agents" 2>/dev/null && grep -q '<!-- axmem:end -->' "$_codex_agents" 2>/dev/null; then
+      echo "  ok   codex adapter wired ($_codex_agents)"
+    else
+      echo "  --   codex adapter not wired (optional; install.sh --claude-code style: bash adapters/codex/wire.sh <path> to wire)"
+    fi
+    _hermes_out="$(node "$ROOT/adapters/hermes/doctor.cjs" 2>&1)"; _hermes_rc=$?
+    printf '%s\n' "$_hermes_out" | while IFS= read -r _l; do echo "  $_l"; done
+    [ "$_hermes_rc" -ne 0 ] && fail=1
+    _generic_out="$(bash "$ROOT/adapters/generic/doctor.sh" 2>&1)"; _generic_rc=$?
+    printf '%s\n' "$_generic_out" | while IFS= read -r _l; do echo "  $_l"; done
+    [ "$_generic_rc" -ne 0 ] && fail=1
+    [ "$fail" -eq 0 ] && echo "doctor: all green" || echo "doctor: FAILURES above"
+    exit "$fail"
+    ;;
+  gate)      shift; exec bash "$ROOT/core/write-gate.sh" "$@" ;;
+  receipt)   shift; exec bash "$ROOT/core/receipt.sh" "$@" ;;
+  lint)      shift; exec bash "$ROOT/core/pointer-lint.sh" "$@" ;;
+  trigger)   shift; exec bash "$ROOT/core/trigger-recall.sh" "$@" ;;
+  precommit) shift; exec bash "$ROOT/core/precommit-gate.sh" "$@" ;;
+  canary)    shift; exec bash "$ROOT/core/canary.sh" "$@" ;;
+  manifest)  shift; exec bash "$ROOT/core/manifest.sh" "$@" ;;
+  redundancy)   shift; exec bash "$ROOT/core/redundancy-lint.sh" "$@" ;;
+  fingerprint)  shift; exec bash "$ROOT/core/fingerprint.sh" "$@" ;;
+  classify)     shift; exec node "$ROOT/core/classify.cjs" "$@" ;;
+  fade)      shift; exec node "$ROOT/core/fade.cjs" "$@" ;;
+  migrate)   # data-contract v1: version check + refuse-newer + backup scaffold
+    shift # BUGFIX (found while wiring P1 2.3's manifest.json backup extension):
+          # this `shift` was missing since the original P1 commit, so the
+          # `[ "${1:-}" = "--backup" ]` check below always compared the
+          # literal string "migrate" against "--backup" and never matched —
+          # `axmem migrate --backup` has silently never written a backup.
+    v="$(axmem_cfg '\$schema_version' 1)"
+    case "$v" in
+      1) echo "axmem migrate: data contract v1 — up to date (no migration needed)";;
+      *) echo "axmem migrate: config declares schema v$v but this build speaks v1 — upgrade axmem before touching this memory dir" >&2; exit 1;;
+    esac
+    if [ "${1:-}" = "--backup" ]; then
+      # P1 2.3: manifest.json-carrying archive (lifecycle/backup.cjs) —
+      # required by `restore`, which refuses any tar lacking one.
+      b="$AXMEM_HOME/backup-$(date +%Y%m%d-%H%M%S).tar"
+      node -e '
+        const backup = require(process.argv[1]);
+        const m = backup.createBackup(process.argv[2], process.argv[3]);
+        console.log("backup: " + process.argv[3] + " (" + m.member_count + " files, " + m.total_bytes + " bytes)");
+      ' "$ROOT/lifecycle/backup.cjs" "$AXMEM_MEMORY_DIR" "$b"
+    fi
+    ;;
+  uninstall) # --adapter <name>|--all [--dry-run]
+    shift
+    _un_all=0; _un_adapter=""; _un_dry=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --all) _un_all=1 ;;
+        --adapter) shift; _un_adapter="${1:-}" ;;
+        --dry-run) _un_dry="--dry-run" ;;
+        *) echo "usage: axmem uninstall --adapter <name>|--all [--dry-run]" >&2; exit 1 ;;
+      esac
+      shift
+    done
+    if [ "$_un_all" -eq 1 ]; then
+      # [Opus M4, 2026-09-17] readManifest() throws (never returns) when
+      # AXMEM_STATE_DIR/lifecycle.json exists but is corrupt (see
+      # lifecycle/install-manifest.cjs's ManifestCorruptError) — with NO
+      # stdout written at all. `$(...)` only ever captures stdout, so a
+      # thrown error used to leave `_names` empty with the substitution's
+      # own exit code silently discarded, and the line below fell straight
+      # into "uninstall: no adapters installed", rc 0 — compressing a real
+      # corrupt-manifest failure into "nothing to uninstall" and hiding it
+      # from callers/scripts checking rc. The inline script now catches any
+      # readManifest error itself, prints it with the same "uninstall: "
+      # prefix uninstall.cjs's own fail() uses, and exits 3; bin/axmem
+      # checks that exit code explicitly instead of inferring failure only
+      # from an empty $_names.
+      _names="$(node -e "
+        const lm = require(process.argv[1]);
+        try {
+          console.log(Object.keys(lm.readManifest(process.argv[2]).adapters).join(' '));
+        } catch (e) {
+          console.error('uninstall: ' + e.message);
+          process.exit(3);
+        }
+      " "$ROOT/lifecycle/install-manifest.cjs" "$AXMEM_STATE_DIR")"
+      _names_rc=$?
+      [ "$_names_rc" -ne 0 ] && exit "$_names_rc"
+      [ -z "$_names" ] && { echo "uninstall: no adapters installed"; exit 0; }
+      _rc=0
+      for _n in $_names; do node "$ROOT/lifecycle/uninstall.cjs" --adapter "$_n" $_un_dry || _rc=1; done
+      exit "$_rc"
+    fi
+    [ -n "$_un_adapter" ] || { echo "usage: axmem uninstall --adapter <name>|--all [--dry-run]" >&2; exit 1; }
+    exec node "$ROOT/lifecycle/uninstall.cjs" --adapter "$_un_adapter" $_un_dry
+    ;;
+  upgrade)   shift; exec node "$ROOT/lifecycle/upgrade.cjs" "$@" ;;
+  restore)   shift; exec node "$ROOT/lifecycle/restore.cjs" restore "$@" ;;
+  selftest)
+    # [Opus H4 / ts M4] Previously walked only core/*.sh — every other
+    # component's --self-test (lib/, adapters/**, lifecycle/*.cjs) was
+    # invisible to `axmem selftest` and had to be invoked by hand, one
+    # file at a time, with no single command proving the whole repo's
+    # self-tests are green together. Now discovers every .sh/.cjs file
+    # under core/, lib/, adapters/, lifecycle/, tests/ that declares
+    # --self-test support (grep-detected, not a hardcoded roster — a new
+    # component's self-test is picked up automatically the next time this
+    # runs; tests/ added 2026-09-17 for the spec §3 isolation/fresh-HOME/
+    # inherit-real-env E2E fixtures), and runs each one under a 240s
+    # timeout so a single hung self-test can
+    # never block the rest of the suite forever. guards/ and hooks/ are
+    # deliberately excluded (D8: legacy / out of P1 scope, never touched
+    # by this build).
+    #
+    # [codex(gf) HIGH #2, 2026-09-17] 3-state PASS/SKIP/FAIL, not a binary
+    # pass/fail: a component can legitimately exit 0 while its OWN
+    # internal accounting reports every check skipped (e.g. an isolation
+    # baseline that doesn't exist on this machine — see M3/M5). rc alone
+    # can no longer be read as "this component was verified". Set
+    # AXMEM_SELFTEST_STRICT_ISOLATION=1 for an acceptance run that must
+    # fail loudly the instant ANY component reports a skip, instead of
+    # merely reporting it.
+    rc=0
+    count=0
+    passcount=0
+    skipcount=0
+    failcount=0
+    _st_out="$(mktemp)"
+    trap 'rm -f "$_st_out"' EXIT
+    # [Opus H2, 2026-09-17] Previously took ONE before-snapshot and ONE
+    # after-snapshot around the ENTIRE traversal — a component that
+    # dirtied the repo, followed later by ANYTHING (another component, or
+    # that same component's own cleanup code) that quietly put it back,
+    # went completely undetected: the two endpoint snapshots looked
+    # identical even though the repo was genuinely written to mid-run.
+    # Opus reproduced this exactly — tests/inherit-real-env-arms.sh used
+    # to end with an unconditional `rm -rf "$ROOT/state"` that erased a
+    # real state/ leak from an earlier component before this trip-wire's
+    # final comparison ever saw it (now removed, see that file's own
+    # history). Now takes a snapshot after EVERY component and diffs
+    # against the PREVIOUS component's snapshot, so whichever component
+    # actually dirtied the repo is named directly and cannot be
+    # laundered by anything running later. Also checks for the exact
+    # `state/` path directly, not just via the generic git-status diff —
+    # that specific shape is the one this repo has actually regressed to
+    # before (commit e1f38eb).
+    _have_git=0
+    _git_status_prev=""
+    if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+      _have_git=1
+      _git_status_prev="$(git -C "$ROOT" status --porcelain 2>/dev/null)"
+    fi
+    echo "axmem selftest: discovering component self-tests under core/ lib/ adapters/ lifecycle/ tests/ ..."
+    while IFS= read -r _f; do
+      [ -n "$_f" ] || continue
+      grep -q -- '--self-test' "$_f" 2>/dev/null || continue
+      count=$((count + 1))
+      _rel="${_f#"$ROOT"/}"
+      case "$_f" in
+        *.sh)  timeout 240 bash "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
+        *.cjs) timeout 240 node "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
+        *)     _src_rc=1; : > "$_st_out" ;;
+      esac
+      _summary="$(tail -n 1 "$_st_out")"
+      # [Opus M6, 2026-09-17 -> fixed 2026-09-17] core/precommit-gate.sh
+      # --self-test used to fail deterministically (6/8) whenever TMPDIR/
+      # TEMP/TMP was exported, because its self-test derived two different
+      # textual forms of the same directory (relmem()'s $TOP, from `cd`-ing
+      # a Windows-drive-letter path emitted by `git rev-parse
+      # --show-toplevel`, vs $AXMEM_MEMORY_DIR, built from mktemp's raw
+      # POSIX-form output) whenever that directory sat under a dedicated
+      # MSYS mount (Git for Windows mounts %LOCALAPPDATA%\Temp at /tmp) —
+      # the prefix-strip in relmem() silently no-op'd and handed git a
+      # mangled pathspec. Root-caused and fixed in core/precommit-gate.sh
+      # itself (cygpath -m normalize the self-test's mktemp -d result,
+      # same pattern tests/*.sh already used), so this component is back
+      # on the normal scored path below like every other one.
+      #
+      # [codex(gf) HIGH #2, 2026-09-17] A component's exit code alone is
+      # not enough to classify it: tests/isolation-real-configs.sh (M3)
+      # and tests/full-env-isolation.sh (M5) both exit 0 whenever every
+      # one of their own checks landed SKIPPED (their internal gate is
+      # "ok + skipped == total", never "ok == total") — a run where EVERY
+      # baseline was unresolvable (e.g. "0/3 ok, 3 skipped") still exits
+      # 0, and this loop used to fold that straight into "ok" alongside a
+      # genuinely verified pass, so the top-level summary could claim
+      # "32/32 passed" when 2-3 of those "passes" verified nothing at
+      # all. Introduces a 3rd state: any component whose own last summary
+      # line reports a nonzero "N skipped" is counted SKIP, not PASS,
+      # even though its own process exit code is 0.
+      _skip_n="$(printf '%s' "$_summary" | grep -oE '[0-9]+ skipped' | grep -oE '^[0-9]+')"
+      [ -z "$_skip_n" ] && _skip_n=0
+      if [ "$_src_rc" -ne 0 ]; then
+        failcount=$((failcount + 1))
+        rc=1
+        if [ "$_src_rc" -eq 124 ]; then
+          echo "  FAIL $_rel (timed out after 240s)"
+        else
+          echo "  FAIL $_rel (exit $_src_rc)"
+        fi
+        sed 's/^/         /' "$_st_out"
+      elif [ "$_skip_n" -gt 0 ]; then
+        skipcount=$((skipcount + 1))
+        echo "  SKIP $_rel — $_summary"
+        # AXMEM_SELFTEST_STRICT_ISOLATION=1: an acceptance run that must
+        # actually prove isolation, not just fail to disprove it — any
+        # skipped baseline is fatal here, distinctly labeled so it's
+        # never confused with an ordinary FAIL.
+        if [ "${AXMEM_SELFTEST_STRICT_ISOLATION:-}" = "1" ]; then
+          rc=1
+          echo "         STRICT_ISOLATION: this skip is fatal in strict-isolation mode"
+        fi
+      else
+        passcount=$((passcount + 1))
+        echo "  ok   $_rel — $_summary"
+      fi
+      if [ "$_have_git" -eq 1 ]; then
+        if [ -e "$ROOT/state" ]; then
+          rc=1
+          echo "  FAIL repo-cleanliness: \"$ROOT/state\" exists after $_rel (this exact path has regressed before — commit e1f38eb)"
+        fi
+        _git_status_now="$(git -C "$ROOT" status --porcelain 2>/dev/null)"
+        if [ "$_git_status_now" != "$_git_status_prev" ]; then
+          rc=1
+          echo "  FAIL repo-cleanliness: git status --porcelain changed by $_rel"
+          echo "  --- before $_rel ---"
+          printf '%s\n' "$_git_status_prev" | sed 's/^/         /'
+          echo "  --- after $_rel ---"
+          printf '%s\n' "$_git_status_now" | sed 's/^/         /'
+        fi
+        _git_status_prev="$_git_status_now"
+      fi
+    done < <(
+      for _d in core lib adapters lifecycle tests; do
+        [ -d "$ROOT/$_d" ] && find "$ROOT/$_d" -type f \( -name '*.sh' -o -name '*.cjs' \)
+      done | sort
+    )
+    if [ "$_have_git" -eq 1 ] && [ "$rc" -eq 0 ]; then
+      echo "  ok   repo-cleanliness: git status --porcelain unchanged after every one of the $count component runs (checked per-component, not just start/end)"
+    fi
+    # [codex(gf) HIGH #2, 2026-09-17] Never prints "N/N passed" — a reader
+    # skimming only the last line must see all 3 states, not a single
+    # combined ratio a SKIP-heavy run could inflate to look fully green.
+    if [ "$rc" -eq 0 ]; then
+      echo "axmem selftest: $passcount passed / $skipcount skipped / $failcount failed (of $count components)"
+    else
+      echo "axmem selftest: FAILED — $passcount passed / $skipcount skipped / $failcount failed (of $count components)"
+    fi
+    exit "$rc"
+    ;;
+  config)
+    shift; [ "${1:-}" = "get" ] || { usage; exit 1; }; shift
+    _cfg_key="${1:?key}"; _cfg_dflt="${2:-}"
+    # [Opus incremental-closure LOW-b, 2026-09-17] axmem_cfg() (lib/prelude.sh)
+    # is DELIBERATELY built to never fail: `node ... get ... || printf '%s' "$2"`
+    # means ITS OWN exit code is unconditionally 0, whether the underlying
+    # `node` call succeeded or crashed outright (node missing, a broken
+    # prelude.cjs). That's the right contract for axmem_cfg's OTHER
+    # callers throughout this repo (a config read must never abort them
+    # over a config problem) — but it meant this branch, even after
+    # capturing axmem_cfg's own $?, could only ever observe a constant 0.
+    # Calls node directly here instead, bypassing axmem_cfg's fallback
+    # wrapper, so a genuine underlying failure is actually visible and
+    # reported as a real nonzero exit — while still printing the exact
+    # same default-on-failure VALUE axmem_cfg would have, so a normal,
+    # successful call is byte-for-byte unchanged.
+    _cfg_val="$(node "$ROOT/lib/prelude.cjs" get "$_cfg_key" "$_cfg_dflt")"
+    _cfg_rc=$?
+    if [ "$_cfg_rc" -ne 0 ]; then
+      printf '%s\n' "$_cfg_dflt"
+      exit "$_cfg_rc"
+    fi
+    printf '%s\n' "$_cfg_val"
+    ;;
+  version)   echo "axmem 0.1.0-pre-alpha (P1 vertical slice)" ;;
+  *)         usage; exit 1 ;;
+esac

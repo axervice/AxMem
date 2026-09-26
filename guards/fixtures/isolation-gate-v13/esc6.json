@@ -1,0 +1,12 @@
+[
+ {"id":"V01-glob-basename","command":"node ~/.claude/guards/pmm-trigger-recall.c?s < /dev/null"},
+ {"id":"V02-brace-expansion","command":"node ~/.claude/guards/pmm-trigger-{recall,zz}.cjs < /dev/null"},
+ {"id":"V03-subst-splice","command":"node ~/.claude/guards/pmm-trigger-$(echo recall).cjs < /dev/null"},
+ {"id":"V04-quote-splice","command":"node ~/.claude/guards/pmm-trigger-rec''all.cjs < /dev/null"},
+ {"id":"V05-backslash-splice","command":"node ~/.claude/guards/pmm-trigger-rec\\all.cjs < /dev/null"},
+ {"id":"V06-cross-command-var","command":"node $DUTPATH < /dev/null"},
+ {"id":"V07-git-editor-dut","command":"GIT_EDITOR='node C:/Users/<user>/.claude/guards/pmm-trigger-recall.cjs' git commit --allow-empty"},
+ {"id":"V08-ctrl-dollar-home","command":"node $HOME/.claude/guards/pmm-trigger-recall.cjs < /dev/null"},
+ {"id":"V09-uppercase-ext","command":"node C:/Users/<user>/.claude/guards/pmm-trigger-recall.CJS < /dev/null"},
+ {"id":"V10-backslash-path","command":"node 'C:\\Users\\<user>\\.claude\\guards\\pmm-trigger-recall.cjs' < /dev/null"}
+]

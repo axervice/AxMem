@@ -1,0 +1,10 @@
+{
+    ".claude/guards/specs/PIPE-GATE-V2-REPAIR-BRIEF.md":  "5130d357fcd86ed00d185877986db886bf471859",
+    ".claude/guards/specs/PMM-CMD-PARSE-CONTRACT.md":  "09c64ad4b4dc85e5bc427b8d7357c5ff07f33e2f",
+    ".claude/guards/specs/RECALL-LOOP-M-SPEC-v2.md":  "fd875a0ff4ca8d7b111ab8bd02c7290bb071b08e",
+    ".claude/guards/pmm-cmd-parse.cjs":  "845e5b926ba6e071b6d8bba94b0cc095067b5e54",
+    "_note":  "hand-verified pins are refreshed at each contract bump; runner/contract/conformance/mutants are what G07 enforces"
+}
+
+
+
