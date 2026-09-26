@@ -180,12 +180,32 @@ tracking its `origin/main`) is a mechanical export, never edited directly.
 `main`'s tree, applies `publish.manifest.json` (exclude / add / overlay /
 literal-patch / sanitize), runs six gates, and — only if all pass — commits
 the result onto the local `public` branch (idempotent: an unchanged export
-tree produces no new commit). It never pushes on its own; pass `--push` to
-also push `public` to `origin main`. A GitHub Actions workflow
+tree produces no new commit; in orphan history mode, idempotence also
+requires `public` HEAD to already be parentless, and the ref is moved with a
+compare-and-swap `update-ref`, never a bare overwrite — W22-U3, codex #9). It
+never pushes on its own; pass `--push` to also push `public` to the remote
+identified by `publicRemote` in the manifest (`{"host":"github.com","owner":
+"axervice","repo":"AxMem"}` by default) — matched by strict URL parsing, not
+a loose substring, and refused if more than one configured remote matches
+(W22-U3, codex #10). A GitHub Actions workflow
 (`.github/workflows/publish-public.yml`) can run the same script on every
 push to `main` once `auto: true` is set in the manifest and a
-`PUBLIC_REPO_TOKEN` secret (a PAT with push access to `axervice/AxMem`) is
-configured on this repo.
+`PUBLIC_REPO_TOKEN` secret is configured on this repo: use a **fine-grained
+PAT scoped to only `axervice/AxMem`, with Contents: read/write and no other
+permissions** (not a classic `repo`-scope token, which reaches every private
+repo on the account) — least privilege, since this token is only ever needed
+for the one `git push` at the very end of the run. The token is never
+written to `.git/config` or embedded in a remote URL (supplied as a one-shot
+push credential instead), and is stripped from the environment of every
+subprocess this script spawns except that one push call — in particular,
+GATE2's and GATE3's self-tests of the exported product never see it.
+
+`--push` additionally refuses to publish when the private canonical remote's
+`dev/main` is not an ancestor of (or equal to) the commit being published —
+this catches a stale local `--push` rolling back content a more advanced,
+CI-driven publish already shipped. Override with `--allow-behind-private`
+for a deliberate exception (e.g. republishing an older tag); the override is
+recorded in the commit message trailer (W22-U3, blind spot 5).
 
 The gates, in order:
 

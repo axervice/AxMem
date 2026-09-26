@@ -24,6 +24,10 @@
 //                                                 # no export. Replaces the old batch --update-overlay-baselines
 //                                                 # (W22-U2, codex #2): that flag now dies with a pointer here.
 //   node scripts/publish-public.cjs --update-path-snapshot --reason "X" # ack a public path-set change (GATE5), no export
+//   node scripts/publish-public.cjs --push --allow-behind-private # W22-U3: proceed even though the
+//                                                 # private remote's `dev/main` is not an ancestor of the
+//                                                 # frozen source (see checkPrivateMonotonicity()) --
+//                                                 # noted in the commit message trailer.
 //
 // Gates: GATE0 overlay-drift, GATE1 residual sanitize-regex scan, GATE2 install-layout self-test,
 // GATE3 `npm run selftest`, GATE4 independent final-tree identity/denylist + mode/binary scan (W22-U1,
@@ -38,6 +42,17 @@
 // (uncommitted working-tree edits shipping) together. Deliberately NOT fixed with `.gitattributes`
 // alone (see that doc's explicit instruction) -- one is added below anyway as belt-and-braces, but the
 // actual fix is the frozen-OID blob reads.
+//
+// W22-U3 (Opus defense unit U3 -- codex #9/#10, blind spots 5-6): ref/push hygiene. commitOntoPublic()
+// now requires orphan-mode idempotence to ALSO check `public` HEAD is parentless, and moves the ref via
+// a compare-and-swap update-ref instead of a bare overwrite (codex #9). ensurePublicRemote() identifies
+// the push target via strict, allowlisted URL parsing against manifest.publicRemote instead of a loose
+// suffix match, refuses ambiguity, and never persists PUBLIC_REPO_TOKEN into a remote URL or
+// .git/config -- pushPublicBranch() supplies it as a one-shot Authorization header instead (codex #10).
+// GATE2/GATE3's subprocess env is built via envWithoutCredentials(), never raw process.env, so
+// PUBLIC_REPO_TOKEN/GITHUB_TOKEN/GH_TOKEN never reach the exported product's own self-test subprocess
+// tree (blind spot 6). checkPrivateMonotonicity() refuses `--push` when the private remote's `dev/main`
+// is not an ancestor of the frozen source, unless `--allow-behind-private` overrides it (blind spot 5).
 //
 // Discipline: this script must never read/write the real $HOME/.claude tree. Gate 2 (install-layout
 // self-test) always runs under HOME=USERPROFILE=PMM_HOME=<a fresh mkdtemp>, never the real profile.
@@ -75,7 +90,7 @@ function die(msg) {
 // but not there, ...) instead of silently ignoring it -- the exact "declared but not consumed" bug
 // class finding #11 found in `sourceBranch`/`residualScanPatterns`/etc.
 const ALLOWED_TOP_LEVEL_KEYS = new Set([
-  '$schema', 'version', 'auto', 'publicRepo', 'publicBranch', 'sourceBranch', 'history',
+  '$schema', 'version', 'auto', 'publicRepo', 'publicRemote', 'publicBranch', 'sourceBranch', 'history',
   'exclude', 'excludeExceptions', 'addFiles', 'overlays', 'overlayBaselines', 'replacements',
   'sanitizeLiteralFallback', 'sanitize', 'denylist', 'binaryAllowlist', 'publicPathSnapshot',
   'gates', 'knownDivergencesFromCurrentOriginMain',
@@ -111,6 +126,10 @@ function validateManifestSchema(manifest) {
   validateRuleList(manifest.sanitize && manifest.sanitize.rules, 'sanitize.rules', 'kind-or-pattern');
   validateRuleList(manifest.denylist && manifest.denylist.identityLiterals, 'denylist.identityLiterals', 'required');
   validateRuleList(manifest.denylist && manifest.denylist.internalNames, 'denylist.internalNames', 'required');
+  // publicRemote's shape is validated in ensurePublicRemote() itself, at the point it is actually used
+  // (--push only) -- not here, so a minimal/fixture manifest that never pushes (e.g. this script's own
+  // unit tests) does not need to carry a field it has no use for, matching how publicRepo/publicBranch/
+  // sourceBranch are likewise read ad hoc rather than schema-required.
   return manifest;
 }
 
@@ -144,6 +163,43 @@ function git(args, opts) {
   // LF-stored blobs of both this commit and origin/main.
   const fullArgs = ['-c', 'core.autocrlf=false'].concat(args);
   return execFileSync('git', fullArgs, Object.assign({ cwd: REPO_ROOT, encoding: 'utf8' }, opts || {}));
+}
+
+// ---------------------------------------------------------------------------------------------
+// W22-U3 (blind spot 6): GATE2/GATE3 run the EXPORTED product's own install-layout self-test and full
+// `npm run selftest` -- an arbitrary amount of the shipped codebase's own code, hooks, and (via npm
+// scripts) third-party tooling, none of which has any legitimate reason to see PUBLIC_REPO_TOKEN (or
+// any other CI credential). `Object.assign({}, process.env, {...})` previously copied the ENTIRE
+// parent env into that subprocess tree unfiltered, only overriding a few known keys -- a token meant
+// to be a leaf-only, load-once-at-push-time credential regained blast radius across all of it. Every
+// subprocess in this script EXCEPT the push call itself (pushPublicBranch()) must build its env from
+// this helper, never from `process.env` directly.
+const CREDENTIAL_ENV_KEYS = ['PUBLIC_REPO_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN'];
+function envWithoutCredentials(base) {
+  const env = Object.assign({}, base || process.env);
+  for (const k of CREDENTIAL_ENV_KEYS) delete env[k];
+  return env;
+}
+
+// ---------------------------------------------------------------------------------------------
+// W22-U3 (codex #10): strict, allowlist-only parse of a git remote URL into {host, owner, repo} --
+// returns null for anything that is not EXACTLY one of the three GitHub URL forms this repo ever
+// configures a remote as (https, ssh://, and the git@host:owner/repo scp-like form). Deliberately
+// narrower than a general-purpose git-url parser: a URL this does not recognize is "not a match"
+// rather than best-effort parsed, so a look-alike host (e.g. https://evil.example/axervice/AxMem.git)
+// can never be mistaken for the real public remote.
+function parseGithubRemoteUrl(url) {
+  if (typeof url !== 'string') return null;
+  const forms = [
+    /^https:\/\/github\.com\/([^\/\s]+)\/([^\/\s]+?)(\.git)?\/?$/,
+    /^ssh:\/\/git@github\.com\/([^\/\s]+)\/([^\/\s]+?)(\.git)?\/?$/,
+    /^git@github\.com:([^\/\s]+)\/([^\/\s]+?)(\.git)?\/?$/,
+  ];
+  for (const re of forms) {
+    const m = url.match(re);
+    if (m) return { host: 'github.com', owner: m[1], repo: m[2] };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -744,7 +800,8 @@ function gate2_installLayoutSelfTest(exportDir, manifest) {
   // Resolve the --contract path argument against guardsDst regardless of how it was spelled in the
   // manifest (the manifest's copy is relative to the guard's own dir at authoring time).
   const resolvedArgs = cfg.args.map((a, i) => (cfg.args[i - 1] === '--contract') ? path.join(guardsDst, 'specs', 'isolation-gate-contract.json') : a);
-  const env = Object.assign({}, process.env, { HOME: tempHome, USERPROFILE: tempHome, PMM_HOME: tempHome });
+  // W22-U3 (blind spot 6): envWithoutCredentials(), not process.env directly -- see its definition.
+  const env = Object.assign(envWithoutCredentials(), { HOME: tempHome, USERPROFILE: tempHome, PMM_HOME: tempHome });
   for (const k of Object.keys(env)) { if (/^PMM_/.test(k) && !['PMM_HOME'].includes(k)) delete env[k]; }
   const res = spawnSync(process.execPath, [gatePath].concat(resolvedArgs), { env, encoding: 'utf8', cwd: guardsDst });
   const out = (res.stdout || '') + '\n' + (res.stderr || '');
@@ -782,7 +839,8 @@ function gate3_npmSelftest(exportDir) {
   // (tests/full-env-isolation.sh) sets for the identical reason.
   const tempHome = mkdtempMarked(path.join(os.tmpdir(), TEMP_PREFIX + 'selftest-'));
   const axmemHome = path.join(tempHome, '.axmem');
-  const env = Object.assign({}, process.env, {
+  // W22-U3 (blind spot 6): envWithoutCredentials(), not process.env directly -- see its definition.
+  const env = Object.assign(envWithoutCredentials(), {
     HOME: tempHome,
     USERPROFILE: tempHome,
     PMM_HOME: tempHome,
@@ -1156,17 +1214,34 @@ function checkInputsClean(manifest, allowDirty) {
   return { dirty: dirtyLines, allowed: true };
 }
 
-function commitOntoPublic(exportDir, privateShortSha, orphan, precomputedTree, allowedDirtyInputs) {
+function commitOntoPublic(exportDir, privateShortSha, orphan, precomputedTree, allowedDirtyInputs, monotonicity) {
   const newTree = precomputedTree || treeHashOfDir(exportDir);
+  // W22-U3 (codex #9): `publicHead` (read exactly once, here) doubles as the update-ref CAS token
+  // below, so a concurrent export that moves `public` between this read and the update-ref call is
+  // caught instead of silently overwritten by whichever writer finishes last.
   let publicHead = null;
   try { publicHead = git(['rev-parse', 'public']).trim(); } catch { publicHead = null; }
-  let publicTree = null;
-  if (publicHead) { try { publicTree = git(['rev-parse', publicHead + '^{tree}']).trim(); } catch {} }
-  // Idempotency is ALWAYS tree-hash-only (never parent/history-shape-dependent), in both modes: a
-  // second run against the same private commit must be a true no-op regardless of whether `public`'s
-  // history is a normal chain or a fresh orphan lineage.
-  if (publicTree === newTree) {
-    log('IDEMPOTENT: exported tree (' + newTree + ') matches public HEAD tree already -- no new commit');
+  const expectedOld = publicHead || ''; // '' tells update-ref the ref must not already exist
+
+  // W22-U3 (codex #9): in orphan mode, "nothing to do" additionally requires `public` HEAD to already
+  // be parentless -- a same-tree commit that still has a (possibly sensitive) parent chain behind it
+  // must be replaced by a fresh orphan commit, not treated as a no-op, or that history stays reachable
+  // forever. Non-orphan (chained) mode keeps the original tree-hash-only comparison.
+  function computeIdempotent(headSha) {
+    if (!headSha) return false;
+    let tree = null;
+    try { tree = git(['rev-parse', headSha + '^{tree}']).trim(); } catch { tree = null; }
+    if (tree !== newTree) return false;
+    if (orphan) {
+      let hasParent = true;
+      try { git(['rev-parse', headSha + '^']); hasParent = true; } catch { hasParent = false; }
+      if (hasParent) return false;
+    }
+    return true;
+  }
+
+  if (computeIdempotent(publicHead)) {
+    log('IDEMPOTENT: exported tree (' + newTree + ') matches public HEAD tree already' + (orphan ? ' and HEAD is already parentless' : '') + ' -- no new commit');
     return { created: false, tree: newTree, commit: publicHead };
   }
   const date = new Date().toISOString().slice(0, 10);
@@ -1178,6 +1253,13 @@ function commitOntoPublic(exportDir, privateShortSha, orphan, precomputedTree, a
       'changes to one or more publish inputs at run time, but this export was still built entirely from ' +
       'the frozen source commit above (the uncommitted edits were NOT included).';
   }
+  // W22-U3 (Opus blind spot 5): --allow-behind-private is likewise noted in the trailer, so a
+  // deliberate publish from behind `dev/main` is auditable from `git log` alone.
+  if (monotonicity && monotonicity.allowedBehind) {
+    msg += '\n\nNote: --allow-behind-private was set for this run -- dev/main (' + monotonicity.devMainOid +
+      ') was NOT an ancestor of the frozen source ' + monotonicity.sourceOid + ' at publish time; the ' +
+      'operator explicitly overrode the private-monotonicity check.';
+  }
   // [Builder W9, 2026-09-25] --orphan (Jax ruling): `public`'s prior two commits carried
   // un-sanitized content and must disappear from reachable history entirely, not just from the
   // working tree of a new commit built on top of them. Every export in this mode is therefore a
@@ -1186,35 +1268,72 @@ function commitOntoPublic(exportDir, privateShortSha, orphan, precomputedTree, a
   // (the default) keeps the normal chained-commit behavior for ordinary republishes.
   const parentArgs = orphan ? [] : (publicHead ? ['-p', publicHead] : []);
   const newCommit = execFileSync('git', ['commit-tree', newTree].concat(parentArgs, ['-m', msg]), { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
-  git(['update-ref', 'refs/heads/public', newCommit]);
+
+  // W22-U3 (codex #9): compare-and-swap the ref via update-ref's <oldvalue> form instead of a bare
+  // update, so a writer that moved `public` since `expectedOld` was captured above is detected instead
+  // of silently clobbered.
+  try {
+    git(['update-ref', 'refs/heads/public', newCommit, expectedOld]);
+  } catch (e) {
+    let currentHead = null;
+    try { currentHead = git(['rev-parse', 'public']).trim(); } catch { currentHead = null; }
+    if (computeIdempotent(currentHead)) {
+      log('CAS on `public` lost a race, but the winning commit already matches this export (tree ' + newTree + (orphan ? ', parentless' : '') + ') -- treating as IDEMPOTENT, no new commit');
+      return { created: false, tree: newTree, commit: currentHead };
+    }
+    die('refusing to update `public`: a concurrent writer moved it from ' + (publicHead || '(none)') +
+      ' to ' + (currentHead || '(none)') + ' while this export was running, and that value does not match ' +
+      'this export\'s tree (' + newTree + ') -- re-run the export from scratch instead of retrying blindly.');
+  }
   log('created commit ' + newCommit + ' on `public` (tree ' + newTree + (orphan ? ', orphan -- no parent' : (publicHead ? ', parent ' + publicHead : ', first commit')) + '): ' + msg.split('\n')[0]);
   return { created: true, tree: newTree, commit: newCommit };
 }
 
 // ---------------------------------------------------------------------------------------------
-// Finds an existing remote already pointed at manifest.publicRepo (the normal case in a local clone
-// set up per the task: `origin` = the public repo) so `--push` reuses it verbatim. Falls back to
-// creating a dedicated remote authenticated with $PUBLIC_REPO_TOKEN when none exists (the CI case:
-// actions/checkout's `origin` is THIS private repo, not the public one).
+// W22-U3 (codex #10, blind spot 6): identifies the public remote by strict, allowlisted URL parsing
+// (parseGithubRemoteUrl()) against manifest.publicRemote -- never a loose "URL ends with .../owner/
+// repo" suffix match, which would also match an attacker-controlled
+// https://evil.example/axervice/AxMem.git. Ambiguity (two configured remotes both matching) is refused
+// rather than silently picking the first one. The token (when present) is NEVER embedded in a remote
+// URL or written to .git/config: when no existing remote matches, a token-FREE remote is created (the
+// caller removes it again in a `finally`, see runExportCore), and the token is instead supplied to the
+// one `git push` invocation as a one-shot Authorization header (see pushPublicBranch()).
 function ensurePublicRemote(manifest) {
-  const target = manifest.publicRepo; // e.g. "axervice/AxMem"
+  const expected = manifest.publicRemote;
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected) ||
+      expected.host !== 'github.com' ||
+      typeof expected.owner !== 'string' || expected.owner.length === 0 ||
+      typeof expected.repo !== 'string' || expected.repo.length === 0) {
+    die('manifest.publicRemote must be {"host":"github.com","owner":"<non-empty>","repo":"<non-empty>"} (this is the strict identity --push matches configured remotes against -- see codex #10)');
+  }
   let remotesRaw = '';
   try { remotesRaw = git(['remote', '-v']); } catch { remotesRaw = ''; }
+  const matches = new Set();
   for (const line of remotesRaw.split('\n')) {
     const m = line.match(/^(\S+)\s+(\S+)\s+\(push\)$/);
     if (!m) continue;
     const [, name, url] = m;
-    if (url.replace(/\.git$/i, '').toLowerCase().endsWith('/' + target.toLowerCase())) return name;
+    const parsed = parseGithubRemoteUrl(url);
+    if (parsed && parsed.host === expected.host &&
+        parsed.owner.toLowerCase() === expected.owner.toLowerCase() &&
+        parsed.repo.replace(/\.git$/i, '').toLowerCase() === expected.repo.replace(/\.git$/i, '').toLowerCase()) {
+      matches.add(name);
+    }
+  }
+  if (matches.size > 1) {
+    die('ambiguous public remote: ' + matches.size + ' configured remotes all identify as ' +
+      expected.owner + '/' + expected.repo + ' on ' + expected.host + ' (' + Array.from(matches).join(', ') +
+      ') -- remove the extras so exactly one remote identifies the push target.');
+  }
+  if (matches.size === 1) {
+    return { remote: Array.from(matches)[0], temporary: false };
   }
   const dedicated = 'publish-public-target';
-  const token = process.env.PUBLIC_REPO_TOKEN;
-  const url = token
-    ? ('https://x-access-token:' + token + '@github.com/' + target + '.git')
-    : ('https://github.com/' + target + '.git');
+  const url = 'https://' + expected.host + '/' + expected.owner + '/' + expected.repo + '.git';
   try { git(['remote', 'remove', dedicated]); } catch {}
   git(['remote', 'add', dedicated, url]);
-  log('no existing remote points at ' + target + ' -- created `' + dedicated + '`' + (token ? ' (token-authenticated)' : ''));
-  return dedicated;
+  log('no existing remote identifies as ' + expected.owner + '/' + expected.repo + ' -- created token-free `' + dedicated + '`');
+  return { remote: dedicated, temporary: true };
 }
 
 // Fresh `git ls-remote <remote> <ref>` lookup, used ONLY to build a --force-with-lease expected-value
@@ -1230,6 +1349,95 @@ function getRemoteRefSha(remoteName, ref) {
   return line ? line.split('\t')[0].trim() : '';
 }
 
+// ---------------------------------------------------------------------------------------------
+// W22-U3 (codex #10): the ONLY call site in this script allowed to see PUBLIC_REPO_TOKEN. The token is
+// passed as a one-shot `http.extraheader` config value on this single `git push` invocation -- never
+// written into `.git/config`, never embedded in a remote URL -- so it cannot outlive this one call.
+// `credential.helper=` (empty) additionally disables any configured credential helper for this
+// invocation, so nothing else tries to supply (or cache) a credential for it either.
+function pushPublicBranch(remoteName, refspec, leaseArg, token) {
+  const args = [];
+  if (token) {
+    const basic = Buffer.from('x-access-token:' + token, 'utf8').toString('base64');
+    args.push('-c', 'credential.helper=');
+    args.push('-c', 'http.https://github.com/.extraheader=AUTHORIZATION: basic ' + basic);
+  }
+  args.push('push');
+  if (leaseArg) args.push(leaseArg);
+  args.push(remoteName, refspec);
+  try {
+    git(args, { stdio: 'inherit' });
+  } finally {
+    assertNoTokenInGitConfig(token);
+  }
+}
+
+// W22-U3 (codex #10): re-verifies, immediately after every push attempt (success or failure), that the
+// one-shot credential above -- or anything else -- never left the token sitting in a remote URL inside
+// .git/config. Fails loudly rather than letting a leak pass silently.
+function assertNoTokenInGitConfig(token) {
+  if (!token) return;
+  let out = '';
+  try { out = git(['config', '--get-regexp', 'remote\\..*\\.url']); } catch { out = ''; }
+  if (out.indexOf(token) !== -1) {
+    die('SECURITY: PUBLIC_REPO_TOKEN was found inside a remote URL in .git/config after push -- this must never happen; investigate before running this script again.');
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// W22-U3 (Opus blind spot 5): before a `--push`, requires the private canonical remote's `main`
+// (`dev/main` by default) to be an ancestor of (or equal to) the frozen source commit about to be
+// published. Without this, a local, manually-run `--push` built from a `main` that is BEHIND (or has
+// diverged from) `dev/main` can silently roll back content a more advanced, CI-driven publish already
+// shipped -- this pipeline otherwise has no notion of "forward" at all, only per-run tree-hash
+// idempotency.
+//
+// The `dev` remote is a LOCAL naming convention (Jax's own clones); it does not exist in the CI
+// checkout, where `actions/checkout` already IS a fresh clone of the private repo's own `main` (i.e.
+// trivially equal to what `dev/main` would say) -- see .github/workflows/publish-public.yml. So a
+// missing remote is treated as "nothing to compare against, skip" (the CI-safe case), while an
+// explicitly configured remote that then fails to fetch is treated as a hard failure: the operator (or
+// CI) clearly intended this check to run, and a network/auth failure must not silently downgrade to a
+// skip. `remoteName` is overridable so tests can point this at a disposable local bare repo.
+function checkPrivateMonotonicity(sourceOid, allowBehindPrivate, remoteName) {
+  const remote = remoteName || 'dev';
+  let remoteUrl = null;
+  try { remoteUrl = git(['remote', 'get-url', remote]).trim(); } catch { remoteUrl = null; }
+  if (!remoteUrl) {
+    log('private-monotonicity check skipped: remote `' + remote + '` is not configured in this checkout ' +
+      '(expected in CI, where the private repo is already the fresh checkout itself).');
+    return { checked: false, allowedBehind: false };
+  }
+  let devMainOid = null;
+  try {
+    git(['fetch', '--quiet', remote, 'main']);
+    devMainOid = git(['rev-parse', remote + '/main']).trim();
+  } catch (e) {
+    die('refusing to push: remote `' + remote + '` is configured but fetching its `main` failed -- the ' +
+      'private-monotonicity check cannot run blind: ' + (e && e.message));
+  }
+  let isAncestor = false;
+  try {
+    execFileSync('git', ['-c', 'core.autocrlf=false', 'merge-base', '--is-ancestor', devMainOid, sourceOid], { cwd: REPO_ROOT, encoding: 'utf8' });
+    isAncestor = true;
+  } catch (e) {
+    isAncestor = false;
+  }
+  if (!isAncestor) {
+    if (!allowBehindPrivate) {
+      die('refusing to push: `' + remote + '/main` (' + devMainOid + ') is not an ancestor of (or equal ' +
+        'to) the frozen source (' + sourceOid + ') -- publishing now could roll back content a more ' +
+        'advanced private state already published. Re-run with --allow-behind-private if this is a ' +
+        'deliberate exception (e.g. republishing an older tag).');
+    }
+    log('WARNING: --allow-behind-private set -- `' + remote + '/main` (' + devMainOid + ') is NOT an ' +
+      'ancestor of the frozen source (' + sourceOid + '); proceeding anyway.');
+    return { checked: true, allowedBehind: true, devMainOid, sourceOid };
+  }
+  log('private monotonicity OK: `' + remote + '/main` (' + devMainOid + ') is an ancestor of (or equal to) the frozen source (' + sourceOid + ')');
+  return { checked: true, allowedBehind: false, devMainOid, sourceOid };
+}
+
 // W22-U2 (codex #12): the exportDir lifecycle -- create it, then a SINGLE try/finally covering step1
 // onward -- extracted out of main() so it is independently unit-testable (see
 // tests/publish-source-freeze.test.cjs's "early step1 failure leaves no temp dir behind" test) without
@@ -1237,7 +1445,7 @@ function getRemoteRefSha(remoteName, ref) {
 // created (and could fail inside) its own mkdtemp'd dir OUTSIDE any try/finally, so a tar/archive
 // failure there leaked the directory; now exportDir is created here, before the try, and step1 is the
 // FIRST call inside it, so any failure from step1 onward is guaranteed to reach the finally cleanup.
-function runExportCore(frozenManifest, sourceOid, keepList, sourceShortSha, orphan, push, allowedDirtyInputs) {
+function runExportCore(frozenManifest, sourceOid, keepList, sourceShortSha, orphan, push, allowedDirtyInputs, monotonicity) {
   const { runDir, exportDir } = createMarkedExportDir(path.join(os.tmpdir(), TEMP_PREFIX + 'src-'));
   try {
     step1_archiveMainToTemp(exportDir, frozenManifest, sourceOid, keepList);
@@ -1266,28 +1474,35 @@ function runExportCore(frozenManifest, sourceOid, keepList, sourceShortSha, orph
 
     gate5_pathSnapshot(exportDir, frozenManifest);
 
-    const result = commitOntoPublic(exportDir, sourceShortSha, orphan, newTree, allowedDirtyInputs);
+    const result = commitOntoPublic(exportDir, sourceShortSha, orphan, newTree, allowedDirtyInputs, monotonicity);
 
     if (push) {
-      const remoteName = ensurePublicRemote(frozenManifest);
-      if (orphan) {
-        // HIGH fix (review OPUS-2026-09-25-c05-w5-w10-review.md §7): orphan mode makes a fresh,
-        // parentless commit on EVERY run (see commitOntoPublic's `orphan` branch above), so the
-        // remote's current `main` is never an ancestor of the commit we are about to push -- a plain
-        // `git push` would be rejected as non-fast-forward on every publish after the first. A blind
-        // `--force` would "fix" that but would also silently blow away a genuine concurrent push (CI
-        // and a manual dispatch racing, or a third party with push access). `--force-with-lease`
-        // instead pins the push to the remote ref's value we just observed via ls-remote (fetched
-        // fresh, immediately before the push -- never a cached/earlier-in-the-run value) and lets git
-        // itself atomically re-check that value at push time: if anything else moved `main` in
-        // between, the push is rejected instead of clobbering it.
-        const expect = getRemoteRefSha(remoteName, 'main');
-        const leaseArg = '--force-with-lease=main:' + expect;
-        log('pushing public -> ' + remoteName + ' main (orphan mode, ' + leaseArg + (expect ? '' : ' -- expecting remote main to not exist yet') + ')');
-        git(['push', leaseArg, remoteName, 'public:main'], { stdio: 'inherit' });
-      } else {
-        log('pushing public -> ' + remoteName + ' main');
-        git(['push', remoteName, 'public:main'], { stdio: 'inherit' });
+      const { remote: remoteName, temporary } = ensurePublicRemote(frozenManifest);
+      try {
+        if (orphan) {
+          // HIGH fix (review OPUS-2026-09-25-c05-w5-w10-review.md §7): orphan mode makes a fresh,
+          // parentless commit on EVERY run (see commitOntoPublic's `orphan` branch above), so the
+          // remote's current `main` is never an ancestor of the commit we are about to push -- a plain
+          // `git push` would be rejected as non-fast-forward on every publish after the first. A blind
+          // `--force` would "fix" that but would also silently blow away a genuine concurrent push (CI
+          // and a manual dispatch racing, or a third party with push access). `--force-with-lease`
+          // instead pins the push to the remote ref's value we just observed via ls-remote (fetched
+          // fresh, immediately before the push -- never a cached/earlier-in-the-run value) and lets git
+          // itself atomically re-check that value at push time: if anything else moved `main` in
+          // between, the push is rejected instead of clobbering it.
+          const expect = getRemoteRefSha(remoteName, 'main');
+          const leaseArg = '--force-with-lease=main:' + expect;
+          log('pushing public -> ' + remoteName + ' main (orphan mode, ' + leaseArg + (expect ? '' : ' -- expecting remote main to not exist yet') + ')');
+          pushPublicBranch(remoteName, 'public:main', leaseArg, process.env.PUBLIC_REPO_TOKEN);
+        } else {
+          log('pushing public -> ' + remoteName + ' main');
+          pushPublicBranch(remoteName, 'public:main', null, process.env.PUBLIC_REPO_TOKEN);
+        }
+      } finally {
+        // W22-U3 (codex #10): a dedicated remote created ONLY because no existing one matched (the CI
+        // case) is removed again here, win or lose, so it never lingers as an unmarked, maintainer-
+        // invisible remote alongside whatever the operator already had configured.
+        if (temporary) { try { git(['remote', 'remove', remoteName]); } catch {} }
       }
     } else {
       log('--push not set: local `public` branch updated, origin NOT touched');
@@ -1376,11 +1591,16 @@ function main() {
   validateManifestInputsAgainstFrozenSource(sourceOid, frozenManifest, keepList);
 
   const push = process.argv.includes('--push');
+  const allowBehindPrivate = process.argv.includes('--allow-behind-private');
   const orphan = process.argv.includes('--orphan') || frozenManifest.history === 'orphan';
   const sourceShortSha = git(['rev-parse', '--short', sourceOid]).trim();
   log('source: frozen ' + sourceOid + ' (' + sourceShortSha + ')' + (orphan ? ' (orphan history mode)' : ''));
 
-  runExportCore(frozenManifest, sourceOid, keepList, sourceShortSha, orphan, push, dirtyResult.allowed);
+  // W22-U3 (Opus blind spot 5): checked BEFORE the (expensive) export runs, and only when actually
+  // pushing -- a local-only run never touches `dev` and has no rollback risk to check for.
+  const monotonicity = push ? checkPrivateMonotonicity(sourceOid, allowBehindPrivate) : null;
+
+  runExportCore(frozenManifest, sourceOid, keepList, sourceShortSha, orphan, push, dirtyResult.allowed, monotonicity);
 }
 
 // Exposed for unit-testing individual pieces (e.g. checkOverlayDrift, buildSanitizeRules,
@@ -1433,6 +1653,15 @@ module.exports = {
   TEMP_PREFIX,
   RUN_MARKER_FILENAME,
   STALE_MS,
+  // W22-U3 exports, primarily for tests/publish-push-hygiene.test.cjs:
+  envWithoutCredentials,
+  CREDENTIAL_ENV_KEYS,
+  parseGithubRemoteUrl,
+  ensurePublicRemote,
+  getRemoteRefSha,
+  pushPublicBranch,
+  assertNoTokenInGitConfig,
+  checkPrivateMonotonicity,
 };
 
 // Thin wrapper so die()'s throw unwinds through main()'s try/finally (running the cleanup above)

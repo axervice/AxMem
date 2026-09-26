@@ -3,6 +3,8 @@
   "version": 1,
   "auto": false,
   "publicRepo": "axervice/AxMem",
+  "publicRemote": { "host": "github.com", "owner": "axervice", "repo": "AxMem" },
+  "_comment_publicRemote": "W22-U3 (codex #10): the strict, allowlisted identity ensurePublicRemote() matches a configured git remote's URL against -- host must be exactly 'github.com', owner/repo compared case-insensitively. `publicRepo` above is kept as the human-readable 'owner/repo' label other tooling/comments already reference; this object is the one the push path actually parses against, so a look-alike host (e.g. https://evil.example/axervice/AxMem.git) can never match.",
   "publicBranch": "public",
   "sourceBranch": "main",
   "history": "orphan",

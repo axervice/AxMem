@@ -8,10 +8,15 @@ name: publish-public
 #     flips that flag, a push still triggers the workflow but the publish step is skipped -- this lets
 #     the workflow be exercised/reviewed without live-publishing on every push.
 #
-# Requires a repo secret PUBLIC_REPO_TOKEN: a PAT (classic, `repo` scope, or a fine-grained token with
-# contents:write) belonging to an account with push access to axervice/AxMem, set on THIS repo
-# (axervice/AxMem-dev) under Settings -> Secrets and variables -> Actions. See README.md's
-# "Maintenance mode" section.
+# Requires a repo secret PUBLIC_REPO_TOKEN: use a FINE-GRAINED PAT scoped to only the axervice/AxMem
+# repository, with Contents: read/write and no other permissions -- NOT a classic `repo`-scope token,
+# which grants push access to every private repo on the account and is far more than this workflow ever
+# needs (it only ever pushes to axervice/AxMem, at the very last step of the run -- W22-U3, codex #10:
+# least privilege). Set on THIS repo (axervice/AxMem-dev) under Settings -> Secrets and variables ->
+# Actions. See README.md's "Maintenance mode" section. The token is scoped, by this workflow's own
+# design, to reach only that one `git push` invocation -- scripts/publish-public.cjs strips it from the
+# environment of every other subprocess it spawns (GATE2/GATE3's self-tests of the exported product) and
+# never writes it to `.git/config` or a remote URL.
 
 on:
   push:
