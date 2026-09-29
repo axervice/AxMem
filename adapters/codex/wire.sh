@@ -6,7 +6,8 @@
 # so a cross-day re-run produces byte-identical output, not just a same-day
 # one — required for the "wire twice -> identical bytes, across days too"
 # idempotency test.)
-# codex has no hooks; governance rides its instruction file. This appends one
+# This legacy governance fence is separate from the Codex command hooks in
+# install-hooks.cjs. It appends one
 # marker-fenced section to the configured AGENTS.md (re-run replaces the
 # section in place; nothing else in the file is touched).
 # Usage: wire.sh [target-path] [--dry-run]
