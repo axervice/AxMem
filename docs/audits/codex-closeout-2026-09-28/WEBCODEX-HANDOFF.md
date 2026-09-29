@@ -14,8 +14,8 @@
 - [x] 第二轮同源公开导出完成：GATE0–5 再次全绿，`EXPORT_TREE=631369239f5b9b72f006cbaaa868016bcbcb7778` 与第一轮完全相同；导出器明确报告 `IDEMPOTENT`，无新 commit、无 push。
 - [x] 已将修复原因、错误基线为何作废、验收口径与回滚说明写入主仓 `CHANGELOG.md`；因 `CHANGELOG.md` 是 overlay target，已按正式 `--update-overlay-baseline CHANGELOG.md` 流程刷新 baseline。
 - [x] 最终内容审阅完成：主仓仅 8 个本批文件（handoff 原 5 个 + `CHANGELOG.md` + `publish.manifest.json` + 本 continuation handoff）；`git diff --check` 通过。刷新 CHANGELOG baseline 后又跑一轮完整 GATE0–5，仍为同一 `EXPORT_TREE=631369239f5b9b72f006cbaaa868016bcbcb7778` 且 `IDEMPOTENT`。
-- [ ] handoff Priority 1（`C:/Users/jax-x/codex-tools` 三项已复现 bug）：WebCodex 当前 Runner allowed root 只有 AxMem，正规 project bootstrap 被 `path_outside_allowed_roots` 拒绝；取得对应项目访问后继续，不绕权限。
-- [ ] handoff Priority 2（home PMM ledger 直接测试/51 canary）：同理需要对应 home 项目权限后按原 handoff 验证，不在 AxMem project 里直接写。
+- [x] handoff Priority 1（`C:/Users/jax-x/codex-tools` 三项）：Runner 授权后发现前序收口已落 commit `06d61e0`（readiness 改用 `tomllib` 语义校验；写准入绑定实际选中/回退 home；协同日志区分 auto request 与 `CODEX_LAST_HOME` 实际服务账号）。WebCodex 独立复验 `tests/handoff-regressions.sh` **8/8**、既有 `tests/big-review-gate.sh` **15/15**、触及 shell `bash -n` 通过；未重复改生产代码，旧 untracked 文件保持不动。
+- [x] handoff Priority 2（home PMM denial-ledger）：Runner 授权后按现行代码复核；历史“51 canary”已漂移，当前 `guard-canary.sh` 为 `EXPECTED=82`，本批动态受影响子集为 **53**。直接自测：ledger **162/162**、report **46/46**、write-gate **17/17**、isolation contract **244 pass / 0 fail / 6 report-only** + 两 mutant 精确匹配 + ledger wiring **19/19**；53 子集 **50 PASS / 3 FAIL**，三红均为已登记既有残留（shadow-replay `.cjs/.sh` 12/13、migrate-v3 76/82）。修复 T2c 测试夹具假红（reasonless duplicated decision 被 W23-U3b 正确归 orphan），生产 retry fail-safe 不变；`pipe-gate-v2-acceptance --self-check` part1–16 全 true。收口 commit `746682d`；dreams/access-log/receipt 运行增量未纳入提交。
 - [ ] P2.0 freeze：仅在当前遗留 closeout 和活体审计前置满足后开始；没有 FREEZE 清单时不得进入 P2.1。
 
 ## 回滚
