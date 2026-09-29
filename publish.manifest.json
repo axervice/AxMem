@@ -103,7 +103,7 @@
     "README.zh.md": "4925e5f26ae6e6c060bebef13088ed0657c0553f",
     "guards/guard-canary.sh": "ed7844bf4c759d1db7f4a0870c4cc7b8fc62bba7",
     "guards/specs/isolation-gate-contract.json": "a3a8b2025ee0a3c057927ad43f57d76586b6ac08",
-    "CHANGELOG.md": "c58ca537c84f91774b907e5969e2b19dd73f1139"
+    "CHANGELOG.md": "da1c5f1630968d87dbd88e83ff3ba49757a44e7e"
   },
   "replacements": [
     "_comment: each {file, findFile, replaceFile} pair does an exact, literal, whole-substring find/replace of findFile's content with replaceFile's content inside the exported copy of `file`. required=true (default) fails the export loudly if findFile's exact text is not found -- this is the forcing function that catches upstream drift instead of silently missing it.",

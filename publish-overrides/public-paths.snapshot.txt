@@ -2,7 +2,10 @@
 .gitignore
 adapters/claude-code/merge-hooks.cjs
 adapters/claude-code/README.md
+adapters/codex/install-hooks.cjs
+adapters/codex/raw-receipts.cjs
 adapters/codex/README.md
+adapters/codex/test-raw.cjs
 adapters/codex/wire.sh
 adapters/generic/doctor.sh
 adapters/generic/README.md

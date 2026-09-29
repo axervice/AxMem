@@ -2,6 +2,13 @@
 
 AxMem 的记账只放这里(Jax 2026-09-16:「changelog 记得放在 axmem 目录下」);PMM 侧 `~/.claude/guards/CHANGELOG.md` 只留指针。审查产物在 `.codex-reviews/`(gitignored)。
 
+## 2026-09-29 — WebCodex 接手 Codex adapter handoff：公开导出收口
+
+- **范围/原因**：继续 2026-09-28 Codex integration handoff，只收口已落地的公开导出修复，不提前启动 P2.1。该批的真实缺陷是隔离测试把任意 `XDG*` 引用都视为 `XDG_CONFIG_HOME` 泄漏，导致合法的 `XDG_STATE_HOME` 使用误报；同时 publish acceptance 少跑 process-trace suite，且新增 Codex adapter 运行文件尚未进入公开路径快照。
+- **修复内容**：`tests/inherit-real-env-arms.sh` 只扫描精确 `XDG_CONFIG_HOME` token；`scripts/dev-test.sh` 纳入第四个 `publish-process-trace.test.cjs` 并保留完整 selftest transcript；`publish-overrides/public-paths.snapshot.txt` 加入 `install-hooks.cjs/raw-receipts.cjs/test-raw.cjs`；README 中本地集成交接说明移至公开导出排除的 `docs/audits/`。
+- **验证口径**：以 `1641eba` + 仅上述 handoff 五文件形成隔离快照 `b7b1d92`，必须完整通过 GATE0–5，并对同一 source 连跑第二次确认导出 tree 幂等；全程无 `--push`。首个验证尝试因临时 clone 的 `main` 未移动到 `b7b1d92`，实际测到旧 `1641eba`，该结果明确作废，不计验收证据。
+- **回滚**：本批文件在写主仓前已保存原字节、SHA256 与 binary patch；隔离快照父提交 `1641eba` 也是代码级回滚基线。公开远端未写入。
+
 ## 2026-09-16 — P1 收口 spec 五轮审查链(未开建)
 
 **起点**:HEAD `fbeefd3`(09-14 02:14)后闲置两天半;P1 完成定义四项里 Hermes/generic 适配层只有 README(零代码)、`uninstall/upgrade/restore` 不存在、CC 适配层没接 trigger-recall。主脑派只读勘察(Sonnet,9 分钟,29/34 文件 + Hermes 源码 hook 机制)得事实图,据图写 spec。

@@ -2,19 +2,20 @@
 # scripts/dev-test.sh -- W24-U2: AxMem's single definition of "green" for publish work.
 #
 # One command that clones this repo into a disposable temp directory, isolates it from the real
-# ~/.claude / ~/.hermes / ~/.codex* environment, runs the three publish-*.test.cjs unit suites plus
+# ~/.claude / ~/.hermes / ~/.codex* environment, runs the four publish-*.test.cjs unit suites plus
 # `npm run selftest`, and (with --export) dry-runs scripts/publish-public.cjs (never --push) to prove
 # the export is idempotent against the currently-published `public` tree. Exists so builders and the
 # lead stop rediscovering the environment traps documented below by hand every time.
 #
 # Usage:
-#   bash scripts/dev-test.sh                        # clone + isolate + run the 3 tests + npm run selftest
+#   bash scripts/dev-test.sh                        # clone + isolate + run the 4 tests + npm run selftest
 #   bash scripts/dev-test.sh --export                # same, plus a no-push dry-run export + idempotence check
 #   bash scripts/dev-test.sh --keep                  # do not delete the temp clone afterwards
 #   bash scripts/dev-test.sh --ref <rev>              # clone/checkout <rev> instead of this repo's HEAD
 #   bash scripts/dev-test.sh --allow-dirty-inputs     # proceed even though a publish input has uncommitted
 #                                                      # changes in the SOURCE repo (mirrors
 #                                                      # scripts/publish-public.cjs's own checkInputsClean())
+#   AXMEM_DEV_TEST_LOG_DIR=/safe/local/logs bash scripts/dev-test.sh  # retain isolated npm-selftest transcript
 #   bash scripts/dev-test.sh --export --allow-tree-change  # with --export, don't fail if the freshly
 #                                                      # exported tree differs from the source repo's
 #                                                      # currently-published `public` tree
@@ -28,9 +29,9 @@
 #   - A disposable clone has no git identity. Every git identity used below is supplied purely via
 #     GIT_AUTHOR_*/GIT_COMMITTER_* environment variables (defaulted if unset) -- never via
 #     `git config --global` or any per-repo `git config` write.
-#   - The three tests/publish-*.test.cjs suites refuse (exit 2) when run against a cwd whose git remotes
+#   - Three tests/publish-*.test.cjs suites refuse (exit 2) when run against a cwd whose git remotes
 #     point at a real github.com/axervice/* repo (they read/write git objects and must never do that
-#     against a real checkout). This script always runs them inside the disposable clone, which has
+#     against a real checkout). All four run inside the disposable clone, which has
 #     ALL remotes removed before any test runs.
 #   - scripts/publish-public.cjs reads every publish input (the manifest, publish-overrides/**, overlay/
 #     addFiles/replacement sources) from the frozen source commit, not the working tree -- but it still
@@ -285,11 +286,12 @@ run_isolated() {
 }
 
 # ---------------------------------------------------------------------------------------------
-# Step 2: the three publish-*.test.cjs unit suites, then `npm run selftest` -- one summary line each.
+# Step 2: the four publish-*.test.cjs unit suites, then `npm run selftest` -- one summary line each.
 TEST_FILES=(
   "tests/publish-leak-scan.test.cjs"
   "tests/publish-source-freeze.test.cjs"
   "tests/publish-push-hygiene.test.cjs"
+  "tests/publish-process-trace.test.cjs"
 )
 
 for f in "${TEST_FILES[@]}"; do
@@ -307,12 +309,31 @@ done
 
 SELFTEST_OUT="$( (cd "$CLONE_DIR" && run_isolated npm run selftest) 2>&1 )"
 SELFTEST_RC=$?
+RUN_LOG_ROOT="${AXMEM_DEV_TEST_LOG_DIR:-${TMPDIR:-/tmp}/axmem-dev-test-logs}"
+if ! (umask 077; mkdir -p "$RUN_LOG_ROOT"); then
+  echo "dev-test.sh: could not create isolated run-log root: $RUN_LOG_ROOT" >&2
+  exit 2
+fi
+if ! RUN_LOG_DIR="$( (umask 077; mktemp -d "$RUN_LOG_ROOT/run.XXXXXXXX") )"; then
+  echo "dev-test.sh: could not create isolated run-log directory under: $RUN_LOG_ROOT" >&2
+  exit 2
+fi
+chmod 700 "$RUN_LOG_DIR"
+SELFTEST_LOG="$RUN_LOG_DIR/npm-selftest.log"
+printf '%s\n' "$SELFTEST_OUT" > "$SELFTEST_LOG"
+chmod 600 "$SELFTEST_LOG"
+{
+  printf 'source-repo=%s\n' "$SOURCE_REPO"
+  printf 'source-oid=%s\n' "$REF_OID"
+  printf 'started-utc=%s\n' "$(date -u +%FT%TZ)"
+} > "$RUN_LOG_DIR/run-meta.txt"
+chmod 600 "$RUN_LOG_DIR/run-meta.txt"
 echo "STEP npm-run-selftest: rc=$SELFTEST_RC"
+echo "STEP npm-run-selftest: full-log=$SELFTEST_LOG"
 if [ "$SELFTEST_RC" -ne 0 ]; then
   OVERALL_OK=0
   printf '%s\n' "$SELFTEST_OUT" | tail -n 60
 fi
-
 # ---------------------------------------------------------------------------------------------
 # Step 3 (--export): dry-run scripts/publish-public.cjs (never --push) inside the clone, then assert
 # idempotence against the source repo's currently-published `public` tree.

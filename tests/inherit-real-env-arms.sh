@@ -70,16 +70,18 @@ rm -rf "$T1"
 # ---------------------------------------------------------------------------
 # Arm 2: 继承真实 XDG_CONFIG_HOME
 # ---------------------------------------------------------------------------
-# AxMem's OWN resolution (lib/prelude.cjs, adapters/hermes/wire.cjs's
-# defaultHermesHome()) never reads XDG_CONFIG_HOME at all — grep-verified
-# below as the GREEN half of this arm. The RED half demonstrates the
-# hazard this class of bug would look like (a hypothetical resolver that
-# DID fall back to XDG_CONFIG_HOME), so the absence is a deliberate,
-# tested property, not an untested blind spot.
-if grep -rq "XDG" "$ROOT/lib" "$ROOT/adapters" "$ROOT/lifecycle" 2>/dev/null; then
-  arm2a=1  # found a reference -> bad
+# AxMem's OWN configuration resolution (lib/prelude.cjs,
+# adapters/hermes/wire.cjs's defaultHermesHome()) never reads
+# XDG_CONFIG_HOME — grep-verified below as the GREEN half of this arm.
+# Codex raw receipts may use XDG_STATE_HOME on non-Windows as their local
+# evidence store; that is state, not configuration, and test-raw.cjs
+# overrides it with AXMEM_CODEX_RAW_DIR. The RED half demonstrates the
+# hazard this arm actually guards (a resolver that DID fall back to
+# XDG_CONFIG_HOME), so the absence is a deliberate, tested property.
+if grep -Rqs --include='*.sh' --include='*.cjs' -- "XDG_CONFIG_HOME" "$ROOT/lib" "$ROOT/adapters" "$ROOT/lifecycle"; then
+  arm2a=1  # found a config-home reference -> bad
 else
-  arm2a=0  # no reference at all -> good
+  arm2a=0  # no config-home reference -> good
 fi
 check "2a (GREEN) no AxMem source file (lib/adapters/lifecycle) references XDG_CONFIG_HOME at all" "$arm2a"
 
