@@ -44,3 +44,4 @@ with the extraction ledger. Order = priority.
 - Agent-decides-what-to-remember discovery (90% FP; killed).
 - Knowledge-graph store as source of truth (judgment metadata rots; wiki-links
   + supersedes chains carry the relations that matter).
+- **2026-09-30 R14 — Codex raw prompt capture撤除**：Jax裁定不再永久保存原始提示词明文；AxMem记忆只保留简洁、精准的意思。已安装hook由一次性uninstall清理，真实Codex主目录与本机原文库由主审执行迁移。
