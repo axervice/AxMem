@@ -1,0 +1,1 @@
+  equiv <run|compare> ...   P2 private frozen-hook replay + equivalence diff

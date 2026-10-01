@@ -88,6 +88,7 @@ axmem <command>
   redundancy [--report|--json]   four countable repeat-yourself proxies (R1-R4)
   fingerprint <init|check|refresh "<reason>">   guard-code drift roster
   classify --map <tsv> [--dry]   bulk-insert Class: lines from tag<TAB>class rows
+  equiv <run|compare> ...   P2 private frozen-hook replay + equivalence diff
   selftest            run every component self-test
   config get <k> <d>  read a config value
   version
@@ -208,6 +209,7 @@ case "${1:-}" in
   fingerprint)  shift; exec bash "$ROOT/core/fingerprint.sh" "$@" ;;
   classify)     shift; exec node "$ROOT/core/classify.cjs" "$@" ;;
   fade)      shift; exec node "$ROOT/core/fade.cjs" "$@" ;;
+  equiv)     shift; exec node "$ROOT/scripts/equiv.cjs" "$@" ;;
   migrate)   # data-contract v1: version check + refuse-newer + backup scaffold
     shift # BUGFIX (found while wiring P1 2.3's manifest.json backup extension):
           # this `shift` was missing since the original P1 commit, so the

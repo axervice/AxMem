@@ -1,0 +1,1 @@
+  equiv)     shift; exec node "$ROOT/scripts/equiv.cjs" "$@" ;;

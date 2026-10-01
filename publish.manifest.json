@@ -20,6 +20,8 @@
     "README.zh.public.md",
     "publish-overrides/**",
     "docs/P2-CC-PERFECT-SPEC.md",
+    "docs/freeze/**",
+    "_comment_P2_FREEZE: P2.0 machine freeze manifests, inventories and self-equivalence evidence are private paid-product build artifacts; never ship them in the free tier.",
     "_comment_P2: 2026-09-24 Jax ruling -- this internal build spec (private product roadmap, mentions the paid-tier causal-memory core cluster) is not free-tier material, excluded outright not just sanitized. KNOWN INTENTIONAL divergence from today's origin/main (592c4c3), which still ships an older, unexcluded copy of this file -- byte-diff gate special-cases it, see knownDivergencesFromCurrentOriginMain below.",
     "docs/NORTH-STAR.md",
     "_comment_NORTHSTAR: 2026-09-24 Jax ruling -- the permanent, uncompressed record of AxMem's founding intent, moat, business model (including the paid AxMem Pro tier) and North Star metric. Private-repo-only by design, same as docs/P2-CC-PERFECT-SPEC.md above.",
@@ -81,6 +83,12 @@
     "_comment_PUBLISH_PUSH_HYGIENE_TEST: 2026-09-26 W22-U3 -- same rationale as _comment_PUBLISH_LEAK_SCAN_TEST/_comment_PUBLISH_SOURCE_FREEZE_TEST above: unit-tests the exporter's orphan-CAS, remote-parsing/token-hygiene, and dev/main-monotonicity logic via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree; confirmed by a real GATE3 failure -- MODULE_NOT_FOUND on '../scripts/publish-public.cjs' -- before this entry was added).",
     "tests/publish-process-trace.test.cjs",
     "_comment_PUBLISH_PROCESS_TRACE_TEST: 2026-09-26 W22-U1b -- same rationale as the three _comment_PUBLISH_*_TEST entries above: unit-tests the new scrub.processTraces step (step5b_scrubProcessTraces), its comment/doc-line drop-line classifier, and the GATE4 processTraces pattern group via require('../scripts/publish-public.cjs') and git plumbing against THIS repo's object store; excluded for the identical reason (its require target does not exist in the public tree)."
+    ,"tests/p2-generated-ast-integration.test.cjs",
+    "tests/p2-generated-artifacts-buildmanifest.test.cjs",
+    "tests/p2-freeze-equiv.test.cjs",
+    "tests/p2-machine-acceptance.test.cjs",
+    "tests/fixtures/p2-equiv/**",
+    "_comment_P2_FREEZE_TESTS: P2.0 private freeze/equivalence build fixtures and machine-acceptance tests depend on excluded scripts/** and are not free-tier runtime tests."
   ],
   "excludeExceptions": [
     "guards/fixtures/v3/trigger-write-gate-probe.cjs"
@@ -103,7 +111,7 @@
     "README.zh.md": "4925e5f26ae6e6c060bebef13088ed0657c0553f",
     "guards/guard-canary.sh": "ed7844bf4c759d1db7f4a0870c4cc7b8fc62bba7",
     "guards/specs/isolation-gate-contract.json": "a3a8b2025ee0a3c057927ad43f57d76586b6ac08",
-    "CHANGELOG.md": "da1c5f1630968d87dbd88e83ff3ba49757a44e7e"
+    "CHANGELOG.md": "3c879dff486f9d52968a5fe5df10b5e9b54c61fe"
   },
   "replacements": [
     "_comment: each {file, findFile, replaceFile} pair does an exact, literal, whole-substring find/replace of findFile's content with replaceFile's content inside the exported copy of `file`. required=true (default) fails the export loudly if findFile's exact text is not found -- this is the forcing function that catches upstream drift instead of silently missing it.",
@@ -245,6 +253,16 @@
       "file": "package.json",
       "findFile": "publish-overrides/patches/package-json.3.find.txt",
       "replaceFile": "publish-overrides/patches/package-json.3.replace.txt"
+    },
+    {
+      "file": "bin/axmem",
+      "findFile": "publish-overrides/patches/bin-axmem-p2-equiv-usage.find.txt",
+      "replaceFile": "publish-overrides/patches/bin-axmem-p2-equiv-usage.replace.txt"
+    },
+    {
+      "file": "bin/axmem",
+      "findFile": "publish-overrides/patches/bin-axmem-p2-equiv-case.find.txt",
+      "replaceFile": "publish-overrides/patches/bin-axmem-p2-equiv-case.replace.txt"
     }
   ],
   "scrub": {
