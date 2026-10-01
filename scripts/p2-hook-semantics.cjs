@@ -30,9 +30,12 @@ function fail(opts, code, message, detail) {
 }
 
 function compileMatcher(event, matcher, opts = {}) {
+  if (matcher !== undefined && matcher !== null && typeof matcher !== 'string') {
+    fail(opts, 'hook-matcher-type', 'matcher must be a string, null, or omitted for ' + event,
+      { event, matcherType: Array.isArray(matcher) ? 'array' : typeof matcher });
+  }
   const field = MATCH_FIELDS[event] || null;
-  const empty = matcher === undefined || matcher === null || matcher === '' ||
-    (typeof matcher === 'string' && matcher.trim() === '');
+  const empty = matcher === undefined || matcher === null || matcher === '' || matcher.trim() === '';
   if (!field) {
     if (empty || matcher === '*') return { kind: 'all', field: null };
     if (NO_MATCHER_EVENTS.has(event)) {
@@ -46,14 +49,15 @@ function compileMatcher(event, matcher, opts = {}) {
       { event, matcher });
   }
   if (empty || matcher === '*') return { kind: 'all', field };
-  if (typeof matcher !== 'string') {
-    fail(opts, 'hook-matcher-type', 'matcher must be a string, null, or omitted for ' + event,
-      { event, matcherType: Array.isArray(matcher) ? 'array' : typeof matcher });
-  }
   if (SIMPLE_MATCHER_RE.test(matcher)) {
-    const values = matcher.split(/[|,]/).map((x) => x.trim()).filter(Boolean);
-    if (values.length === 0) return { kind: 'all', field };
-    return { kind: 'exact', field, values };
+    const rawValues = matcher.split(/[|,]/);
+    const emptyAlternative = rawValues.findIndex((x) => x.trim() === '');
+    if (emptyAlternative !== -1) {
+      fail(opts, 'hook-matcher-empty-alternative',
+        'simple matcher list contains an empty alternative for ' + event,
+        { event, matcher, alternativeIndex: emptyAlternative });
+    }
+    return { kind: 'exact', field, values: rawValues.map((x) => x.trim()) };
   }
   let regex;
   try { regex = new RegExp(matcher); }

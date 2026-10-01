@@ -20,8 +20,10 @@ function check(name, ok, detail) {
   if (ok) { console.log('PASS ' + name); pass++; }
   else { console.log('FAIL ' + name + (detail ? ' :: ' + detail : '')); fail++; }
 }
-function git(cwd, args) {
-  return cp.execFileSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+function git(cwd, args, options = {}) {
+  const root = path.resolve(cwd);
+  const env = Object.assign({}, process.env, { GIT_CEILING_DIRECTORIES: path.dirname(root) });
+  return cp.execFileSync('git', ['-C', root].concat(args), { encoding: 'utf8', input: options.input, env, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 function sha256(b) { return crypto.createHash('sha256').update(b).digest('hex'); }
 function clone(x) { return JSON.parse(JSON.stringify(x)); }
@@ -43,6 +45,14 @@ function settingsForHooks(hooks) {
 
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-p20-machine-accept-'));
 try {
+  const gitNoRepo = path.join(T, 'git-no-repo');
+  fs.mkdirSync(gitNoRepo, { recursive: true });
+  let gitNoRepoErr = null;
+  try { git(gitNoRepo, ['rev-parse', '--show-toplevel']); } catch (e) { gitNoRepoErr = e; }
+  check('test git helper fails closed in a directory without .git instead of discovering an ancestor repository',
+    gitNoRepoErr && Number(gitNoRepoErr.status) !== 0 && /not a git repository/i.test(String(gitNoRepoErr.stderr || gitNoRepoErr.message || '')),
+    String(gitNoRepoErr && (gitNoRepoErr.stderr || gitNoRepoErr.message)));
+
   // ---- Equiv runner/comparator: temp git repo only, never real HOME hooks. ----
   const repo = path.join(T, 'repo');
   const live = path.join(repo, '.claude');
@@ -62,6 +72,11 @@ try {
   fs.writeFileSync(missingDepAbs, "require('axmem_definitely_missing_review_dependency');\n");
   const badSyntaxAbs = path.join(live, 'guards', 'bad-syntax.cjs');
   fs.writeFileSync(badSyntaxAbs, "const = ;\n");
+  const badSyntaxShAbs = path.join(live, 'guards', 'bad-syntax.sh');
+  fs.writeFileSync(badSyntaxShAbs, '#!/usr/bin/env bash\nif then\n');
+  const timeoutRel = 'guards/r15d-timeout-fixture.cjs';
+  const timeoutAbs = path.join(live, ...timeoutRel.split('/'));
+  fs.writeFileSync(timeoutAbs, "'use strict';\nsetTimeout(() => {}, 1000);\n");
   git(repo, ['init', '-q']);
   git(repo, ['add', '.claude']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'fixture']);
@@ -85,26 +100,36 @@ try {
     const mirrorBytes = Buffer.from(JSON.stringify(settings, null, 2) + '\n');
     fs.mkdirSync(path.dirname(mirrorAbs), { recursive: true });
     fs.writeFileSync(mirrorAbs, mirrorBytes);
-    git(repo, ['add', '--', '.claude/' + mirrorRel]);
-    git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'bind freeze ' + label + ' ' + seq]);
-    out.source.commit = git(repo, ['rev-parse', 'HEAD']).trim();
-    out.source.treeOid = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
     out.sourceFiles = (out.sourceFiles || []).filter((x) => x.path !== mirrorRel).map((x) => {
       const abs = path.join(live, ...x.path.split('/'));
       return fs.existsSync(abs) ? Object.assign({}, x, { sha256: sha256(fs.readFileSync(abs)) }) : x;
     });
     out.sourceFiles.push({ path: mirrorRel, sha256: sha256(mirrorBytes), disposition: 'private-exclude', dependencies: [], unresolvedDependencies: [], notes: 'synthetic tracked settings mirror' });
-    const inventory = { version: 1, hooks: (out.hooks || []).map((h) => ({
-      event: h.event, groupIndex: h.groupIndex, hookIndex: h.hookIndex,
-      matcher: h.matcher === undefined ? null : h.matcher, command: h.command,
-      timeout: h.timeout === undefined ? null : h.timeout,
-      disposition: h.disposition, files: clone(h.files || []), implementation: h.implementation || null,
-      notes: h.notes || '', externalDependencies: clone(h.externalDependencies || []),
-      businessExitCodes: clone(h.businessExitCodes || []), runtimeHealthProbe: h.runtimeHealthProbe ? clone(h.runtimeHealthProbe) : null,
-    })) };
+    const externalIds = [...new Set((out.hooks || []).flatMap((h) => Array.isArray(h.externalDependencies) ? h.externalDependencies : []))];
+    const inventory = {
+      version: 1,
+      hooks: (out.hooks || []).map((h) => ({
+        event: h.event, groupIndex: h.groupIndex, hookIndex: h.hookIndex,
+        matcher: h.matcher === undefined ? null : h.matcher, command: h.command,
+        timeout: h.timeout === undefined ? null : h.timeout,
+        disposition: h.disposition, files: clone(h.files || []), implementation: h.implementation || null,
+        notes: h.notes || '', externalDependencies: clone(h.externalDependencies || []),
+        businessExitCodes: clone(h.businessExitCodes || []), runtimeHealthProbe: h.runtimeHealthProbe ? clone(h.runtimeHealthProbe) : null,
+      })),
+      files: (out.sourceFiles || []).map((f) => ({ path: f.path, disposition: f.disposition || 'port', dependencies: clone(f.dependencies || []), unresolvedDependencies: clone(f.unresolvedDependencies || []), notes: f.notes || 'synthetic source file' })),
+      externalDependencies: externalIds.map((id) => ({ id, kind: 'command', command: 'synthetic-external-' + id, notes: 'machine-acceptance external prerequisite fixture' })),
+      generatedArtifacts: [],
+      allowedDifferences: [],
+      auditEvidence: ['machine-acceptance synthetic inventory'],
+    };
     const inventoryRel = 'r15b-inventory-' + String(seq).padStart(3, '0') + '-' + label + '.json';
     const inventoryBytes = Buffer.from(JSON.stringify(inventory, null, 2) + '\n');
     fs.writeFileSync(path.join(repo, inventoryRel), inventoryBytes);
+    git(repo, ['add', '--', '.claude/' + mirrorRel, inventoryRel]);
+    git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'bind freeze ' + label + ' ' + seq]);
+    out.source.commit = git(repo, ['rev-parse', 'HEAD']).trim();
+    out.source.treeOid = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
+    out.inventoryCommit = out.source.commit;
     out.inventoryPath = inventoryRel;
     out.inventorySha256 = sha256(inventoryBytes);
     out.settingsEvidence = {
@@ -168,6 +193,18 @@ try {
   check('runner leaves fixture git source clean', git(repo, ['status', '--porcelain', '--', '.claude']).trim() === '');
   const same = equiv.compareReports(reportA, reportB, []);
   check('full baseline compares green', same.equal === true && same.unexpected.length === 0);
+
+  // R15d S1: report-declared normalization prefixes must be bound to runner-recorded sandboxes.
+  const s1PrefixLeft = clone(reportA);
+  const s1PrefixRight = clone(reportA);
+  s1PrefixLeft.cases[0].stdout = 'DENY';
+  s1PrefixRight.cases[0].stdout = 'ALLOW';
+  s1PrefixRight.normalization.pathPrefixes = ['DENY', 'ALLOW'];
+  let s1PrefixErr = null, s1PrefixCompare = null;
+  try { s1PrefixCompare = equiv.compareReports(s1PrefixLeft, s1PrefixRight, []); } catch (e) { s1PrefixErr = e; }
+  check('R15d S1 rejects report-declared non-sandbox normalization prefixes before comparison',
+    s1PrefixErr && s1PrefixErr.code === 'report-normalization-path-prefix-invalid' && s1PrefixErr.detail && s1PrefixErr.detail.prefix === 'DENY',
+    JSON.stringify({ errorCode: s1PrefixErr && s1PrefixErr.code, detail: s1PrefixErr && s1PrefixErr.detail, compareEqual: s1PrefixCompare && s1PrefixCompare.equal, prefixes: s1PrefixRight.normalization.pathPrefixes }));
 
   // R15b B1: bind each report case to the original fixture input, not a hook payload.
   const fixtureInputs = new Map();
@@ -281,10 +318,13 @@ try {
   const a7Abs = path.join(live, ...a7Rel.split('/'));
   const a3Marker = path.join(T, 'r15b-a3-hook-executed.marker');
   fs.writeFileSync(a1Abs, "'use strict';const fs=require('fs'),path=require('path');fs.writeFileSync(path.join(__dirname,'r15b-a1.marker'),'sandbox-only');\n");
+  // A2 intent is unchanged by the R15d merge fixture migration: inherited env/path inputs must be scrubbed,
+  // runner-managed sandbox variables must survive, git parent discovery must be blocked, and an inherited fake PATH command must not resolve.
   fs.writeFileSync(a2Abs, [
     "'use strict';",
     "const cp=require('child_process');",
-    "const run=(args)=>{const r=cp.spawnSync('git',args,{encoding:'utf8'});return {status:r.status,stdout:String(r.stdout||'').trim(),stderr:String(r.stderr||'').trim()};};",
+    "const runGit=(args)=>{const r=cp.spawnSync('git',args,{encoding:'utf8'});return {status:r.status,stdout:String(r.stdout||'').trim(),stderr:String(r.stderr||'').trim()};};",
+    "const runBash=(command)=>{const r=cp.spawnSync('bash',['--noprofile','--norc','-lc',command],{encoding:'utf8',env:process.env});return {status:r.status,stdout:String(r.stdout||'').trim(),stderr:String(r.stderr||'').trim()};};",
     "const env=process.env;",
     "console.log(JSON.stringify({",
     "  HOME:env.HOME,USERPROFILE:env.USERPROFILE,HOMEDRIVE:env.HOMEDRIVE,HOMEPATH:env.HOMEPATH,",
@@ -292,8 +332,9 @@ try {
     "  XDG_STATE_HOME:env.XDG_STATE_HOME,XDG_CACHE_HOME:env.XDG_CACHE_HOME,HERMES_HOME:env.HERMES_HOME,TEMP:env.TEMP,TMP:env.TMP,TMPDIR:env.TMPDIR,",
     "  CLAUDE_CONFIG_DIR:env.CLAUDE_CONFIG_DIR,CLAUDE_SESSION_ID:env.CLAUDE_SESSION_ID,CLAUDE_CODE_SESSION_ID:env.CLAUDE_CODE_SESSION_ID,",
     "  BASH_ENV:Object.keys(env).find(k=>k.toLowerCase()==='bash_env')||null,NODE_OPTIONS:env.NODE_OPTIONS||null,NODE_PATH:env.NODE_PATH||null,",
-    "  gitVersion:run(['--version']),hooksPath:run(['config','core.hooksPath']),gitTop:run(['rev-parse','--show-toplevel']),",
-    "  pathKeys:Object.keys(env).filter(k=>k.toLowerCase()==='path')",
+    "  inherited:Object.fromEntries(['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDE_CONFIG_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH'].map(n=>{const k=Object.keys(env).find(x=>x.toLowerCase()===n.toLowerCase());return [n,k?env[k]:null];})),",
+    "  gitVersion:runGit(['--version']),hooksPath:runGit(['config','core.hooksPath']),gitTop:runGit(['rev-parse','--show-toplevel']),",
+    "  fakeCommand:runBash('command -v r15d-fakecmd'),pathKeys:Object.keys(env).filter(k=>k.toLowerCase()==='path'),PATH:env.PATH||''",
     "}));",
     '',
   ].join('\n'));
@@ -305,6 +346,8 @@ try {
     "let b;",
     "if(j.prompt==='b80') b=Buffer.from([0x80]);",
     "else if(j.prompt==='b81') b=Buffer.from([0x81]);",
+    "else if(j.prompt==='bom') b=Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from('same','utf8')]);",
+    "else if(j.prompt==='nobom') b=Buffer.from('same','utf8');",
     "else b=Buffer.concat([Buffer.from(String(process.env.HOME).replace(/\\\\/g,'/')+'\\n','latin1'),Buffer.from([0x80])]);",
     "fs.writeFileSync(path.join(process.env.HOME,'r15b-a5-state.bin'),b);",
     '',
@@ -348,6 +391,22 @@ try {
   try { runner.runCase({ freeze: a1Freeze, group: focusedGroup, c: { id: 'a1-root-mismatch', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: path.dirname(live), defaultTimeoutMs: 5000 }); } catch (e) { sourceRootErr = e; }
   check('R15b A1 --source-root must equal frozen liveRelativePath root', sourceRootErr && sourceRootErr.code === 'source-root-mismatch' && sourceRootErr.detail && sourceRootErr.detail.expected, String(sourceRootErr && sourceRootErr.message));
 
+  const s1BashFuncKey = 'BASH_FUNC_node%%';
+  const s1BashFuncBefore = process.env[s1BashFuncKey];
+  const s1BashFuncHome = fs.mkdtempSync(path.join(T, 'r15d-s1-bash-func-home-'));
+  let s1BashFuncRun = null;
+  try {
+    process.env[s1BashFuncKey] = '() { printf INHERITED_FUNCTION; }';
+    const s1BashFuncEnv = runner.isolatedEnv(s1BashFuncHome, null);
+    s1BashFuncRun = runner.runHook('node --version', {}, s1BashFuncEnv, s1BashFuncHome, 5000, []);
+  } finally {
+    if (s1BashFuncBefore === undefined) delete process.env[s1BashFuncKey]; else process.env[s1BashFuncKey] = s1BashFuncBefore;
+    fs.rmSync(s1BashFuncHome, { recursive: true, force: true });
+  }
+  check('R15d S1 scrubs inherited BASH_FUNC_node%% before sandbox node --version executes',
+    s1BashFuncRun && s1BashFuncRun.exitCode === 0 && /^v\d+\./.test(String(s1BashFuncRun.stdout || '').trim()) && !String(s1BashFuncRun.stdout || '').includes('INHERITED_FUNCTION'),
+    JSON.stringify(s1BashFuncRun));
+
   const a2BashMarker = path.join(T, 'r15b-a2-bash-env.marker');
   const a2NodeMarker = path.join(T, 'r15b-a2-node-options.marker');
   const a2BashEnv = path.join(T, 'r15b-a2-bash-env.sh');
@@ -362,18 +421,37 @@ try {
   const a2LureRepo = path.join(T, 'r15b-a2-lure-repo');
   fs.mkdirSync(a2LureRepo, { recursive: true });
   git(a2LureRepo, ['init', '-q']);
-  const parentEnvKeys = ['BASH_ENV','Bash_Env','NODE_OPTIONS','NODE_PATH','APPDATA','LOCALAPPDATA','GIT_CONFIG_GLOBAL','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0','CLAUDE_CODE_FAKE','PIPE_GATE_FAKE','TEMP','TMP'];
+  const r15dParentHome = path.join(T, 'r15d-s2a-parent-home');
+  const r15dFakeBin = path.join(live, 'r15d-s2a-fake-bin');
+  const r15dFakeCmd = path.join(r15dFakeBin, 'r15d-fakecmd');
+  fs.mkdirSync(r15dParentHome, { recursive: true });
+  fs.mkdirSync(r15dFakeBin, { recursive: true });
+  fs.writeFileSync(r15dFakeCmd, '#!/usr/bin/env sh\\nprintf inherited-live-path\\n');
+  try { fs.chmodSync(r15dFakeCmd, 0o755); } catch {}
+  const parentEnvKeys = ['BASH_ENV','Bash_Env','NODE_OPTIONS','NODE_PATH','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','APPDATA','LOCALAPPDATA','GIT_CONFIG_GLOBAL','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0','GIT_TRACE2_EVENT','CLAUDE_CODE_FAKE','CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDE_CONFIG_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','PIPE_GATE_FAKE','HOME','USERPROFILE','PATH','TEMP','TMP'];
   const parentEnvBefore = Object.fromEntries(parentEnvKeys.map((k) => [k, process.env[k]]));
   process.env.Bash_Env = a2BashEnv;
   process.env.NODE_OPTIONS = '--require=' + a2NodeRequire;
-  process.env.NODE_PATH = path.join(T, 'r15b-a2-node-path');
+  process.env.NODE_PATH = path.join(live, 'r15d-node-path');
+  process.env.NODE_V8_COVERAGE = path.join(r15dParentHome, 'coverage');
+  process.env.NODE_COMPILE_CACHE = path.join(repo, 'r15d-node-cache');
   process.env.APPDATA = a2App;
   process.env.LOCALAPPDATA = path.join(T, 'r15b-a2-localapp');
   process.env.GIT_CONFIG_GLOBAL = a2GitConfig;
   process.env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
   process.env.GIT_CONFIG_VALUE_0 = a2Hooks;
+  process.env.GIT_TRACE2_EVENT = path.join(repo, 'r15d-git-trace.json');
   process.env.CLAUDE_CODE_FAKE = 'must-be-removed';
+  process.env.CLAUDE_HOME = r15dParentHome;
+  process.env.CLAUDE_PROJECT_DIR = live;
+  process.env.CLAUDE_CONFIG_DIR = path.join(repo, 'r15d-parent-claude-config');
+  process.env.CLAUDECODE = path.join(live, 'r15d-claudecode');
+  process.env.OneDrive = path.join(r15dParentHome, 'OneDrive');
+  process.env.HERMES_CONFIG_PATH = path.join(live, 'r15d-hermes-config');
   process.env.PIPE_GATE_FAKE = 'must-be-removed';
+  process.env.HOME = r15dParentHome;
+  process.env.USERPROFILE = r15dParentHome;
+  process.env.PATH = r15dFakeBin + ';' + String(parentEnvBefore.PATH || '');
   process.env.TEMP = a2LureRepo;
   process.env.TMP = a2LureRepo;
   const a2Command = 'node "' + a2Abs.replace(/\\/g, '/') + '"';
@@ -392,14 +470,62 @@ try {
     a2Observed.CLAUDE_SESSION_ID === 'r15b-session' && a2Observed.CLAUDE_CODE_SESSION_ID === 'r15b-session', JSON.stringify(a2Observed));
   check('R15b A2 preserves executable PATH, dedupes Path/PATH case-insensitively, and scrubs inherited Git config',
     a2Observed.gitVersion.status === 0 && /^git version /.test(a2Observed.gitVersion.stdout) && a2Observed.hooksPath.stdout === '' && Array.isArray(a2Observed.pathKeys) && a2Observed.pathKeys.length === 1, JSON.stringify(a2Observed));
-  check('R15b A2 GIT_CEILING blocks discovery of the parent lure repository', a2Observed.gitTop.status !== 0 && a2Observed.gitTop.stdout === '', JSON.stringify(a2Observed.gitTop));
+  check('R15b A2 GIT_CEILING blocks discovery of the parent lure repository', a2Observed.gitTop.status !== 0 && a2Observed.gitTop.stdout === '' && /not a git repository/i.test(a2Observed.gitTop.stderr), JSON.stringify(a2Observed.gitTop));
+  const r15dInjectedAbsent = ['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH']
+    .every((k) => a2Observed.inherited[k] === null);
+  const r15dManagedSafe = typeof a2Observed.inherited.CLAUDE_CONFIG_DIR === 'string' && a2Observed.inherited.CLAUDE_CONFIG_DIR.includes('<ROOT>')
+    && [a2Observed.HOME,a2Observed.USERPROFILE,a2Observed.TEMP,a2Observed.TMP,a2Observed.TMPDIR].every((v) => typeof v === 'string' && v.includes('<ROOT>'));
+  check('R15d S2a N3 scrubs inherited CLAUDE/GIT_TRACE/NODE families and sensitive-root fallback values while preserving runner sandbox env',
+    r15dInjectedAbsent && r15dManagedSafe,
+    JSON.stringify({ inherited: a2Observed.inherited, HOME: a2Observed.HOME, USERPROFILE: a2Observed.USERPROFILE, TEMP: a2Observed.TEMP, TMP: a2Observed.TMP, TMPDIR: a2Observed.TMPDIR }));
+  check('R15d S2a N3 PATH removes live-source entries so inherited fake command is not resolvable',
+    a2Observed.fakeCommand && a2Observed.fakeCommand.status !== 0 && a2Observed.fakeCommand.stdout === '' && !String(a2Observed.PATH || '').toLowerCase().includes(r15dFakeBin.replace(/\\/g, '/').toLowerCase()),
+    JSON.stringify({ fakeCommand: a2Observed.fakeCommand, PATH: a2Observed.PATH }));
+  const r15dExpectedScrubbed = ['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH'];
+  check('R15d S2a N3 reports scrubbed inherited key names without values',
+    Array.isArray(a2Run.environmentScrubbedKeys) && r15dExpectedScrubbed.every((k) => a2Run.environmentScrubbedKeys.some((x) => x.toLowerCase() === k.toLowerCase())) && a2Run.environmentScrubbedKeys.every((x) => typeof x === 'string' && !/[\\/=:]/.test(x)),
+    JSON.stringify(a2Run.environmentScrubbedKeys));
+
+  const r15dNodeRestoreKey = 'NODE_V8_COVERAGE';
+  const r15dNodeRestoreBefore = process.env[r15dNodeRestoreKey];
+  const r15dNodeRestoreSentinel = 'C:/r15d-parent-node-v8-coverage-sentinel';
+  const r15dNodeRestoreHome = fs.mkdtempSync(path.join(T, 'r15d-node-restore-'));
+  let r15dNodeNormal = null, r15dNodeThrow = null;
+  try {
+    process.env[r15dNodeRestoreKey] = r15dNodeRestoreSentinel;
+    const env = runner.isolatedEnv(r15dNodeRestoreHome, null);
+    const rr = runner.runHook('printf ok', {}, env, r15dNodeRestoreHome, 5000, []);
+    r15dNodeNormal = { exitCode: rr.exitCode, stdout: rr.stdout, parentAfter: process.env[r15dNodeRestoreKey] };
+    const originalSpawnSync = cp.spawnSync;
+    try {
+      cp.spawnSync = () => { throw new Error('r15d-forced-spawn-throw'); };
+      try { runner.runHook('printf never', {}, env, r15dNodeRestoreHome, 5000, []); }
+      catch (e) { r15dNodeThrow = { message: String(e && e.message || e), parentAfter: process.env[r15dNodeRestoreKey] }; }
+    } finally { cp.spawnSync = originalSpawnSync; }
+  } finally {
+    if (r15dNodeRestoreBefore === undefined) delete process.env[r15dNodeRestoreKey]; else process.env[r15dNodeRestoreKey] = r15dNodeRestoreBefore;
+    fs.rmSync(r15dNodeRestoreHome, { recursive: true, force: true });
+  }
+  check('R15d S2b sandbox spawn restores parent NODE_V8_COVERAGE after normal return',
+    r15dNodeNormal && r15dNodeNormal.exitCode === 0 && r15dNodeNormal.stdout === 'ok' && r15dNodeNormal.parentAfter === r15dNodeRestoreSentinel,
+    JSON.stringify(r15dNodeNormal));
+  check('R15d S2b sandbox spawn restores parent NODE_V8_COVERAGE when spawnSync throws',
+    r15dNodeThrow && r15dNodeThrow.message === 'r15d-forced-spawn-throw' && r15dNodeThrow.parentAfter === r15dNodeRestoreSentinel,
+    JSON.stringify(r15dNodeThrow));
 
   const a3Command = 'node "' + a3Abs.replace(/\\/g, '/') + '"';
   const a3Freeze = bindSingle(4, 'a3-path-guard', a3Command, [a3Rel]);
+  const a3WinRootBackslash = '\\Users\\axmem-r15d-outside.txt';
+  const a3WinRootSlash = '/Users/axmem-r15d-outside.txt';
+  check('R15d S1 win32 treats single-backslash and single-slash root-relative spellings as absolute',
+    path.win32.isAbsolute(a3WinRootBackslash) && path.win32.isAbsolute(a3WinRootSlash),
+    JSON.stringify({ backslash: path.win32.resolve('C:\\sandbox', a3WinRootBackslash), slash: path.win32.resolve('C:\\sandbox', a3WinRootSlash) }));
   const a3Cases = [
     ['drive', path.join(T, 'outside-drive.txt')],
     ['msys', toMsys(path.join(T, 'outside-msys.txt'))],
     ['unc', '\\\\server\\share\\outside.txt'],
+    ['win-root-backslash', a3WinRootBackslash],
+    ['win-root-slash', a3WinRootSlash],
   ];
   for (const [kind, outside] of a3Cases) {
     try { fs.rmSync(a3Marker, { force: true }); } catch {}
@@ -408,6 +534,54 @@ try {
     check('R15b A3 rejects ' + kind + ' absolute payload path before any hook executes', err && err.code === 'payload-path-outside-sandbox' && err.detail && err.detail.field === '$.transcript_path' && !fs.existsSync(a3Marker), String(err && err.message));
     try { fs.rmSync(a3Marker, { force: true }); } catch {}
   }
+
+  const n2Sandbox = fs.mkdtempSync(path.join(T, 'r15d-n2-sandbox-'));
+  const n2Cwd = path.join(n2Sandbox, 'work', 'deep');
+  fs.mkdirSync(n2Cwd, { recursive: true });
+  const n2Reject = (label, input, code, field) => {
+    let err = null;
+    try { runner.prepareCaseInput(input, n2Sandbox); } catch (e) { err = e; }
+    check('R15d S2b N2 rejects ' + label, err && err.code === code && err.detail && err.detail.field === field, JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  };
+  n2Reject('relative cwd ../../../..', { cwd: '../../../..' }, 'payload-path-not-absolute', '$.cwd');
+  n2Reject('relative transcript_path', { transcript_path: '../transcript.json' }, 'payload-path-not-absolute', '$.transcript_path');
+  n2Reject('relative tool_input.file_path escaping cwd', { cwd: n2Cwd, tool_input: { file_path: '../../../../.claude/memory/decisions.md' } }, 'payload-path-outside-sandbox', '$.tool_input.file_path');
+  n2Reject('nested edits[].file_path escaping cwd', { cwd: n2Cwd, tool_input: { edits: [{ file_path: '../../../../outside.txt' }] } }, 'payload-path-outside-sandbox', '$.tool_input.edits[0].file_path');
+  const n2Inside = runner.prepareCaseInput({ cwd: n2Cwd, tool_input: { file_path: '../ok.txt', edits: [{ file_path: './also-ok.txt' }] } }, n2Sandbox);
+  check('R15d S2b N2 resolves relative tool paths against case cwd before sandbox check',
+    path.isAbsolute(n2Inside.tool_input.file_path) && runner.prepareCaseInput(n2Inside, n2Sandbox).tool_input.file_path === n2Inside.tool_input.file_path && /\/work\/ok\.txt$/.test(n2Inside.tool_input.file_path.replace(/\\/g, '/')),
+    JSON.stringify(n2Inside.tool_input));
+  fs.rmSync(n2Sandbox, { recursive: true, force: true });
+
+  let tmpDangerErr = null;
+  try { runner.scanLiteralTmpSource('guards/r15d-tmp-fixture.sh', 'if false; then echo x > /tmp/r15d-probe; fi\n'); } catch (e) { tmpDangerErr = e; }
+  check('R15d S2b literal /tmp preflight rejects executable source use', tmpDangerErr && tmpDangerErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpDangerErr && tmpDangerErr.detail));
+  let tmpSafe = null, tmpSafeErr = null;
+  try { tmpSafe = runner.scanLiteralTmpSource('guards/r15d-tmp-safe.sh', '# /tmp/comment only\nT="${TMPDIR:-/tmp}"\nU="${TMPDIR-/tmp}"\n'); } catch (e) { tmpSafeErr = e; }
+  check('R15d S2b literal /tmp preflight permits whole-line comments and exact TMPDIR defaults', !tmpSafeErr && tmpSafe && tmpSafe.exceptionsUsed.length === 0, String(tmpSafeErr && tmpSafeErr.message));
+  const tmpExceptionLine = '  case "$T" in /tmp/*|/var/*|"${TMPDIR:-/nonexistent}"*) : ;; *) echo "mktemp 异常路径 $T,拒绝继续"; exit 1;; esac';
+  const tmpException = runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine + '\n');
+  check('R15d S2b literal /tmp preflight accepts exactly the reviewed line-hash exception', tmpException.exceptionsUsed.length === 1 && tmpException.exceptionsUsed[0].lineSha256 === sha256(Buffer.from(tmpExceptionLine)), JSON.stringify(tmpException));
+  let tmpMutatedErr = null;
+  try { runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine.replace('异常路径', '异常路经') + '\n'); } catch (e) { tmpMutatedErr = e; }
+  check('R15d S2b literal /tmp exception fails closed when approved line changes', tmpMutatedErr && tmpMutatedErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpMutatedErr && tmpMutatedErr.detail));
+  let tmpShebangErr = null, tmpUnknownExecErr = null;
+  try { runner.scanLiteralTmpSource('guards/r15d-noext-shell', '#!/usr/bin/env bash\necho x > /tmp/r15d-shebang-probe\n', { executableHint: true }); } catch (e) { tmpShebangErr = e; }
+  check('R15d S2c literal /tmp preflight classifies extensionless executable by shell shebang', tmpShebangErr && tmpShebangErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpShebangErr && tmpShebangErr.detail));
+  const tmpJsonData = runner.scanLiteralTmpSource('memory/_local-config/settings.json', '{"path":"/tmp/data-only"}\n', { executableHint: true });
+  check('R15d S2c literal /tmp preflight marks pure JSON data not-applicable', tmpJsonData.checked === false && tmpJsonData.notApplicable === true && tmpJsonData.reason === 'pure-data-json', JSON.stringify(tmpJsonData));
+  try { runner.scanLiteralTmpSource('guards/r15d-unknown-exec', '#!/usr/bin/env python3\nprint("/tmp/r15d")\n', { executableHint: true }); } catch (e) { tmpUnknownExecErr = e; }
+  check('R15d S2c literal /tmp preflight rejects executable files with unsupported shebang type', tmpUnknownExecErr && tmpUnknownExecErr.code === 'sandbox-source-type-unknown', JSON.stringify(tmpUnknownExecErr && tmpUnknownExecErr.detail));
+  const tmpEnvHome = fs.mkdtempSync(path.join(T, 'r15d-tmpdir-env-'));
+  const tmpEnv = runner.isolatedEnv(tmpEnvHome, null);
+  const tmpMissing = Object.assign({}, tmpEnv); delete tmpMissing.TMPDIR;
+  let tmpMissingErr = null, tmpOutsideErr = null;
+  try { runner.runHook('printf never', {}, tmpMissing, tmpEnvHome, 5000, []); } catch (e) { tmpMissingErr = e; }
+  const tmpOutside = Object.assign({}, tmpEnv, { TMPDIR: path.join(T, 'r15d-outside-tmpdir') });
+  try { runner.runHook('printf never', {}, tmpOutside, tmpEnvHome, 5000, []); } catch (e) { tmpOutsideErr = e; }
+  check('R15d S2b hook launch rejects missing TMPDIR before spawn', tmpMissingErr && tmpMissingErr.code === 'sandbox-tmpdir-invalid', String(tmpMissingErr && tmpMissingErr.message));
+  check('R15d S2b hook launch rejects TMPDIR outside case sandbox before spawn', tmpOutsideErr && tmpOutsideErr.code === 'sandbox-tmpdir-invalid', String(tmpOutsideErr && tmpOutsideErr.message));
+  fs.rmSync(tmpEnvHome, { recursive: true, force: true });
 
   const unknownRaw = clone(freeze);
   unknownRaw.hooks.push({
@@ -437,13 +611,36 @@ try {
   const a5Path1 = stateRec(a5Run('a5-path-1', 'path'));
   const a5Path2 = stateRec(a5Run('a5-path-2', 'path'));
   check('R15b A5 invalid UTF-8 state still normalizes sandbox path deterministically', a5Path1 && a5Path2 && a5Path1.sha256 === a5Path2.sha256, JSON.stringify({ a5Path1, a5Path2 }));
+  const r15dBomRun = a5Run('r15d-s2a-bom', 'bom');
+  const r15dNoBomRun = a5Run('r15d-s2a-nobom', 'nobom');
+  const r15dBomRec = stateRec(r15dBomRun);
+  const r15dNoBomRec = stateRec(r15dNoBomRun);
+  check('R15d S2a B-1 state digest preserves leading UTF-8 BOM bytes',
+    r15dBomRec && r15dNoBomRec && r15dBomRec.sha256 !== r15dNoBomRec.sha256 && r15dBomRec.size === r15dNoBomRec.size + 3,
+    JSON.stringify({ bom: r15dBomRec, noBom: r15dNoBomRec }));
+  const r15dBomLeft = clone(reportA), r15dBomRight = clone(reportA);
+  r15dBomLeft.cases[0].stateTree = clone(r15dBomRun.stateTree);
+  r15dBomRight.cases[0].stateTree = clone(r15dNoBomRun.stateTree);
+  const r15dBomCompare = equiv.compareReports(r15dBomLeft, r15dBomRight, []);
+  check('R15d S2a B-1 compareReports detects state files differing only by leading UTF-8 BOM',
+    r15dBomCompare.equal === false && r15dBomCompare.unexpected.some((d) => d.caseId === reportA.cases[0].id && d.field === 'stateTree'),
+    JSON.stringify(r15dBomCompare.unexpected));
 
   // R15b A6: materialization gate bound to the real candidate inventory hook identities/derived fields.
-  const a6AxmemRoot = path.join(__dirname, '..');
+  const a6CandidateRoot = path.join(__dirname, '..');
   const a6InventoryRel = 'docs/freeze/INVENTORY-V1-CANDIDATE-R12b.json';
+  const a6CandidateBytes = fs.readFileSync(path.join(a6CandidateRoot, ...a6InventoryRel.split('/')));
+  const a6Inventory = JSON.parse(a6CandidateBytes.toString('utf8'));
+  a6Inventory.generatedArtifacts = [];
+  const a6AxmemRoot = path.join(T, 'r15d-a6-inventory-repo');
   const a6InventoryAbs = path.join(a6AxmemRoot, ...a6InventoryRel.split('/'));
-  const a6InventoryBytes = fs.readFileSync(a6InventoryAbs);
-  const a6Inventory = JSON.parse(a6InventoryBytes.toString('utf8'));
+  fs.mkdirSync(path.dirname(a6InventoryAbs), { recursive: true });
+  const a6InventoryBytes = Buffer.from(JSON.stringify(a6Inventory, null, 2) + '\n');
+  fs.writeFileSync(a6InventoryAbs, a6InventoryBytes);
+  git(a6AxmemRoot, ['init', '-q']);
+  git(a6AxmemRoot, ['add', '--', a6InventoryRel]);
+  git(a6AxmemRoot, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'r15d a6 pinned real-candidate inventory shape']);
+  const a6InventoryCommit = git(a6AxmemRoot, ['rev-parse', 'HEAD']).trim();
   const a6Hooks = a6Inventory.hooks.map((h) => {
     const runnable = h.disposition === 'port' || h.disposition === 'replace';
     return {
@@ -459,17 +656,27 @@ try {
   const a6Repo = path.join(T, 'r15b-a6-real-inventory-repo');
   const a6Live = path.join(a6Repo, '.claude');
   const a6MirrorRel = a6Inventory.settingsMirror;
-  const a6MirrorAbs = path.join(a6Live, ...a6MirrorRel.split('/'));
-  const a6Settings = settingsForHooks(a6Hooks);
-  const a6MirrorBytes = Buffer.from(JSON.stringify(a6Settings, null, 2) + '\n');
-  fs.mkdirSync(path.dirname(a6MirrorAbs), { recursive: true });
-  fs.writeFileSync(a6MirrorAbs, a6MirrorBytes);
+  const a6MirrorBytes = Buffer.from(JSON.stringify(settingsForHooks(a6Hooks), null, 2) + '\n');
+  const a6SourceFiles = [];
+  for (const f of a6Inventory.files) {
+    const abs = path.join(a6Live, ...f.path.split('/'));
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    let bytes;
+    if (f.path === a6MirrorRel) bytes = a6MirrorBytes;
+    else if (/\.(?:c?js|mjs)$/i.test(f.path)) bytes = Buffer.from("'use strict';\n", 'utf8');
+    else if (/\.(?:sh|bash)$/i.test(f.path)) bytes = Buffer.from('#!/usr/bin/env bash\ntrue\n', 'utf8');
+    else if (/\.json$/i.test(f.path)) bytes = Buffer.from('{}\n', 'utf8');
+    else bytes = Buffer.from('', 'utf8');
+    fs.writeFileSync(abs, bytes);
+    a6SourceFiles.push({ path: f.path, sha256: sha256(bytes), disposition: f.disposition, dependencies: clone(f.dependencies || []), unresolvedDependencies: clone(f.unresolvedDependencies || []), notes: f.notes || 'real candidate inventory-shape fixture' });
+  }
   git(a6Repo, ['init', '-q']);
-  git(a6Repo, ['add', '--', '.claude/' + a6MirrorRel]);
-  git(a6Repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'r15b a6 real inventory shape']);
+  git(a6Repo, ['add', '--', '.claude']);
+  git(a6Repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'r15b a6 full real inventory shape']);
   const a6Freeze = {
     schema: 'axmem-p2-freeze/v1',
     source: { commit: git(a6Repo, ['rev-parse', 'HEAD']).trim(), liveRelativePath: '.claude', treeOid: git(a6Repo, ['rev-parse', 'HEAD:.claude']).trim(), clean: true, uncommittedPatch: { empty: true, sha256: null } },
+    inventoryCommit: a6InventoryCommit,
     inventoryPath: a6InventoryRel,
     inventorySha256: sha256(a6InventoryBytes),
     settingsEvidence: {
@@ -478,12 +685,13 @@ try {
       hookIdentitySha256: sha256(Buffer.from(a6Hooks.map(localHookIdentity).join('\n'), 'utf8')),
     },
     hooks: a6Hooks,
-    sourceFiles: [{ path: a6MirrorRel, sha256: sha256(a6MirrorBytes), disposition: 'private-exclude', dependencies: [], unresolvedDependencies: [], notes: 'real candidate hook settings mirror' }],
+    sourceFiles: a6SourceFiles,
   };
   const a6GoodHome = fs.mkdtempSync(path.join(T, 'r15b-a6-good-'));
   let a6GoodDir = null, a6GoodErr = null;
   try { a6GoodDir = runner.materializeFreeze(a6Freeze, a6Repo, a6GoodHome, a6AxmemRoot); } catch (e) { a6GoodErr = e; }
   check('R15b A6 real candidate inventory shape passes materialization provenance gate', !a6GoodErr && a6GoodDir && fs.existsSync(path.join(a6GoodDir, ...a6MirrorRel.split('/'))), String(a6GoodErr && a6GoodErr.message));
+  check('R15d S2c real-candidate-shape fixture freezes every inventory file, not only settings mirror', a6Freeze.sourceFiles.length === a6Inventory.files.length && a6Inventory.files.every((f) => a6Freeze.sourceFiles.some((x) => x.path === f.path)), JSON.stringify({ sourceFiles: a6Freeze.sourceFiles.length, inventoryFiles: a6Inventory.files.length }));
   fs.rmSync(a6GoodHome, { recursive: true, force: true });
   const a6RejectBeforeExecution = (label, mutate, expectedCode, expectedField) => {
     const bad = clone(a6Freeze);
@@ -502,11 +710,73 @@ try {
     try { fs.rmSync(marker, { force: true }); } catch {}
   };
   a6RejectBeforeExecution('missing sourceFile sha256', (x) => { delete x.sourceFiles[0].sha256; }, 'freeze-source-hash-missing');
+  a6RejectBeforeExecution('missing inventorySha256', (x) => { delete x.inventorySha256; }, 'freeze-inventory-binding-missing');
+  a6RejectBeforeExecution('missing inventoryCommit', (x) => { delete x.inventoryCommit; }, 'freeze-inventory-binding-missing');
+  a6RejectBeforeExecution('nonexistent inventory commit', (x) => { x.inventoryCommit = 'f'.repeat(40); }, 'freeze-inventory-blob-read-failed');
+  a6RejectBeforeExecution('nonexistent inventory path at pinned commit', (x) => { x.inventoryPath = 'docs/freeze/DOES-NOT-EXIST.json'; }, 'freeze-inventory-blob-read-failed');
+  a6RejectBeforeExecution('deleted sourceFiles dependency declaration', (x) => { const row = x.sourceFiles.find((v) => Array.isArray(v.dependencies) && v.dependencies.length > 0); row.dependencies = row.dependencies.slice(1); }, 'freeze-source-dependencies-mismatch');
+  a6RejectBeforeExecution('missing settingsEvidence', (x) => { delete x.settingsEvidence; }, 'freeze-settings-evidence-missing');
   a6RejectBeforeExecution('tampered source treeOid', (x) => { x.source.treeOid = '0'.repeat(40); }, 'freeze-tree-oid-mismatch');
   a6RejectBeforeExecution('deleted hook', (x) => { x.hooks.splice(1, 1); }, 'freeze-settings-hook-mismatch');
   a6RejectBeforeExecution('swapped hook order', (x) => { [x.hooks[0], x.hooks[1]] = [x.hooks[1], x.hooks[0]]; }, 'freeze-settings-hook-mismatch');
   a6RejectBeforeExecution('mutated disposition', (x) => { const h = x.hooks.find((v) => v.disposition === 'port'); h.disposition = 'private-exclude'; }, 'freeze-inventory-derived-mismatch', 'disposition');
   a6RejectBeforeExecution('mutated runtimeHealthProbe.innerCommand', (x) => { const h = x.hooks.find((v) => v.runtimeHealthProbe); h.runtimeHealthProbe.innerCommand += ' --tampered'; }, 'freeze-inventory-derived-mismatch', 'runtimeHealthProbe');
+
+  const s2cPinOriginalBytes = fs.readFileSync(path.join(repo, freeze.inventoryPath));
+  const s2cPinInventory = JSON.parse(s2cPinOriginalBytes.toString('utf8'));
+  const s2cPinTamperedInventory = clone(s2cPinInventory);
+  const s2cPinTarget = s2cPinTamperedInventory.hooks.find((h) => h.disposition === 'port');
+  s2cPinTarget.disposition = 'private-exclude';
+  const s2cPinTamperedBytes = Buffer.from(JSON.stringify(s2cPinTamperedInventory, null, 2) + '\n');
+  const s2cPinTamperedFreeze = clone(freeze);
+  s2cPinTamperedFreeze.hooks.find((h) => h.event === s2cPinTarget.event && h.groupIndex === s2cPinTarget.groupIndex && h.hookIndex === s2cPinTarget.hookIndex).disposition = 'private-exclude';
+  s2cPinTamperedFreeze.inventorySha256 = sha256(s2cPinTamperedBytes);
+  let s2cPinTamperErr = null;
+  try {
+    fs.writeFileSync(path.join(repo, freeze.inventoryPath), s2cPinTamperedBytes);
+    const home = fs.mkdtempSync(path.join(T, 'r15d-s2c-pin-tamper-'));
+    try { runner.materializeFreeze(s2cPinTamperedFreeze, repo, home, repo); } catch (e) { s2cPinTamperErr = e; }
+    finally { fs.rmSync(home, { recursive: true, force: true }); }
+  } finally { fs.writeFileSync(path.join(repo, freeze.inventoryPath), s2cPinOriginalBytes); }
+  check('R15d S2c workspace inventory plus FREEZE hash tamper cannot override pinned inventory commit', s2cPinTamperErr && s2cPinTamperErr.code === 'freeze-inventory-hash-mismatch', JSON.stringify({ code: s2cPinTamperErr && s2cPinTamperErr.code, detail: s2cPinTamperErr && s2cPinTamperErr.detail }));
+
+  try { fs.rmSync(a3Marker, { force: true }); } catch {}
+  const s2cOriginalValidateInventory = freezeTool.validateInventory;
+  let s2cN4Err = null;
+  try {
+    freezeTool.validateInventory = () => { throw new freezeTool.FreezeError('r15d-n4-sentinel', 'forced validateInventory sentinel'); };
+    runner.runCase({ freeze: a3Freeze, group: focusedGroup, c: { id: 'r15d-s2c-n4', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  } catch (e) { s2cN4Err = e; }
+  finally { freezeTool.validateInventory = s2cOriginalValidateInventory; }
+  check('R15d S2c runner calls exported p2-freeze validateInventory before any hook executes', s2cN4Err && s2cN4Err.code === 'freeze-inventory-validation-failed' && s2cN4Err.detail && s2cN4Err.detail.freezeCode === 'r15d-n4-sentinel' && !fs.existsSync(a3Marker), JSON.stringify({ code: s2cN4Err && s2cN4Err.code, detail: s2cN4Err && s2cN4Err.detail }));
+
+  const s2cGenRepo = path.join(T, 'r15d-s2c-generate-repo');
+  const s2cGenLive = path.join(s2cGenRepo, '.claude');
+  fs.mkdirSync(s2cGenLive, { recursive: true });
+  const s2cGenSettings = { hooks: {} };
+  const s2cGenSettingsText = JSON.stringify(s2cGenSettings, null, 2) + '\n';
+  fs.writeFileSync(path.join(s2cGenLive, 'settings.json'), s2cGenSettingsText);
+  fs.writeFileSync(path.join(s2cGenLive, 'settings-mirror.json'), s2cGenSettingsText);
+  const s2cGenInventory = {
+    version: 1, settingsJson: 'settings.json', settingsMirror: 'settings-mirror.json', hooks: [],
+    files: [{ path: 'settings-mirror.json', disposition: 'private-exclude', dependencies: [], unresolvedDependencies: [], notes: 'formal generator fixture mirror' }],
+    externalDependencies: [], generatedArtifacts: [], allowedDifferences: [], auditEvidence: ['formal inventory commit binding fixture'],
+  };
+  const s2cGenInventoryPath = path.join(s2cGenRepo, 'inventory.json');
+  const s2cGenInventoryText = JSON.stringify(s2cGenInventory, null, 2) + '\n';
+  fs.writeFileSync(s2cGenInventoryPath, s2cGenInventoryText);
+  git(s2cGenRepo, ['init', '-q']);
+  git(s2cGenRepo, ['add', '--', '.claude', 'inventory.json']);
+  git(s2cGenRepo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'formal inventory binding fixture']);
+  const s2cGenHead = git(s2cGenRepo, ['rev-parse', 'HEAD']).trim();
+  const s2cGenOut = path.join(T, 'r15d-s2c-generated-freeze.json');
+  const s2cGenerated = freezeTool.generate({ liveDir: s2cGenLive, inventoryPath: s2cGenInventoryPath, out: s2cGenOut, generatedAt: '2026-10-01T00:00:00.000Z' });
+  check('R15d S2c formal FREEZE records inventory commit/path and committed blob hash', s2cGenerated.inventoryCommit === s2cGenHead && s2cGenerated.inventoryPath === 'inventory.json' && s2cGenerated.inventorySha256 === sha256(Buffer.from(s2cGenInventoryText)), JSON.stringify({ inventoryCommit: s2cGenerated.inventoryCommit, inventoryPath: s2cGenerated.inventoryPath, inventorySha256: s2cGenerated.inventorySha256 }));
+  const s2cGenDirty = clone(s2cGenInventory); s2cGenDirty.auditEvidence.push('uncommitted inventory mutation');
+  fs.writeFileSync(s2cGenInventoryPath, JSON.stringify(s2cGenDirty, null, 2) + '\n');
+  let s2cGenDirtyErr = null;
+  try { freezeTool.generate({ liveDir: s2cGenLive, inventoryPath: s2cGenInventoryPath, out: path.join(T, 'r15d-s2c-should-not-write.json') }); } catch (e) { s2cGenDirtyErr = e; }
+  check('R15d S2c formal FREEZE generation rejects uncommitted inventory bytes', s2cGenDirtyErr && s2cGenDirtyErr.code === 'inventory-commit-binding', String(s2cGenDirtyErr && s2cGenDirtyErr.message));
 
   const a7CrlfCommand = 'node "' + a7Abs.replace(/\\/g, '/') + '" crlf';
   const a7LfCommand = 'node "' + a7Abs.replace(/\\/g, '/') + '" lf';
@@ -588,19 +858,19 @@ try {
   const braceOuter = branchInner + ' || { echo masked >&2; exit 0; }';
   const silentOuter = branchInner + ' >/dev/null 2>&1 || exit 0';
 
-  for (const [name, outer, prompt, expect] of [
+  for (const [name, outer, prompt, expect, inner = branchInner] of [
     ['simple wrapper case-only missing module', simpleOuter, 'missing-module', 'unexpected-exit:1'],
     ['brace wrapper undeclared exit1', braceOuter, 'exit1', 'unexpected-exit:1'],
-    ['silent redirect case-only missing module', silentOuter, 'missing-module', 'unexpected-exit:1'],
+    ['silent redirect case-only missing module', silentOuter, 'missing-module', 'unexpected-exit:1', branchInner + ' >/dev/null 2>&1'],
   ]) {
     let err = null;
-    try { runBranch(outer, prompt); } catch (e) { err = e; }
+    try { runBranch(outer, prompt, inner); } catch (e) { err = e; }
     check('runtime health blocks ' + name, err && err.code === 'equiv-infrastructure' && new RegExp(expect).test(err.message), String(err && err.message));
   }
 
   const missingEntry = 'node "' + path.join(live, 'guards', 'never-there.cjs').replace(/\\/g, '/') + '"';
   let missingEntryErr = null;
-  try { runBranch(missingEntry + ' >/dev/null 2>&1 || exit 0', 'allow', missingEntry); } catch (e) { missingEntryErr = e; }
+  try { runBranch(missingEntry + ' >/dev/null 2>&1 || exit 0', 'allow', missingEntry + ' >/dev/null 2>&1'); } catch (e) { missingEntryErr = e; }
   check('runtime health blocks fully silent missing inner entry despite outer exit0',
     missingEntryErr && missingEntryErr.code === 'equiv-infrastructure' && /unexpected-exit:1/.test(missingEntryErr.message), String(missingEntryErr && missingEntryErr.message));
 
@@ -621,14 +891,14 @@ try {
   check('runtime health explicitly blocks reviewed inner modes that cannot reliably expose internal failures',
     unreliableErr && /explicitly unprovable/.test(unreliableErr.message), String(unreliableErr && unreliableErr.message));
 
-  const syntaxRel = 'guards/runtime-health-bad-syntax.cjs';
+  const syntaxRel = 'guards/runtime-health-bad-syntax.sh';
   const syntaxAbs = path.join(live, ...syntaxRel.split('/'));
-  fs.writeFileSync(syntaxAbs, 'const = ;\n');
-  git(repo, ['add', '.claude/guards/runtime-health-bad-syntax.cjs']);
+  fs.writeFileSync(syntaxAbs, '#!/usr/bin/env bash\nif then\n');
+  git(repo, ['add', '.claude/guards/runtime-health-bad-syntax.sh']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'runtime health syntax fixture']);
   const syntaxCommit = git(repo, ['rev-parse', 'HEAD']).trim();
   const syntaxTree = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
-  const syntaxCmd = 'node "' + syntaxAbs.replace(/\\/g, '/') + '"';
+  const syntaxCmd = 'bash "' + syntaxAbs.replace(/\\/g, '/') + '"';
   const syntaxFreeze = bindFreeze({
     schema: 'axmem-p2-freeze/v1',
     source: { commit: syntaxCommit, liveRelativePath: '.claude', treeOid: syntaxTree, clean: true, uncommittedPatch: { empty: true, sha256: null } },
@@ -636,7 +906,7 @@ try {
     hooks: [{ logicalId: 'rh-syntax', event: 'UserPromptSubmit', groupIndex: 0, hookIndex: 0, matcher: null,
       command: syntaxCmd + ' >/dev/null 2>&1 || exit 0', timeout: 5, disposition: 'port', files: [syntaxRel],
       implementation: null, notes: 'syntax fixture', externalDependencies: [], businessExitCodes: [2],
-      runtimeHealthProbe: { version: 1, innerCommand: syntaxCmd, reliable: true, notes: 'exact reviewed inner' } }],
+      runtimeHealthProbe: { version: 1, innerCommand: syntaxCmd + ' >/dev/null 2>&1', reliable: true, notes: 'exact reviewed inner including stderr redirection' } }],
   }, 'syntax');
   let syntaxHealthErr = null;
   try { runner.runCase({ freeze: syntaxFreeze, group: focusedGroup, c: { id: 'rh-syntax', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { syntaxHealthErr = e; }
@@ -697,7 +967,9 @@ try {
   let missingErr = null;
   try {
     const raw = clone(freeze);
-    const missingCommand = '"' + path.join(live, 'guards', 'command_that_does_not_exist_axmem_p2').replace(/\\/g, '/') + '"';
+    // Merge migration: this case tests missing-command infrastructure classification, not arbitrary shell syntax.
+    // Keep the expected command-start:127 assertion unchanged while expressing the hook as one C1-reviewed bash command.
+    const missingCommand = 'bash "' + path.join(live, 'guards', 'command_that_does_not_exist_axmem_p2.sh').replace(/\\/g, '/') + '"';
     raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'missing', command: missingCommand,
       runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: missingCommand }) })];
     const bad = bindFreeze(raw, 'missing-command');
@@ -708,8 +980,11 @@ try {
   let timeoutErr = null;
   try {
     const raw = clone(freeze);
-    const timeoutCommand = 'cd "' + live.replace(/\\/g, '/') + '" && sleep 1';
-    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'timeout', command: timeoutCommand, timeout: 0.01,
+    // Merge migration: this case tests timeout infrastructure classification, not compound-command grammar.
+    // A tracked Node fixture blocks for ~1s; the hook remains one C1-reviewed command and timeout stays 0.01s.
+    const timeoutCommand = 'node "' + timeoutAbs.replace(/\\/g, '/') + '"';
+    raw.sourceFiles.push({ path: timeoutRel, sha256: sha256(fs.readFileSync(timeoutAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'C1-compatible timeout classification fixture' });
+    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'timeout', command: timeoutCommand, timeout: 0.01, files: [timeoutRel],
       runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: timeoutCommand }) })];
     const bad = bindFreeze(raw, 'timeout-command');
     runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'timeout', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
@@ -762,10 +1037,10 @@ try {
 
   let badSyntaxErr = null;
   try {
-    const badRel = 'guards/bad-syntax.cjs';
+    const badRel = 'guards/bad-syntax.sh';
     const raw = clone(freeze);
-    raw.sourceFiles.push({ path: badRel, sha256: sha256(fs.readFileSync(badSyntaxAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R2 syntax fixture' });
-    const badSyntaxCommand = 'node "' + badSyntaxAbs.replace(/\\/g, '/') + '" 2>/dev/null';
+    raw.sourceFiles.push({ path: badRel, sha256: sha256(fs.readFileSync(badSyntaxShAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R2 shell syntax fixture so dependency closure can bind before bash -n rejects it' });
+    const badSyntaxCommand = 'bash "' + badSyntaxShAbs.replace(/\\/g, '/') + '" 2>/dev/null';
     raw.hooks = [Object.assign({}, raw.hooks[4], {
       logicalId: 'bad-syntax', command: badSyntaxCommand, files: [badRel],
       runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: badSyntaxCommand }),
@@ -1304,7 +1579,7 @@ try {
   fs.mkdirSync(path.join(syRepo, '.claude', 'guards'), { recursive: true });
   git(syRepo, ['init', '-q']);
   const syTarget = 'guards/real.sh\n';
-  const syOid = cp.execFileSync('git', ['-C', syRepo, 'hash-object', '-w', '--stdin'], { input: syTarget, encoding: 'utf8' }).trim();
+  const syOid = git(syRepo, ['hash-object', '-w', '--stdin'], { input: syTarget }).trim();
   git(syRepo, ['update-index', '--add', '--cacheinfo', '120000', syOid, '.claude/guards/link.sh']);
   git(syRepo, ['-c', 'user.name=G1', '-c', 'user.email=g1@example.invalid', 'commit', '-qm', 'symlink fixture']);
   const syCommit = git(syRepo, ['rev-parse', 'HEAD']).trim();

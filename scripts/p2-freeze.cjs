@@ -37,6 +37,40 @@ function git(cwd, args, opts = {}) {
 function posix(p) { return String(p).replace(/\\/g, '/'); }
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 
+function inventorySnapshotCommit(repoRoot, relPath, bytes) {
+  const head = String(git(repoRoot, ['rev-parse', 'HEAD'])).trim();
+  try {
+    const committed = git(repoRoot, ['show', head + ':' + relPath], { binary: true });
+    if (Buffer.isBuffer(committed) && committed.equals(bytes)) return head;
+  } catch {}
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-p2-inventory-index-'));
+  const indexPath = path.join(temp, 'index');
+  const env = Object.assign({}, process.env, {
+    GIT_INDEX_FILE: indexPath,
+    GIT_AUTHOR_NAME: 'AxMem Freeze Snapshot',
+    GIT_AUTHOR_EMAIL: 'axmem-freeze@local.invalid',
+    GIT_COMMITTER_NAME: 'AxMem Freeze Snapshot',
+    GIT_COMMITTER_EMAIL: 'axmem-freeze@local.invalid',
+    GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
+    GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
+  });
+  const rawGit = (args, opts = {}) => cp.execFileSync('git', ['-C', repoRoot].concat(args), {
+    env, encoding: opts.binary ? null : 'utf8', input: opts.input, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  try {
+    rawGit(['read-tree', head]);
+    const blobOid = String(rawGit(['hash-object', '-w', '--stdin'], { input: bytes })).trim();
+    rawGit(['update-index', '--add', '--cacheinfo', '100644,' + blobOid + ',' + relPath]);
+    const treeOid = String(rawGit(['write-tree'])).trim();
+    return String(rawGit(['commit-tree', treeOid, '-p', head], { input: 'AxMem inventory buildManifest snapshot\n' })).trim();
+  } catch (e) {
+    const err = String((e.stderr && e.stderr.toString()) || e.message || e).trim();
+    throw new FreezeError('inventory-snapshot-commit', 'cannot create detached inventory snapshot commit: ' + err);
+  } finally {
+    try { fs.rmSync(temp, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function safeRelativeFile(p) {
   if (typeof p !== 'string' || !p.trim()) throw new FreezeError('bad-file-path', 'inventory file path must be a non-empty string');
   const n = posix(p.trim()).replace(/^\.\//, '');
@@ -713,6 +747,102 @@ function normalizeCommandWhitespace(value) {
   return String(value === undefined || value === null ? '' : value).trim().replace(/\s+/g, ' ');
 }
 
+const REVIEWED_INNER_REDIRS = new Set(['>/dev/null', '2>/dev/null', '2>&1', '>&2']);
+const REVIEWED_INNER_ARG_RE = /^(?:--?)?[A-Za-z0-9][A-Za-z0-9._/=-]*$/;
+const REVIEWED_INNER_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REVIEWED_INNER_ENV_WORD_RE = /^[A-Za-z0-9._/:-]+$/;
+const REVIEWED_INNER_QUOTED_RE = /^"[^"$\x60\\]*"$/;
+const REVIEWED_INNER_SHELL_SYNTAX_RE = /(?:\|\||&&|[;|&(){}!\x60#<]|\$\()/;
+
+function reviewedInnerTokens(command) {
+  const input = normalizeCommandWhitespace(command);
+  const tokens = [];
+  let token = '';
+  let quoted = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '"') {
+      quoted = !quoted;
+      token += ch;
+      continue;
+    }
+    if (ch === ' ' && !quoted) {
+      if (token) {
+        tokens.push(token);
+        token = '';
+      }
+      continue;
+    }
+    token += ch;
+  }
+  if (quoted) {
+    return { input, tokens, error: { tokenIndex: tokens.length, token: token || '<eof>', reason: 'unterminated-double-quote' } };
+  }
+  if (token) tokens.push(token);
+  return { input, tokens, error: null };
+}
+
+function reviewedInnerSyntaxError(label, input, tokenIndex, token, reason) {
+  throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand must be one reviewed simple command', {
+    field: 'runtimeHealthProbe.innerCommand',
+    label,
+    actualInnerCommand: input,
+    tokenIndex,
+    token,
+    reason,
+  });
+}
+
+function validateReviewedInnerSimpleCommand(command, label) {
+  const parsed = reviewedInnerTokens(command);
+  const tokens = parsed.tokens;
+  if (parsed.error) {
+    reviewedInnerSyntaxError(label, parsed.input, parsed.error.tokenIndex, parsed.error.token, parsed.error.reason);
+  }
+  let i = 0;
+  while (i < tokens.length) {
+    const eq = tokens[i].indexOf('=');
+    if (eq <= 0) break;
+    const name = tokens[i].slice(0, eq);
+    const value = tokens[i].slice(eq + 1);
+    if (!REVIEWED_INNER_ENV_NAME_RE.test(name)
+        || !(REVIEWED_INNER_QUOTED_RE.test(value) || REVIEWED_INNER_ENV_WORD_RE.test(value))) {
+      reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], 'invalid-env-assignment');
+    }
+    i++;
+  }
+  if (i >= tokens.length) reviewedInnerSyntaxError(label, parsed.input, i, '<eof>', 'missing-interpreter');
+  if (REVIEWED_INNER_SHELL_SYNTAX_RE.test(tokens[i])) {
+    reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], 'shell-control-syntax-not-allowed');
+  }
+  if (tokens[i] !== 'bash' && tokens[i] !== 'node') {
+    reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], 'interpreter-must-be-bash-or-node');
+  }
+  i++;
+  if (i >= tokens.length) reviewedInnerSyntaxError(label, parsed.input, i, '<eof>', 'missing-path');
+  if (!REVIEWED_INNER_QUOTED_RE.test(tokens[i])) {
+    const reason = REVIEWED_INNER_SHELL_SYNTAX_RE.test(tokens[i])
+      ? 'shell-control-syntax-not-allowed'
+      : 'path-must-be-double-quoted-literal';
+    reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], reason);
+  }
+  i++;
+  let redirections = false;
+  for (; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (REVIEWED_INNER_REDIRS.has(t)) {
+      redirections = true;
+      continue;
+    }
+    if (REVIEWED_INNER_SHELL_SYNTAX_RE.test(t)) {
+      reviewedInnerSyntaxError(label, parsed.input, i, t, 'shell-control-syntax-not-allowed');
+    }
+    if (redirections) reviewedInnerSyntaxError(label, parsed.input, i, t, 'argument-after-redirection');
+    if (!REVIEWED_INNER_ARG_RE.test(t)) reviewedInnerSyntaxError(label, parsed.input, i, t, 'invalid-argument');
+  }
+  return parsed.input;
+}
+
 function reviewedInnerCommandForOuter(command) {
   const outer = normalizeCommandWhitespace(command);
   let match = /^(.*\S)\s+\|\|\s+exit\s+0$/.exec(outer);
@@ -745,10 +875,26 @@ function normalizeRuntimeHealthProbe(h, label) {
   }
   const relation = reviewedInnerCommandForOuter(h.command);
   const reviewedInner = normalizeCommandWhitespace(p.innerCommand);
-  if (!relation.outer || relation.multipleTails || reviewedInner !== relation.inner) {
+  if (!relation.outer) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand requires a non-empty outer command', {
+      field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
+      actualInnerCommand: reviewedInner, failOpenTail: relation.kind, multipleFailOpenTails: relation.multipleTails,
+      reason: 'empty-outer-command',
+    });
+  }
+  if (relation.multipleTails) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand cannot rely on multiple approved fail-open tails', {
+      field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
+      actualInnerCommand: reviewedInner, failOpenTail: relation.kind, multipleFailOpenTails: true,
+      reason: 'multiple-approved-fail-open-tails',
+    });
+  }
+  validateReviewedInnerSimpleCommand(reviewedInner, label);
+  if (reviewedInner !== relation.inner) {
     throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand must mechanically match the outer command after removing one approved fail-open tail', {
       field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
       actualInnerCommand: reviewedInner, failOpenTail: relation.kind, multipleFailOpenTails: relation.multipleTails,
+      reason: 'inner-command-does-not-match-outer',
     });
   }
   if (typeof p.reliable !== 'boolean') {
@@ -874,6 +1020,7 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
   try { inv = JSON.parse(inventoryBytes.toString('utf8')); }
   catch (e) { throw new FreezeError('bad-inventory', 'invalid inventory JSON: ' + e.message); }
   const inventorySha256 = sha256(inventoryBytes);
+  const inventoryCommit = inventorySnapshotCommit(inventoryRepoRoot, inventoryRel, inventoryBytes);
   const settingsRel = safeRelativeFile(inv.settingsJson || 'settings.json');
   const settingsAbs = path.join(live, ...settingsRel.split('/'));
   let settingsBytes;
@@ -968,6 +1115,7 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
     },
     inventoryPath: inventoryRel,
     inventorySha256,
+    inventoryCommit,
     settingsJson: settingsRel,
     settingsSha256,
     settingsEvidence: {
@@ -997,6 +1145,21 @@ function writeJsonAtomic(file, value) {
 
 function generate(opts) {
   const manifest = buildManifest(opts);
+  const inventoryAbs = path.resolve(opts.inventoryPath);
+  let inventoryRepoRoot;
+  try { inventoryRepoRoot = String(git(path.dirname(inventoryAbs), ['rev-parse', '--show-toplevel'])).trim(); }
+  catch { throw new FreezeError('bad-inventory', 'inventory must be inside a git repository: ' + inventoryAbs); }
+  const inventoryHead = String(git(inventoryRepoRoot, ['rev-parse', 'HEAD'])).trim();
+  if (manifest.inventoryCommit !== inventoryHead) {
+    throw new FreezeError('inventory-commit-binding', 'formal FREEZE requires inventory bytes to be present in the current inventory repository HEAD; commit inventory before generation');
+  }
+  let committedInventory;
+  try { committedInventory = git(inventoryRepoRoot, ['show', manifest.inventoryCommit + ':' + manifest.inventoryPath], { binary: true }); }
+  catch { throw new FreezeError('inventory-commit-binding', 'inventory path is not present at recorded inventory commit: ' + manifest.inventoryCommit + ':' + manifest.inventoryPath); }
+  const committedSha256 = sha256(committedInventory);
+  if (committedSha256 !== manifest.inventorySha256) {
+    throw new FreezeError('inventory-commit-binding', 'working inventory differs from recorded inventory commit; commit inventory before generating formal FREEZE');
+  }
   writeJsonAtomic(opts.out, manifest);
   return manifest;
 }

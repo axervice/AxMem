@@ -22,10 +22,19 @@ function check(name, ok, detail) {
 }
 
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-p20-selftest-'));
-function git(cwd, args) {
-  return cp.execFileSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+function git(cwd, args, options = {}) {
+  const root = path.resolve(cwd);
+  const env = Object.assign({}, process.env, { GIT_CEILING_DIRECTORIES: path.dirname(root) });
+  return cp.execFileSync('git', ['-C', root].concat(args), { encoding: 'utf8', input: options.input, env, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 try {
+  const gitNoRepo = path.join(T, 'git-no-repo');
+  fs.mkdirSync(gitNoRepo, { recursive: true });
+  let gitNoRepoErr = null;
+  try { git(gitNoRepo, ['rev-parse', '--show-toplevel']); } catch (e) { gitNoRepoErr = e; }
+  check('test git helper fails closed in a directory without .git instead of discovering an ancestor repository',
+    gitNoRepoErr && Number(gitNoRepoErr.status) !== 0 && /not a git repository/i.test(String(gitNoRepoErr.stderr || gitNoRepoErr.message || '')),
+    String(gitNoRepoErr && (gitNoRepoErr.stderr || gitNoRepoErr.message)));
   const repo = path.join(T, 'repo');
   const live = path.join(repo, '.claude');
   fs.mkdirSync(path.join(live, 'guards'), { recursive: true });
@@ -126,8 +135,8 @@ try {
   git(repo, ['checkout', '--', '.claude/guards/gate.cjs']);
 
   const bad = JSON.parse(JSON.stringify(inventory));
-  bad.hooks[0].command = 'node wrong.cjs';
-  bad.hooks[0].runtimeHealthProbe.innerCommand = 'node wrong.cjs';
+  bad.hooks[0].command = 'node "wrong.cjs"';
+  bad.hooks[0].runtimeHealthProbe.innerCommand = 'node "wrong.cjs"';
   fs.writeFileSync(inv, JSON.stringify(bad));
   let mismatch = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { mismatch = e.code; }
@@ -155,27 +164,63 @@ try {
   check('freeze requires structured runtime health probe contract', missingHealthEvidenceCode === 'bad-inventory', String(missingHealthEvidenceCode));
 
   const r15bCandidate = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'docs', 'freeze', 'INVENTORY-V1-CANDIDATE-R12b.json'), 'utf8'));
-  const r15bHealthHooks = r15bCandidate.hooks.filter((h) => h.runtimeHealthProbe);
+  const r15bHealthHooks = r15bCandidate.hooks.filter((h) => (h.disposition === 'port' || h.disposition === 'replace') && h.runtimeHealthProbe);
   let r15bCandidateHealthErr = null;
   try { for (const h of r15bHealthHooks) freeze.normalizeRuntimeHealthProbe(h, h.event + '/' + h.groupIndex + '/' + h.hookIndex); }
   catch (e) { r15bCandidateHealthErr = e; }
-  check('R15b C1 all 19 candidate runtimeHealthProbe relations pass the mechanical gate including 7 reliable=false',
+  check('R15d-B C1 all 19 real port|replace outer/inner pairs still pass the simple-command mechanical gate',
     !r15bCandidateHealthErr && r15bHealthHooks.length === 19 && r15bHealthHooks.filter((h) => h.runtimeHealthProbe.reliable === false).length === 7,
-    String(r15bCandidateHealthErr && r15bCandidateHealthErr.message));
+    JSON.stringify({ count: r15bHealthHooks.length, reliableFalse: r15bHealthHooks.filter((h) => h.runtimeHealthProbe.reliable === false).length, error: r15bCandidateHealthErr && { code: r15bCandidateHealthErr.code, detail: r15bCandidateHealthErr.detail } }));
 
-  const c1Reject = (name, commandValue, innerValue) => {
+  const c1Reject = (name, commandValue, innerValue, expectedReason, requireToken = false) => {
     let err = null;
-    try { freeze.normalizeRuntimeHealthProbe({ command: commandValue, runtimeHealthProbe: { version: 1, innerCommand: innerValue, reliable: true, notes: 'r15b c1 negative' } }, 'R15b-C1/' + name); }
+    try { freeze.normalizeRuntimeHealthProbe({ command: commandValue, runtimeHealthProbe: { version: 1, innerCommand: innerValue, reliable: true, notes: 'r15d-b c1 negative' } }, 'R15d-B-C1/' + name); }
     catch (e) { err = e; }
-    check('R15b C1 rejects ' + name, err && err.code === 'bad-inventory' && err.detail && err.detail.field === 'runtimeHealthProbe.innerCommand', JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+    const tokenDetailOk = !requireToken || (Number.isInteger(err && err.detail && err.detail.tokenIndex)
+      && typeof err.detail.token === 'string' && err.detail.token.length > 0);
+    check('R15d-B C1 rejects ' + name,
+      err && err.code === 'bad-inventory' && err.detail && err.detail.field === 'runtimeHealthProbe.innerCommand'
+        && err.detail.reason === expectedReason && tokenDetailOk,
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
   };
-  c1Reject('unrelated inner=true', 'node hook.cjs', 'true');
-  c1Reject('unapproved outer x || true with stripped inner', 'node hook.cjs || true', 'node hook.cjs');
-  c1Reject('approved || exit 0 outer when inner still contains the mask', 'node hook.cjs || exit 0', 'node hook.cjs || exit 0');
-  c1Reject('more than one approved fail-open tail', 'node hook.cjs || exit 0 || exit 0', 'node hook.cjs || exit 0');
+  const c1Real = r15bHealthHooks.find((h) => h.event === 'PostToolUse' && h.groupIndex === 6 && h.hookIndex === 0);
+  const c1X = c1Real && c1Real.runtimeHealthProbe.innerCommand;
+  check('R15d-B C1 rejection matrix fixture is read from the candidate inventory, not hand-copied',
+    typeof c1X === 'string' && c1Real.command.startsWith(c1X),
+    JSON.stringify({ command: c1Real && c1Real.command, inner: c1X }));
+
+  c1Reject('unrelated inner=true', c1X, 'true', 'interpreter-must-be-bash-or-node', true);
+  c1Reject('unapproved outer x || true with stripped inner', c1X + ' || true', c1X, 'inner-command-does-not-match-outer');
+  c1Reject('approved || exit 0 outer when inner still contains the mask', c1X + ' || exit 0', c1X + ' || exit 0', 'shell-control-syntax-not-allowed', true);
+  c1Reject('more than one approved fail-open tail', c1X + ' || exit 0 || exit 0', c1X + ' || exit 0', 'multiple-approved-fail-open-tails');
+
+  const c1ShellMaskMatrix = [
+    ['x || true || exit 0 / inner x || true', c1X + ' || true || exit 0', c1X + ' || true'],
+    ['x||exit 0', c1X + '||exit 0', c1X + '||exit 0'],
+    ['x || exit 0;', c1X + ' || exit 0;', c1X + ' || exit 0;'],
+    ['x || exit 0 # c', c1X + ' || exit 0 # c', c1X + ' || exit 0 # c'],
+    ['x || exit 00', c1X + ' || exit 00', c1X + ' || exit 00'],
+    ['x || (exit 0)', c1X + ' || (exit 0)', c1X + ' || (exit 0)'],
+    ['x || :', c1X + ' || :', c1X + ' || :'],
+    ['x; exit 0', c1X + '; exit 0', c1X + '; exit 0'],
+    ['x; true', c1X + '; true', c1X + '; true'],
+    ['x | cat', c1X + ' | cat', c1X + ' | cat'],
+    ['x &', c1X + ' &', c1X + ' &'],
+    ['! x', '! ' + c1X, '! ' + c1X],
+    ['$(x)', '$(' + c1X + ')', '$(' + c1X + ')'],
+    ['backticks around x', String.fromCharCode(96) + c1X + String.fromCharCode(96), String.fromCharCode(96) + c1X + String.fromCharCode(96)],
+    ['{ x; }', '{ ' + c1X + '; }', '{ ' + c1X + '; }'],
+    ['(x)', '(' + c1X + ')', '(' + c1X + ')'],
+    ['x && true', c1X + ' && true', c1X + ' && true'],
+  ];
+  for (const [name, outerValue, innerValue] of c1ShellMaskMatrix) {
+    c1Reject('simple-command whitelist: ' + name, outerValue, innerValue, 'shell-control-syntax-not-allowed', true);
+  }
+
   let c1WhitespaceErr = null;
-  try { freeze.normalizeRuntimeHealthProbe({ command: 'node   hook.cjs   ||   exit   0', runtimeHealthProbe: { version: 1, innerCommand: ' node hook.cjs ', reliable: true, notes: 'r15b c1 whitespace' } }, 'R15b-C1/whitespace'); } catch (e) { c1WhitespaceErr = e; }
-  check('R15b C1 compares outer and inner after whitespace normalization', !c1WhitespaceErr, String(c1WhitespaceErr && c1WhitespaceErr.message));
+  const c1WhitespaceOuter = c1X.replace('bash ', 'bash   ') + '   ||   exit   0';
+  try { freeze.normalizeRuntimeHealthProbe({ command: c1WhitespaceOuter, runtimeHealthProbe: { version: 1, innerCommand: ' ' + c1X + ' ', reliable: true, notes: 'r15d-b c1 whitespace' } }, 'R15d-B-C1/whitespace'); } catch (e) { c1WhitespaceErr = e; }
+  check('R15d-B C1 compares outer and inner after whitespace normalization', !c1WhitespaceErr, JSON.stringify(c1WhitespaceErr && { code: c1WhitespaceErr.code, detail: c1WhitespaceErr.detail }));
 
   let c2UnsupportedMatcherErr = null;
   try { freeze.flattenHooks({ hooks: { UserPromptSubmit: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo never' }] }] } }); }
@@ -187,6 +232,49 @@ try {
   try { freeze.flattenHooks({ hooks: { PreToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'echo ok' }] }] } }); }
   catch (e) { c2SupportedMatcherErr = e; }
   check('R15b C2 freeze still accepts supported non-empty tool matcher', !c2SupportedMatcherErr, String(c2SupportedMatcherErr && c2SupportedMatcherErr.message));
+
+
+  const r15dMatcherTypeCases = [
+    ['Stop number', 'Stop', 123, {}],
+    ['UserPromptSubmit array', 'UserPromptSubmit', [], {}],
+    ['Stop object', 'Stop', {}, {}],
+    ['unknown event number', 'NoSuchEvent', 1, {}],
+  ];
+  for (const [name, event, matcher, payload] of r15dMatcherTypeCases) {
+    let err = null;
+    try { runner.matcherMatches(event, matcher, payload); } catch (e) { err = e; }
+    check('R15d-B matcher rejects non-string before event support: ' + name,
+      err && err.code === 'hook-matcher-type' && err.detail && err.detail.event === event,
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  }
+
+  const r15dEmptyAlternatives = ['|', ',', ' | ', 'Bash|', '|Bash', 'Edit||Write', 'Edit,,Write'];
+  for (const matcher of r15dEmptyAlternatives) {
+    let err = null;
+    try { runner.matcherMatches('PreToolUse', matcher, { tool_name: 'Write' }); } catch (e) { err = e; }
+    check('R15d-B matcher rejects empty simple-list alternative: ' + JSON.stringify(matcher),
+      err && err.code === 'hook-matcher-empty-alternative' && err.detail
+        && err.detail.event === 'PreToolUse' && err.detail.matcher === matcher
+        && Number.isInteger(err.detail.alternativeIndex),
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  }
+  check('R15d-B matcher keeps empty/star/omitted as all-match',
+    runner.matcherMatches('PreToolUse', '', { tool_name: 'Anything' })
+      && runner.matcherMatches('PreToolUse', '*', { tool_name: 'Anything' })
+      && runner.matcherMatches('PreToolUse', undefined, { tool_name: 'Anything' }));
+  check('R15d-B matcher keeps valid simple lists exact',
+    runner.matcherMatches('PreToolUse', 'Edit|Write', { tool_name: 'Write' })
+      && runner.matcherMatches('PreToolUse', 'Edit, Write', { tool_name: 'Write' })
+      && !runner.matcherMatches('PreToolUse', 'Edit|Write', { tool_name: 'Bash' }));
+
+  let r15dFreezeEmptyAltErr = null;
+  try { freeze.flattenHooks({ hooks: { PreToolUse: [{ matcher: 'Edit||Write', hooks: [{ type: 'command', command: 'echo never' }] }] } }); }
+  catch (e) { r15dFreezeEmptyAltErr = e; }
+  check('R15d-B matcher freeze entry maps empty alternative to bad-inventory',
+    r15dFreezeEmptyAltErr && r15dFreezeEmptyAltErr.code === 'bad-inventory'
+      && r15dFreezeEmptyAltErr.detail && r15dFreezeEmptyAltErr.detail.matcherErrorCode === 'hook-matcher-empty-alternative'
+      && r15dFreezeEmptyAltErr.detail.event === 'PreToolUse',
+    JSON.stringify({ code: r15dFreezeEmptyAltErr && r15dFreezeEmptyAltErr.code, detail: r15dFreezeEmptyAltErr && r15dFreezeEmptyAltErr.detail }));
 
   const missingManualDependencyList = JSON.parse(JSON.stringify(inventory));
   missingManualDependencyList.files.push({ path: 'guards/dynamic.sh', disposition: 'port', dependencies: [], unresolvedDependencies: [
@@ -305,20 +393,21 @@ try {
       probeExitCode: 0, probeOutcome: 'allow', sourceSyntaxChecked: ['synthetic.cjs'], probeNotes: 'synthetic structured evidence',
     };
   };
+  let synthCaseIndex = 0;
   const cases = fixture.events.flatMap((e) => e.cases.map((c) => {
     const inputCanonical = JSON.stringify(equiv.stable(c.input || {}));
     return {
-      id: c.id, event: e.event, inputCanonical,
+      id: c.id, event: e.event, sandboxRoot: 'C:/tmp/axmem-equiv-case-' + String(synthCaseIndex++).padStart(6, '0'), inputCanonical,
       inputSha256: crypto.createHash('sha256').update(inputCanonical).digest('hex'),
       exitCode: 0,
       stdout: 'root=C:/tmp/frozen ' + '2026-09-29T00:00:00Z',
       stderr: '',
-      stateTree: { ['C:/tmp/frozen/state/' + c.id + '.txt']: { sha256: 'abc', size: 3 } },
+      stateTree: { ['C:/tmp/frozen/state/' + c.id + '.txt']: { sha256: 'a'.repeat(64), size: 3, binary: false } },
       executedHooks: 1,
       hookResults: [{ logicalId: 'synthetic:' + e.event, phase: e.event, matcher: null, disposition: 'port', status: 'ran', exitCode: 0, outcome: 'allow', businessExitCodes: [2], runtimeHealth: synthHealth(c.id, e.event) }],
     };
   }));
-  const report = { schema: 'axmem-equiv-report/v1', source: synthSource, normalization: { pathPrefixes: ['C:/tmp/frozen'] }, cases };
+  const report = { schema: 'axmem-equiv-report/v1', source: synthSource, normalization: { pathPrefixes: cases.map((c) => c.sandboxRoot) }, cases };
   const same = equiv.compareReports(report, JSON.parse(JSON.stringify(report)), []);
   check('equiv frozen-vs-itself is exact green', same.equal && same.unexpected.length === 0 && same.cases === cases.length);
 
@@ -333,6 +422,7 @@ try {
   try {
     const dupReport = JSON.parse(JSON.stringify(report));
     dupReport.cases.push(JSON.parse(JSON.stringify(dupReport.cases[0])));
+    dupReport.normalization.pathPrefixes.push(dupReport.cases[0].sandboxRoot);
     equiv.compareReports(report, dupReport, []);
   } catch (e) { dupCaseErr = e.message; }
   check('equiv rejects duplicate report case ids fail-closed', /duplicate case id/.test(dupCaseErr), dupCaseErr);
@@ -345,6 +435,117 @@ try {
     ]);
   } catch (e) { dupAllowErr = e.message; }
   check('equiv rejects duplicate allowed-difference keys fail-closed', /duplicate allowed difference/.test(dupAllowErr), dupAllowErr);
+
+
+  const compareClone = (value) => JSON.parse(JSON.stringify(value));
+  const compareRebindInput = (c, prompt) => {
+    c.inputCanonical = JSON.stringify(equiv.stable({ prompt, event: c.event, index: 0 }));
+    c.inputSha256 = crypto.createHash('sha256').update(c.inputCanonical).digest('hex');
+  };
+  const expectCompareInfraCode = (name, mutate, allowanceRows, expectedCode, expectedReason) => {
+    const left = compareClone(report), right = compareClone(report);
+    mutate(left, right);
+    let err = null, returned = null;
+    try { returned = equiv.compareReports(left, right, allowanceRows); } catch (e) { err = e; }
+    check(name,
+      err instanceof runner.EquivInfrastructureError
+        && err.code === expectedCode
+        && (!expectedReason || (err.detail && err.detail.reason === expectedReason)),
+      JSON.stringify({
+        returned,
+        error: err && { name: err.constructor && err.constructor.name, code: err.code, detail: err.detail, message: err.message },
+      }));
+  };
+
+  {
+    const left = compareClone(report), right = compareClone(report);
+    const result = equiv.compareReports(left, right, []);
+    check('R15d-B compare healthy identical reports with runner-shaped stateTree compare green',
+      result.equal === true && result.unexpected.length === 0);
+  }
+  {
+    const left = compareClone(report), right = compareClone(report);
+    right.cases[0].stdout = 'changed';
+    const result = equiv.compareReports(left, right, [{ caseId: left.cases[0].id, field: 'stdout', reason: 'reviewed output allowance' }]);
+    check('R15d-B compare healthy non-identity stdout allowance remains available',
+      result.equal === true && result.allowed.length === 1 && result.allowed[0].field === 'stdout',
+      JSON.stringify(result));
+  }
+  {
+    const left = compareClone(report), right = compareClone(report);
+    for (const candidate of [left, right]) {
+      for (const c of candidate.cases) {
+        c.hookResults[0].disposition = 'private-exclude';
+        c.hookResults[0].status = 'skipped';
+        c.hookResults[0].reason = 'synthetic comparator contract fixture';
+        c.hookResults[0].externalDependencies = [];
+        delete c.hookResults[0].exitCode;
+        delete c.hookResults[0].outcome;
+        delete c.hookResults[0].businessExitCodes;
+        delete c.hookResults[0].runtimeHealth;
+        candidate.cases.find((x) => x.id === c.id).executedHooks = 0;
+      }
+    }
+    const result = equiv.compareReports(left, right, []);
+    check('R15d-B compare healthy skipped private-exclude disposition remains valid',
+      result.equal === true, JSON.stringify(result));
+  }
+
+  expectCompareInfraCode(
+    'R15d-B compare allowance cannot target inputSha256',
+    (left, right) => { compareRebindInput(right.cases[0], 'different'); },
+    [{ caseId: report.cases[0].id, field: 'inputSha256', reason: 'must never waive input identity' }],
+    'allowance-forbidden-field');
+
+  expectCompareInfraCode(
+    'R15d-B compare allowance cannot target inputCanonical',
+    (left, right) => { compareRebindInput(right.cases[0], 'different'); },
+    [{ caseId: report.cases[0].id, field: 'inputCanonical', reason: 'must never waive normalized input identity' }],
+    'allowance-forbidden-field');
+
+  expectCompareInfraCode(
+    'R15d-B compare unknown hook disposition is rejected',
+    (left, right) => {
+      left.cases[0].hookResults[0].disposition = 'mystery';
+      right.cases[0].hookResults[0].disposition = 'mystery';
+    },
+    [],
+    'report-bad-disposition',
+    'unknown-disposition');
+
+  expectCompareInfraCode(
+    'R15d-B compare skipped plus port disposition is rejected',
+    (left, right) => {
+      for (const candidate of [left, right]) {
+        candidate.cases[0].hookResults[0].status = 'skipped';
+        candidate.cases[0].hookResults[0].reason = 'synthetic comparator contract fixture';
+        candidate.cases[0].hookResults[0].externalDependencies = [];
+        candidate.cases[0].executedHooks = 0;
+      }
+    },
+    [],
+    'report-bad-disposition',
+    'skipped-disposition-mismatch');
+
+  expectCompareInfraCode(
+    'R15d-B compare null stateTree entry is rejected',
+    (left, right) => {
+      left.cases[0].stateTree = { 'bad.txt': null };
+      right.cases[0].stateTree = { 'bad.txt': null };
+    },
+    [],
+    'report-bad-state-entry',
+    'entry-must-be-object');
+
+  expectCompareInfraCode(
+    'R15d-B compare stateTree digest missing binary is rejected',
+    (left, right) => {
+      left.cases[0].stateTree = { 'bad.txt': { sha256: 'c'.repeat(64), size: 1 } };
+      right.cases[0].stateTree = { 'bad.txt': { sha256: 'c'.repeat(64), size: 1 } };
+    },
+    [],
+    'report-bad-state-entry',
+    'invalid-file-entry');
 
 } catch (e) {
   console.error(e && e.stack || e);
