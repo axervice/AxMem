@@ -304,8 +304,9 @@ try {
     "  XDG_STATE_HOME:env.XDG_STATE_HOME,XDG_CACHE_HOME:env.XDG_CACHE_HOME,HERMES_HOME:env.HERMES_HOME,TEMP:env.TEMP,TMP:env.TMP,TMPDIR:env.TMPDIR,",
     "  CLAUDE_CONFIG_DIR:env.CLAUDE_CONFIG_DIR,CLAUDE_SESSION_ID:env.CLAUDE_SESSION_ID,CLAUDE_CODE_SESSION_ID:env.CLAUDE_CODE_SESSION_ID,",
     "  BASH_ENV:Object.keys(env).find(k=>k.toLowerCase()==='bash_env')||null,NODE_OPTIONS:env.NODE_OPTIONS||null,NODE_PATH:env.NODE_PATH||null,",
+    "  inherited:Object.fromEntries(['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDE_CONFIG_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH'].map(n=>{const k=Object.keys(env).find(x=>x.toLowerCase()===n.toLowerCase());return [n,k?env[k]:null];})),",
     "  gitVersion:run(['--version']),hooksPath:run(['config','core.hooksPath']),gitTop:run(['rev-parse','--show-toplevel']),",
-    "  pathKeys:Object.keys(env).filter(k=>k.toLowerCase()==='path')",
+    "  pathKeys:Object.keys(env).filter(k=>k.toLowerCase()==='path'),PATH:env.PATH||''",
     "}));",
     '',
   ].join('\n'));
@@ -317,6 +318,8 @@ try {
     "let b;",
     "if(j.prompt==='b80') b=Buffer.from([0x80]);",
     "else if(j.prompt==='b81') b=Buffer.from([0x81]);",
+    "else if(j.prompt==='bom') b=Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from('same','utf8')]);",
+    "else if(j.prompt==='nobom') b=Buffer.from('same','utf8');",
     "else b=Buffer.concat([Buffer.from(String(process.env.HOME).replace(/\\\\/g,'/')+'\\n','latin1'),Buffer.from([0x80])]);",
     "fs.writeFileSync(path.join(process.env.HOME,'r15b-a5-state.bin'),b);",
     '',
@@ -390,21 +393,40 @@ try {
   const a2LureRepo = path.join(T, 'r15b-a2-lure-repo');
   fs.mkdirSync(a2LureRepo, { recursive: true });
   git(a2LureRepo, ['init', '-q']);
-  const parentEnvKeys = ['BASH_ENV','Bash_Env','NODE_OPTIONS','NODE_PATH','APPDATA','LOCALAPPDATA','GIT_CONFIG_GLOBAL','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0','CLAUDE_CODE_FAKE','PIPE_GATE_FAKE','TEMP','TMP'];
+  const r15dParentHome = path.join(T, 'r15d-s2a-parent-home');
+  const r15dFakeBin = path.join(live, 'r15d-s2a-fake-bin');
+  const r15dFakeCmd = path.join(r15dFakeBin, 'r15d-fakecmd');
+  fs.mkdirSync(r15dParentHome, { recursive: true });
+  fs.mkdirSync(r15dFakeBin, { recursive: true });
+  fs.writeFileSync(r15dFakeCmd, '#!/usr/bin/env sh\\nprintf inherited-live-path\\n');
+  try { fs.chmodSync(r15dFakeCmd, 0o755); } catch {}
+  const parentEnvKeys = ['BASH_ENV','Bash_Env','NODE_OPTIONS','NODE_PATH','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','APPDATA','LOCALAPPDATA','GIT_CONFIG_GLOBAL','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0','GIT_TRACE2_EVENT','CLAUDE_CODE_FAKE','CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDE_CONFIG_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','PIPE_GATE_FAKE','HOME','USERPROFILE','PATH','TEMP','TMP'];
   const parentEnvBefore = Object.fromEntries(parentEnvKeys.map((k) => [k, process.env[k]]));
   process.env.Bash_Env = a2BashEnv;
   process.env.NODE_OPTIONS = '--require=' + a2NodeRequire;
-  process.env.NODE_PATH = path.join(T, 'r15b-a2-node-path');
+  process.env.NODE_PATH = path.join(live, 'r15d-node-path');
+  process.env.NODE_V8_COVERAGE = path.join(r15dParentHome, 'coverage');
+  process.env.NODE_COMPILE_CACHE = path.join(repo, 'r15d-node-cache');
   process.env.APPDATA = a2App;
   process.env.LOCALAPPDATA = path.join(T, 'r15b-a2-localapp');
   process.env.GIT_CONFIG_GLOBAL = a2GitConfig;
   process.env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
   process.env.GIT_CONFIG_VALUE_0 = a2Hooks;
+  process.env.GIT_TRACE2_EVENT = path.join(repo, 'r15d-git-trace.json');
   process.env.CLAUDE_CODE_FAKE = 'must-be-removed';
+  process.env.CLAUDE_HOME = r15dParentHome;
+  process.env.CLAUDE_PROJECT_DIR = live;
+  process.env.CLAUDE_CONFIG_DIR = path.join(repo, 'r15d-parent-claude-config');
+  process.env.CLAUDECODE = path.join(live, 'r15d-claudecode');
+  process.env.OneDrive = path.join(r15dParentHome, 'OneDrive');
+  process.env.HERMES_CONFIG_PATH = path.join(live, 'r15d-hermes-config');
   process.env.PIPE_GATE_FAKE = 'must-be-removed';
+  process.env.HOME = r15dParentHome;
+  process.env.USERPROFILE = r15dParentHome;
+  process.env.PATH = r15dFakeBin + ';' + String(parentEnvBefore.PATH || '');
   process.env.TEMP = a2LureRepo;
   process.env.TMP = a2LureRepo;
-  const a2Command = 'node "' + a2Abs.replace(/\\/g, '/') + '"';
+  const a2Command = 'command -v r15d-fakecmd || true; node "' + a2Abs.replace(/\\/g, '/') + '"';
   const a2Freeze = bindSingle(4, 'a2-env', a2Command, [a2Rel]);
   let a2Run;
   try {
@@ -421,6 +443,20 @@ try {
   check('R15b A2 preserves executable PATH, dedupes Path/PATH case-insensitively, and scrubs inherited Git config',
     a2Observed.gitVersion.status === 0 && /^git version /.test(a2Observed.gitVersion.stdout) && a2Observed.hooksPath.stdout === '' && Array.isArray(a2Observed.pathKeys) && a2Observed.pathKeys.length === 1, JSON.stringify(a2Observed));
   check('R15b A2 GIT_CEILING blocks discovery of the parent lure repository', a2Observed.gitTop.status !== 0 && a2Observed.gitTop.stdout === '', JSON.stringify(a2Observed.gitTop));
+  const r15dInjectedAbsent = ['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH']
+    .every((k) => a2Observed.inherited[k] === null);
+  const r15dManagedSafe = typeof a2Observed.inherited.CLAUDE_CONFIG_DIR === 'string' && a2Observed.inherited.CLAUDE_CONFIG_DIR.includes('<ROOT>')
+    && [a2Observed.HOME,a2Observed.USERPROFILE,a2Observed.TEMP,a2Observed.TMP,a2Observed.TMPDIR].every((v) => typeof v === 'string' && v.includes('<ROOT>'));
+  check('R15d S2a N3 scrubs inherited CLAUDE/GIT_TRACE/NODE families and sensitive-root fallback values while preserving runner sandbox env',
+    r15dInjectedAbsent && r15dManagedSafe,
+    JSON.stringify({ inherited: a2Observed.inherited, HOME: a2Observed.HOME, USERPROFILE: a2Observed.USERPROFILE, TEMP: a2Observed.TEMP, TMP: a2Observed.TMP, TMPDIR: a2Observed.TMPDIR }));
+  check('R15d S2a N3 PATH removes live-source entries so inherited fake command is not resolvable',
+    !a2Run.stdout.split(/\r?\n/).some((line) => /r15d-fakecmd/.test(line)) && !String(a2Observed.PATH || '').toLowerCase().includes(r15dFakeBin.replace(/\\/g, '/').toLowerCase()),
+    JSON.stringify({ stdout: a2Run.stdout, PATH: a2Observed.PATH }));
+  const r15dExpectedScrubbed = ['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH'];
+  check('R15d S2a N3 reports scrubbed inherited key names without values',
+    Array.isArray(a2Run.environmentScrubbedKeys) && r15dExpectedScrubbed.every((k) => a2Run.environmentScrubbedKeys.some((x) => x.toLowerCase() === k.toLowerCase())) && a2Run.environmentScrubbedKeys.every((x) => typeof x === 'string' && !/[\\/=:]/.test(x)),
+    JSON.stringify(a2Run.environmentScrubbedKeys));
 
   const a3Command = 'node "' + a3Abs.replace(/\\/g, '/') + '"';
   const a3Freeze = bindSingle(4, 'a3-path-guard', a3Command, [a3Rel]);
@@ -472,6 +508,20 @@ try {
   const a5Path1 = stateRec(a5Run('a5-path-1', 'path'));
   const a5Path2 = stateRec(a5Run('a5-path-2', 'path'));
   check('R15b A5 invalid UTF-8 state still normalizes sandbox path deterministically', a5Path1 && a5Path2 && a5Path1.sha256 === a5Path2.sha256, JSON.stringify({ a5Path1, a5Path2 }));
+  const r15dBomRun = a5Run('r15d-s2a-bom', 'bom');
+  const r15dNoBomRun = a5Run('r15d-s2a-nobom', 'nobom');
+  const r15dBomRec = stateRec(r15dBomRun);
+  const r15dNoBomRec = stateRec(r15dNoBomRun);
+  check('R15d S2a B-1 state digest preserves leading UTF-8 BOM bytes',
+    r15dBomRec && r15dNoBomRec && r15dBomRec.sha256 !== r15dNoBomRec.sha256 && r15dBomRec.size === r15dNoBomRec.size + 3,
+    JSON.stringify({ bom: r15dBomRec, noBom: r15dNoBomRec }));
+  const r15dBomLeft = clone(reportA), r15dBomRight = clone(reportA);
+  r15dBomLeft.cases[0].stateTree = clone(r15dBomRun.stateTree);
+  r15dBomRight.cases[0].stateTree = clone(r15dNoBomRun.stateTree);
+  const r15dBomCompare = equiv.compareReports(r15dBomLeft, r15dBomRight, []);
+  check('R15d S2a B-1 compareReports detects state files differing only by leading UTF-8 BOM',
+    r15dBomCompare.equal === false && r15dBomCompare.unexpected.some((d) => d.caseId === reportA.cases[0].id && d.field === 'stateTree'),
+    JSON.stringify(r15dBomCompare.unexpected));
 
   // R15b A6: materialization gate bound to the real candidate inventory hook identities/derived fields.
   const a6AxmemRoot = path.join(__dirname, '..');

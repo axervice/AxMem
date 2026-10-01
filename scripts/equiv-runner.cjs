@@ -296,20 +296,61 @@ function gitCeilingForSandbox(sandboxHome) {
   try { parent = fs.realpathSync.native(parent); } catch {}
   return String(parent).replace(/\\/g, '/').replace(/\/+$/, '');
 }
-function isolatedEnv(sandboxHome, sessionId) {
+const ENV_SCRUBBED_KEYS = Symbol('axmem-env-scrubbed-keys');
+
+function portableRootRegex(root) {
+  const info = portablePathInfo(root);
+  const tail = info.rest.map(regexEscape).join('[\\\\/]+');
+  if (!tail) return null;
+  const variants = info.drive ? [
+    regexEscape(info.drive) + ':[\\\\/]+' + tail,
+    '[\\\\/]+cygdrive[\\\\/]+' + regexEscape(info.drive) + '[\\\\/]+' + tail,
+    '[\\\\/]+' + regexEscape(info.drive) + '[\\\\/]+' + tail,
+    '[\\\\/]+' + tail,
+  ] : ['[\\\\/]+' + tail];
+  return new RegExp('(^|[^A-Za-z0-9_.~-])(' + variants.join('|') + ')(?=$|[^A-Za-z0-9_.~-])', process.platform === 'win32' ? 'gi' : 'g');
+}
+
+function maskPortableRoot(value, root) {
+  const re = root ? portableRootRegex(root) : null;
+  return re ? String(value || '').replace(re, (all, prefix) => prefix + '<SANDBOX>') : String(value || '');
+}
+
+function inheritedValueLeaksRoot(value, roots, sandboxHome) {
+  let candidate = maskPortableRoot(value, sandboxHome);
+  for (const root of roots) {
+    const re = root ? portableRootRegex(root) : null;
+    if (re && re.test(candidate)) return true;
+  }
+  return false;
+}
+
+function isolatedEnv(sandboxHome, sessionId, context = {}) {
   const absHome = path.resolve(sandboxHome);
   const home = posix(absHome);
   const tmp = path.join(absHome, '.tmp');
   fs.mkdirSync(tmp, { recursive: true });
-  const env = Object.assign({}, process.env);
-  deleteEnvPatternCI(env, /^BASH_FUNC_.*%%$/i);
-  deleteEnvPatternCI(env, /^(?:PMM_|AXMEM_)/i);
-  deleteEnvPatternCI(env, /^XDG_/i);
-  deleteEnvPatternCI(env, /^PIPE_GATE_/i);
-  deleteEnvPatternCI(env, /^CLAUDE_CODE_/i);
-  for (const name of DANGEROUS_ENV_EXACT) deleteEnvKeyCI(env, name);
-  for (const name of gitLocalEnvVars()) deleteEnvKeyCI(env, name);
-  deleteEnvPatternCI(env, /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/i);
+  const inherited = Object.assign({}, process.env);
+  const env = Object.assign({}, inherited);
+  const scrubbed = new Set();
+  const deletePattern = (re) => {
+    for (const k of Object.keys(env)) if (re.test(k)) { scrubbed.add(k); delete env[k]; }
+  };
+  const deleteExact = (name) => {
+    const want = String(name).toLowerCase();
+    for (const k of Object.keys(env)) if (k.toLowerCase() === want) { scrubbed.add(k); delete env[k]; }
+  };
+  deletePattern(/^BASH_FUNC_.*%%$/i);
+  deletePattern(/^(?:PMM_|AXMEM_)/i);
+  deletePattern(/^XDG_/i);
+  deletePattern(/^PIPE_GATE_/i);
+  deletePattern(/^CLAUDE_/i);
+  deletePattern(/^CLAUDECODE$/i);
+  deletePattern(/^GIT_TRACE/i);
+  deletePattern(/^NODE_/i);
+  for (const name of DANGEROUS_ENV_EXACT) deleteExact(name);
+  for (const name of gitLocalEnvVars()) deleteExact(name);
+  deletePattern(/^GIT_CONFIG_(?:KEY|VALUE)_\d+$/i);
   const parsed = path.parse(absHome);
   const drive = process.platform === 'win32' ? parsed.root.replace(/[\\/]+$/, '') : '';
   const homePath = process.platform === 'win32' && drive ? posix(absHome).slice(drive.length) : home;
@@ -331,6 +372,12 @@ function isolatedEnv(sandboxHome, sessionId) {
     AXMEM_EQUIV_ACTIVE: '1',
     GIT_CEILING_DIRECTORIES: gitCeilingForSandbox(absHome),
   };
+  const managed = new Set(Object.keys(safe).concat(['CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'PATH']).map((k) => k.toLowerCase()));
+  const sensitiveRoots = [inherited.USERPROFILE || inherited.HOME || '', context.sourceRoot || '', context.axmemRepoRoot || ''].filter(Boolean);
+  for (const k of Object.keys(env)) {
+    if (managed.has(k.toLowerCase())) continue;
+    if (inheritedValueLeaksRoot(env[k], sensitiveRoots, absHome)) { scrubbed.add(k); delete env[k]; }
+  }
   for (const [k, v] of Object.entries(safe)) setEnvKeyCI(env, k, v);
   if (typeof sessionId === 'string' && sessionId) {
     setEnvKeyCI(env, 'CLAUDE_SESSION_ID', sessionId);
@@ -339,6 +386,7 @@ function isolatedEnv(sandboxHome, sessionId) {
     deleteEnvKeyCI(env, 'CLAUDE_SESSION_ID');
     deleteEnvKeyCI(env, 'CLAUDE_CODE_SESSION_ID');
   }
+  const parentPath = String(inherited.PATH || '');
   if (process.platform === 'win32') {
     const toMsys = (p) => {
       const s = String(p || '').replace(/\\/g, '/');
@@ -346,10 +394,39 @@ function isolatedEnv(sandboxHome, sessionId) {
       return m ? '/' + m[1].toLowerCase() + '/' + m[2] : s;
     };
     const entries = [toMsys(path.dirname(process.execPath)), '/usr/bin', '/bin'];
-    for (const e of String(process.env.PATH || '').split(';')) if (e.trim()) entries.push(toMsys(e.trim()));
+    for (const e of parentPath.split(';')) {
+      if (!e.trim()) continue;
+      if (context.sourceRoot && inheritedValueLeaksRoot(e.trim(), [context.sourceRoot], absHome)) { scrubbed.add('PATH'); continue; }
+      entries.push(toMsys(e.trim()));
+    }
     setEnvKeyCI(env, 'PATH', [...new Set(entries)].join(':'));
+  } else if (parentPath) {
+    const entries = [];
+    for (const e of parentPath.split(path.delimiter)) {
+      if (!e.trim()) continue;
+      if (context.sourceRoot && inheritedValueLeaksRoot(e.trim(), [context.sourceRoot], absHome)) { scrubbed.add('PATH'); continue; }
+      entries.push(e.trim());
+    }
+    setEnvKeyCI(env, 'PATH', [...new Set(entries)].join(path.delimiter));
   }
+  Object.defineProperty(env, ENV_SCRUBBED_KEYS, { value: [...scrubbed].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())), enumerable: false });
   return env;
+}
+
+function spawnSyncSandboxed(file, args, options) {
+  const savedNodeEnv = [];
+  for (const k of Object.keys(process.env)) {
+    if (!/^NODE_/i.test(k)) continue;
+    savedNodeEnv.push([k, process.env[k]]);
+    delete process.env[k];
+  }
+  try {
+    const opts = Object.assign({}, options || {});
+    if (opts.env) opts.env = Object.assign({}, opts.env);
+    return cp.spawnSync(file, args, opts);
+  } finally {
+    for (const [k, v] of savedNodeEnv) process.env[k] = v;
+  }
 }
 
 function walkFiles(root) {
@@ -369,7 +446,7 @@ function walkFiles(root) {
 
 function normalizedFileDigest(buf, prefixes) {
   let text, encoding = 'utf8', invalidUtf8 = false;
-  try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buf); }
   catch { text = buf.toString('latin1'); encoding = 'latin1'; invalidUtf8 = true; }
   const normalized = normalizeRuntimeText(text, prefixes);
   const norm = Buffer.from(normalized, encoding);
@@ -606,11 +683,11 @@ function preflightHookSources(h, sandboxSource, env, logicalId, timeoutMs) {
     const ext = path.extname(rel).toLowerCase();
     let rr = null;
     if (ext === '.js' || ext === '.cjs' || ext === '.mjs') {
-      rr = cp.spawnSync(process.execPath, ['--check', abs], {
+      rr = spawnSyncSandboxed(process.execPath, ['--check', abs], {
         cwd: sandboxSource, env, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,
       });
     } else if (ext === '.sh') {
-      rr = cp.spawnSync(findBash(), ['--noprofile', '--norc', '-n', abs], {
+      rr = spawnSyncSandboxed(findBash(), ['--noprofile', '--norc', '-n', abs], {
         cwd: sandboxSource, env, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,
       });
     }
@@ -629,7 +706,7 @@ function preflightHookSources(h, sandboxSource, env, logicalId, timeoutMs) {
 
 function runHook(command, payload, env, cwd, timeoutMs, businessExitCodes = []) {
   const bash = findBash();
-  const r = cp.spawnSync(bash, ['--noprofile', '--norc', '-c', command], {
+  const r = spawnSyncSandboxed(bash, ['--noprofile', '--norc', '-c', command], {
     cwd, env, input: JSON.stringify(payload) + '\n', encoding: 'utf8',
     timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024,
   });
@@ -658,7 +735,7 @@ function runHook(command, payload, env, cwd, timeoutMs, businessExitCodes = []) 
   };
 }
 
-function runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRoot,
+function runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRoot, axmemRepoRoot,
   outerHome, outerSource, outerEnv, outerPayload, timeoutMs, contract }) {
   const initialOuter = stateDigest(outerHome);
   const probeHome = copySandbox(outerHome);
@@ -669,7 +746,7 @@ function runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRo
     const probeSource = path.join(probeHome, ...liveRel.split('/'));
     const probeInput = prepareCaseInput(c && c.input ? c.input : {}, probeHome);
     const probeCase = Object.assign({}, c, { input: probeInput });
-    const probeEnv = isolatedEnv(probeHome, probeInput.session_id);
+    const probeEnv = isolatedEnv(probeHome, probeInput.session_id, { sourceRoot, axmemRepoRoot });
     const probePayload = casePayload(group, probeCase, phase, probeHome);
     const sourceBinding = sourceBindingForHook(freeze, h);
     const outerCommand = String(h.command || '');
@@ -748,7 +825,7 @@ function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaul
     const preparedInput = prepareCaseInput(c && c.input ? c.input : {}, sandboxHome);
     const runCaseDef = Object.assign({}, c, { input: preparedInput });
     const before = walkFiles(sandboxHome);
-    const env = isolatedEnv(sandboxHome, preparedInput.session_id);
+    const env = isolatedEnv(sandboxHome, preparedInput.session_id, { sourceRoot, axmemRepoRoot });
     const hookResults = [];
     const stdout = [], stderr = [];
     let exitCode = 0, executed = 0;
@@ -766,7 +843,7 @@ function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaul
         const command = rewriteSourceRoot(h.command, sourceRoot, sandboxSource);
         const timeoutMs = Number.isFinite(Number(h.timeout)) && Number(h.timeout) > 0 ? Number(h.timeout) * 1000 : defaultTimeoutMs;
         const contract = hookExitContract(h, logicalId);
-        const runtimeHealth = runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRoot, outerHome: sandboxHome, outerSource: sandboxSource, outerEnv: env, outerPayload: payload, timeoutMs, contract });
+        const runtimeHealth = runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRoot, axmemRepoRoot, outerHome: sandboxHome, outerSource: sandboxSource, outerEnv: env, outerPayload: payload, timeoutMs, contract });
         const sourceSyntaxChecked = preflightHookSources(h, sandboxSource, env, logicalId, timeoutMs);
         const rr = runHook(command, payload, env, sandboxHome, timeoutMs, contract.businessExitCodes);
         if (rr.infrastructureFailure) throw new EquivInfrastructureError('hook-infrastructure-failure', 'hook infrastructure failure for ' + logicalId + ': ' + rr.infrastructureReason, { logicalId, phase, disposition: h.disposition, exitCode: rr.exitCode, reason: rr.infrastructureReason, businessExitCodes: contract.businessExitCodes, runtimeHealth });
@@ -780,7 +857,7 @@ function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaul
     if (hookResults.length === 0) throw new EquivInfrastructureError('fixture-no-matching-hooks', 'no matching hooks for fixture case ' + c.id + ' (' + group.event + ')', { caseId: c.id, event: group.event });
     const prefixes = [sandboxHome, sandboxSource, sourceRoot];
     const after = walkFiles(sandboxHome);
-    const result = { id: c.id, event: group.event, inputCanonical: inputBinding.inputCanonical, inputSha256: inputBinding.inputSha256, exitCode, stdout: normalizeRuntimeText(stdout.join(''), prefixes), stderr: normalizeRuntimeText(stderr.join(''), prefixes), stateTree: diffState(before, after, prefixes), hookResults, executedHooks: executed };
+    const result = { id: c.id, event: group.event, inputCanonical: inputBinding.inputCanonical, inputSha256: inputBinding.inputSha256, exitCode, stdout: normalizeRuntimeText(stdout.join(''), prefixes), stderr: normalizeRuntimeText(stderr.join(''), prefixes), stateTree: diffState(before, after, prefixes), hookResults, executedHooks: executed, environmentScrubbedKeys: (env[ENV_SCRUBBED_KEYS] || []).slice() };
     Object.defineProperty(result, 'sandboxRoot', { value: posix(sandboxHome), enumerable: false });
     return result;
   } finally {
