@@ -393,7 +393,7 @@ try {
       exitCode: 0,
       stdout: 'root=C:/tmp/frozen ' + '2026-09-29T00:00:00Z',
       stderr: '',
-      stateTree: { ['C:/tmp/frozen/state/' + c.id + '.txt']: { sha256: 'abc', size: 3 } },
+      stateTree: { ['C:/tmp/frozen/state/' + c.id + '.txt']: { sha256: 'a'.repeat(64), size: 3, binary: false } },
       executedHooks: 1,
       hookResults: [{ logicalId: 'synthetic:' + e.event, phase: e.event, matcher: null, disposition: 'port', status: 'ran', exitCode: 0, outcome: 'allow', businessExitCodes: [2], runtimeHealth: synthHealth(c.id, e.event) }],
     };
@@ -426,6 +426,117 @@ try {
     ]);
   } catch (e) { dupAllowErr = e.message; }
   check('equiv rejects duplicate allowed-difference keys fail-closed', /duplicate allowed difference/.test(dupAllowErr), dupAllowErr);
+
+
+  const compareClone = (value) => JSON.parse(JSON.stringify(value));
+  const compareRebindInput = (c, prompt) => {
+    c.inputCanonical = JSON.stringify(equiv.stable({ prompt, event: c.event, index: 0 }));
+    c.inputSha256 = crypto.createHash('sha256').update(c.inputCanonical).digest('hex');
+  };
+  const expectCompareInfraCode = (name, mutate, allowanceRows, expectedCode, expectedReason) => {
+    const left = compareClone(report), right = compareClone(report);
+    mutate(left, right);
+    let err = null, returned = null;
+    try { returned = equiv.compareReports(left, right, allowanceRows); } catch (e) { err = e; }
+    check(name,
+      err instanceof runner.EquivInfrastructureError
+        && err.code === expectedCode
+        && (!expectedReason || (err.detail && err.detail.reason === expectedReason)),
+      JSON.stringify({
+        returned,
+        error: err && { name: err.constructor && err.constructor.name, code: err.code, detail: err.detail, message: err.message },
+      }));
+  };
+
+  {
+    const left = compareClone(report), right = compareClone(report);
+    const result = equiv.compareReports(left, right, []);
+    check('R15d-B compare healthy identical reports with runner-shaped stateTree compare green',
+      result.equal === true && result.unexpected.length === 0);
+  }
+  {
+    const left = compareClone(report), right = compareClone(report);
+    right.cases[0].stdout = 'changed';
+    const result = equiv.compareReports(left, right, [{ caseId: left.cases[0].id, field: 'stdout', reason: 'reviewed output allowance' }]);
+    check('R15d-B compare healthy non-identity stdout allowance remains available',
+      result.equal === true && result.allowed.length === 1 && result.allowed[0].field === 'stdout',
+      JSON.stringify(result));
+  }
+  {
+    const left = compareClone(report), right = compareClone(report);
+    for (const candidate of [left, right]) {
+      for (const c of candidate.cases) {
+        c.hookResults[0].disposition = 'private-exclude';
+        c.hookResults[0].status = 'skipped';
+        c.hookResults[0].reason = 'synthetic comparator contract fixture';
+        c.hookResults[0].externalDependencies = [];
+        delete c.hookResults[0].exitCode;
+        delete c.hookResults[0].outcome;
+        delete c.hookResults[0].businessExitCodes;
+        delete c.hookResults[0].runtimeHealth;
+        candidate.cases.find((x) => x.id === c.id).executedHooks = 0;
+      }
+    }
+    const result = equiv.compareReports(left, right, []);
+    check('R15d-B compare healthy skipped private-exclude disposition remains valid',
+      result.equal === true, JSON.stringify(result));
+  }
+
+  expectCompareInfraCode(
+    'R15d-B compare allowance cannot target inputSha256',
+    (left, right) => { compareRebindInput(right.cases[0], 'different'); },
+    [{ caseId: report.cases[0].id, field: 'inputSha256', reason: 'must never waive input identity' }],
+    'allowance-forbidden-field');
+
+  expectCompareInfraCode(
+    'R15d-B compare allowance cannot target inputCanonical',
+    (left, right) => { compareRebindInput(right.cases[0], 'different'); },
+    [{ caseId: report.cases[0].id, field: 'inputCanonical', reason: 'must never waive normalized input identity' }],
+    'allowance-forbidden-field');
+
+  expectCompareInfraCode(
+    'R15d-B compare unknown hook disposition is rejected',
+    (left, right) => {
+      left.cases[0].hookResults[0].disposition = 'mystery';
+      right.cases[0].hookResults[0].disposition = 'mystery';
+    },
+    [],
+    'report-bad-disposition',
+    'unknown-disposition');
+
+  expectCompareInfraCode(
+    'R15d-B compare skipped plus port disposition is rejected',
+    (left, right) => {
+      for (const candidate of [left, right]) {
+        candidate.cases[0].hookResults[0].status = 'skipped';
+        candidate.cases[0].hookResults[0].reason = 'synthetic comparator contract fixture';
+        candidate.cases[0].hookResults[0].externalDependencies = [];
+        candidate.cases[0].executedHooks = 0;
+      }
+    },
+    [],
+    'report-bad-disposition',
+    'skipped-disposition-mismatch');
+
+  expectCompareInfraCode(
+    'R15d-B compare null stateTree entry is rejected',
+    (left, right) => {
+      left.cases[0].stateTree = { 'bad.txt': null };
+      right.cases[0].stateTree = { 'bad.txt': null };
+    },
+    [],
+    'report-bad-state-entry',
+    'entry-must-be-object');
+
+  expectCompareInfraCode(
+    'R15d-B compare stateTree digest missing binary is rejected',
+    (left, right) => {
+      left.cases[0].stateTree = { 'bad.txt': { sha256: 'c'.repeat(64), size: 1 } };
+      right.cases[0].stateTree = { 'bad.txt': { sha256: 'c'.repeat(64), size: 1 } };
+    },
+    [],
+    'report-bad-state-entry',
+    'invalid-file-entry');
 
 } catch (e) {
   console.error(e && e.stack || e);
