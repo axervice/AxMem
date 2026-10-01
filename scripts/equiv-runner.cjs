@@ -237,20 +237,27 @@ function scanLiteralTmpSource(relPath, text, options = {}) {
   const rel = safeRel(relPath);
   const src = String(text);
   const ext = path.extname(rel).toLowerCase();
-  const pureData = ext === '.json' || ext === '.md';
   const firstLine = src.split(/\r?\n/, 1)[0] || '';
   const shebang = firstLine.startsWith('#!') ? firstLine.slice(2).trim() : null;
-  let shell = ext === '.sh' || ext === '.bash';
-  let js = ext === '.js' || ext === '.cjs' || ext === '.mjs';
+  const sourceTypeHint = options.sourceTypeHint === undefined || options.sourceTypeHint === null ? null : String(options.sourceTypeHint);
+  if (sourceTypeHint !== null && sourceTypeHint !== 'shell' && sourceTypeHint !== 'js') {
+    throw new EquivInfrastructureError('sandbox-source-type-unknown', 'invalid executable source type hint for literal /tmp preflight', { path: rel, sourceTypeHint });
+  }
+  let shell = sourceTypeHint === 'shell' || (!sourceTypeHint && (ext === '.sh' || ext === '.bash'));
+  let js = sourceTypeHint === 'js' || (!sourceTypeHint && (ext === '.js' || ext === '.cjs' || ext === '.mjs'));
   if (!shell && !js && shebang) {
     if (/(?:^|[\\/\s])(?:ba|z|k)?sh(?:\s|$)/i.test(shebang) || /(?:^|[\\/\s])sh(?:\s|$)/i.test(shebang)) shell = true;
     else if (/(?:^|[\\/\s])node(?:\.exe)?(?:\s|$)/i.test(shebang)) js = true;
-    else if (options.executableHint && !pureData) throw new EquivInfrastructureError('sandbox-source-type-unknown', 'executable source has an unsupported shebang for literal /tmp preflight', { path: rel, shebang });
+    else if (options.executableHint) throw new EquivInfrastructureError('sandbox-source-type-unknown', 'executable source has an unsupported shebang for literal /tmp preflight', { path: rel, shebang });
   }
-  if (pureData) return { path: rel, checked: false, notApplicable: true, reason: 'pure-data-' + ext.slice(1), sourceType: 'data', exceptionsUsed: [] };
-  if (!shell && !js) {
-    if (options.executableHint) throw new EquivInfrastructureError('sandbox-source-type-unknown', 'executable source type cannot be determined for literal /tmp preflight', { path: rel, shebang });
-    return { path: rel, checked: false, notApplicable: true, reason: 'non-executable-source-type', sourceType: null, exceptionsUsed: [] };
+  let parseableJson = false;
+  if (ext === '.json' && !shebang) {
+    try { JSON.parse(src); parseableJson = true; } catch {}
+  }
+  const pureData = ext === '.json' && parseableJson && !options.executableHint;
+  if (pureData) return { path: rel, checked: false, notApplicable: true, reason: 'pure-data-json', sourceType: 'data', exceptionsUsed: [] };
+  if (!shell && !js && options.executableHint) {
+    throw new EquivInfrastructureError('sandbox-source-type-unknown', 'executable source type cannot be determined for literal /tmp preflight', { path: rel, shebang });
   }
   let inBlockComment = false;
   const exceptionsUsed = [];
@@ -289,7 +296,21 @@ function scanLiteralTmpSource(relPath, text, options = {}) {
       path: rel, line: i + 1, lineSha256, text: normalizedLine,
     });
   }
-  return { path: rel, checked: true, sourceType: shell ? 'shell' : 'js', exceptionsUsed };
+  return { path: rel, checked: true, sourceType: shell ? 'shell' : js ? 'js' : 'generic', exceptionsUsed };
+}
+
+function preflightMaterializedSources(freeze, sandboxSource) {
+  const checked = [];
+  for (const row of freeze.sourceFiles || []) {
+    const rel = safeRel(row.path);
+    const abs = path.join(sandboxSource, ...rel.split('/'));
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      throw new EquivInfrastructureError('sandbox-materialized-source-missing', 'materialized source file is missing before literal /tmp preflight', { path: rel });
+    }
+    const scan = scanLiteralTmpSource(rel, fs.readFileSync(abs, 'utf8'));
+    checked.push({ path: rel, checked: scan.checked, sourceType: scan.sourceType, notApplicable: Boolean(scan.notApplicable) });
+  }
+  return checked;
 }
 
 function assertSandboxTmpdir(env, sandboxHome) {
@@ -724,8 +745,9 @@ function validateInventoryBinding(freeze, axmemRepoRoot, settingsHooks, sourceRe
   for (let i = 0; i < settingsHooks.length; i++) if (hookSemantics.hookIdentity(settingsHooks[i]) !== hookSemantics.hookIdentity(freeze.hooks[i])) throw new EquivInfrastructureError('freeze-settings-hook-mismatch', 'settings mirror hook identity/order differs from freeze hooks', { index: i });
 
   let validated;
-  try { validated = freezeTool.validateInventory(inv, settingsHooks); }
-  catch (e) { throw new EquivInfrastructureError('freeze-inventory-validation-failed', 'p2-freeze validateInventory rejected the pinned inventory', { commit: freeze.inventoryCommit, path: rel, freezeCode: e && e.code ? String(e.code) : null, cause: String(e && e.message || e) }); }
+  const liveRoot = path.join(path.resolve(sourceRepoRoot), ...safeRel(freeze.source.liveRelativePath).split('/'));
+  try { validated = freezeTool.validateInventory(inv, settingsHooks, liveRoot); }
+  catch (e) { throw new EquivInfrastructureError('freeze-inventory-validation-failed', 'p2-freeze validateInventory rejected the pinned inventory', { commit: freeze.inventoryCommit, path: rel, freezeCode: e && e.code ? String(e.code) : null, cause: String(e && e.message || e), freezeDetail: e && e.detail ? e.detail : null }); }
   const invByIdentity = validated.inventoryHooks;
   const fields = ['disposition', 'files', 'implementation', 'notes', 'externalDependencies', 'businessExitCodes', 'runtimeHealthProbe'];
   for (const h of freeze.hooks) {
@@ -799,7 +821,7 @@ function hookExitContract(h, logicalId) {
   } };
 }
 
-function preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutMs) {
+function preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutMs, sourceRoot) {
   if (!Array.isArray(h.files) || h.files.length === 0) {
     throw new EquivInfrastructureError('hook source contract missing for ' + logicalId + ': runnable hook needs files[]');
   }
@@ -807,6 +829,14 @@ function preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutM
   const closure = sourceBindingForHook(freeze, h).files.map((f) => f.path);
   const closureSet = new Set(closure);
   const executable = new Set(h.files.map(safeRel));
+  let entryRel = null, entrySourceType = null;
+  try {
+    const entryInfo = freezeTool.reviewedInnerCommandInfo(h.runtimeHealthProbe.innerCommand, logicalId);
+    entryRel = freezeTool.entryRelativeToLiveRoot(entryInfo.entryPath, sourceRoot, logicalId);
+    entrySourceType = entryInfo.interpreter === 'node' ? 'js' : 'shell';
+  } catch (e) {
+    throw new EquivInfrastructureError('hook-source-entry-binding-invalid', 'cannot bind reviewed hook entry for source preflight', { logicalId, cause: String(e && e.message || e), detail: e && e.detail ? e.detail : null });
+  }
   const texts = new Map();
   for (const raw of closure) {
     const rel = safeRel(raw);
@@ -824,7 +854,7 @@ function preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutM
   }
   for (const rel of closure) {
     const abs = path.join(sandboxSource, ...rel.split('/'));
-    const scan = scanLiteralTmpSource(rel, texts.get(rel), { executableHint: executable.has(rel) });
+    const scan = scanLiteralTmpSource(rel, texts.get(rel), { executableHint: executable.has(rel), sourceTypeHint: rel === entryRel ? entrySourceType : null });
     let rr = null;
     if (scan.sourceType === 'js') {
       rr = spawnSyncSandboxed(process.execPath, ['--check', abs], {
@@ -897,7 +927,7 @@ function runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRo
     const outerCommand = String(h.command || '');
     const innerCommand = String(contract.runtimeHealthProbe.innerCommand || '');
     const rewrittenInner = rewriteSourceRoot(innerCommand, sourceRoot, probeSource);
-    const sourceSyntaxChecked = preflightHookSources(freeze, h, probeSource, probeEnv, logicalId, timeoutMs);
+    const sourceSyntaxChecked = preflightHookSources(freeze, h, probeSource, probeEnv, logicalId, timeoutMs, sourceRoot);
     const rr = runHook(rewrittenInner, probePayload, probeEnv, probeHome, timeoutMs, contract.businessExitCodes);
     if (rr.infrastructureFailure) {
       throw new EquivInfrastructureError('hook runtime health probe failed for ' + logicalId + ': ' + rr.infrastructureReason,
@@ -967,6 +997,7 @@ function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaul
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-equiv-case-'));
   try {
     const sandboxSource = materializeFreeze(freeze, repoRoot, sandboxHome, axmemRepoRoot);
+    preflightMaterializedSources(freeze, sandboxSource);
     const preparedInput = prepareCaseInput(c && c.input ? c.input : {}, sandboxHome);
     const runCaseDef = Object.assign({}, c, { input: preparedInput });
     const before = walkFiles(sandboxHome);
@@ -989,7 +1020,7 @@ function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaul
         const timeoutMs = Number.isFinite(Number(h.timeout)) && Number(h.timeout) > 0 ? Number(h.timeout) * 1000 : defaultTimeoutMs;
         const contract = hookExitContract(h, logicalId);
         const runtimeHealth = runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRoot, axmemRepoRoot, outerHome: sandboxHome, outerSource: sandboxSource, outerEnv: env, outerPayload: payload, timeoutMs, contract });
-        const sourceSyntaxChecked = preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutMs);
+        const sourceSyntaxChecked = preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutMs, sourceRoot);
         const rr = runHook(command, payload, env, sandboxHome, timeoutMs, contract.businessExitCodes);
         if (rr.infrastructureFailure) throw new EquivInfrastructureError('hook-infrastructure-failure', 'hook infrastructure failure for ' + logicalId + ': ' + rr.infrastructureReason, { logicalId, phase, disposition: h.disposition, exitCode: rr.exitCode, reason: rr.infrastructureReason, businessExitCodes: contract.businessExitCodes, runtimeHealth });
         executed++;
@@ -1044,6 +1075,6 @@ function runFreezeReport(opts) {
 module.exports = {
   EquivInfrastructureError, normalizeRuntimeText, matcherMatches, hookEventsForGroup,
   materializeFreeze, rewriteSourceRoot, sourceRootResidual, sameSourcePath, prepareCaseInput, isolatedEnv, bindingEnv,
-  scanLiteralTmpSource, assertSandboxTmpdir, validateFreezeHooks, validateInventoryBinding, diffState, logicalHookId, hookExitContract, preflightHookSources,
+  scanLiteralTmpSource, preflightMaterializedSources, assertSandboxTmpdir, validateFreezeHooks, validateInventoryBinding, diffState, logicalHookId, hookExitContract, preflightHookSources,
   runHook, runRuntimeHealthProbe, validateFixture, runCase, runFreezeReport, stateDigest, hashObject, sourceBindingForHook,
 };

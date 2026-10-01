@@ -77,6 +77,16 @@ try {
   const timeoutRel = 'guards/r15d-timeout-fixture.cjs';
   const timeoutAbs = path.join(live, ...timeoutRel.split('/'));
   fs.writeFileSync(timeoutAbs, "'use strict';\nsetTimeout(() => {}, 1000);\n");
+  const r15eEntryRel = 'guards/r15e-entry-binding.sh';
+  const r15eEntryAbs = path.join(live, ...r15eEntryRel.split('/'));
+  const r15eEntryMarker = path.join(T, 'r15e-entry-binding.marker');
+  fs.writeFileSync(r15eEntryAbs, '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15e-entry-never; fi\nprintf ran > "' + r15eEntryMarker.replace(/\\/g, '/') + '"\n');
+  const r15eHelperRel = 'guards/r15e-entry-helper.sh';
+  const r15eHelperAbs = path.join(live, ...r15eHelperRel.split('/'));
+  fs.writeFileSync(r15eHelperAbs, '#!/usr/bin/env bash\nprintf helper\n');
+  const r15eOrphanRel = 'guards/r15e-materialized-orphan.sh';
+  const r15eOrphanAbs = path.join(live, ...r15eOrphanRel.split('/'));
+  fs.writeFileSync(r15eOrphanAbs, '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15e-orphan-never; fi\nprintf orphan\n');
   git(repo, ['init', '-q']);
   git(repo, ['add', '.claude']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'fixture']);
@@ -568,10 +578,60 @@ try {
   let tmpShebangErr = null, tmpUnknownExecErr = null;
   try { runner.scanLiteralTmpSource('guards/r15d-noext-shell', '#!/usr/bin/env bash\necho x > /tmp/r15d-shebang-probe\n', { executableHint: true }); } catch (e) { tmpShebangErr = e; }
   check('R15d S2c literal /tmp preflight classifies extensionless executable by shell shebang', tmpShebangErr && tmpShebangErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpShebangErr && tmpShebangErr.detail));
-  const tmpJsonData = runner.scanLiteralTmpSource('memory/_local-config/settings.json', '{"path":"/tmp/data-only"}\n', { executableHint: true });
-  check('R15d S2c literal /tmp preflight marks pure JSON data not-applicable', tmpJsonData.checked === false && tmpJsonData.notApplicable === true && tmpJsonData.reason === 'pure-data-json', JSON.stringify(tmpJsonData));
+  const tmpJsonData = runner.scanLiteralTmpSource('memory/_local-config/settings.json', '{"path":"/tmp/data-only"}\n');
+  check('R15e H3++ literal /tmp preflight exempts parseable shebang-free JSON only when it is not executable-hinted', tmpJsonData.checked === false && tmpJsonData.notApplicable === true && tmpJsonData.reason === 'pure-data-json', JSON.stringify(tmpJsonData));
   try { runner.scanLiteralTmpSource('guards/r15d-unknown-exec', '#!/usr/bin/env python3\nprint("/tmp/r15d")\n', { executableHint: true }); } catch (e) { tmpUnknownExecErr = e; }
   check('R15d S2c literal /tmp preflight rejects executable files with unsupported shebang type', tmpUnknownExecErr && tmpUnknownExecErr.code === 'sandbox-source-type-unknown', JSON.stringify(tmpUnknownExecErr && tmpUnknownExecErr.detail));
+
+  // R15e H3++ / F1: only parseable, shebang-free JSON is pure data. Everything else is scanned.
+  const r15eF1Cases = [
+    ['executable-json', 'guards/r15e-exec.json', '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15e-json; fi\n', { executableHint: true }],
+    ['parseable-executable-json', 'guards/r15e-data-exec.json', '{"path":"/tmp/r15e-json-data"}\n', { executableHint: true, sourceTypeHint: 'shell' }],
+    ['markdown', 'notes/r15e.md', 'literal /tmp/r15e-md must be scanned\n', {}],
+    ['invalid-json', 'data/r15e-invalid.json', '{"path":"/tmp/r15e-json",}\n', {}],
+    ['other-text', 'notes/r15e.txt', 'literal /tmp/r15e-text must be scanned\n', {}],
+  ].map(([name, rel, text, options]) => {
+    let err = null;
+    try { runner.scanLiteralTmpSource(rel, text, options); } catch (e) { err = e; }
+    return { name, code: err && err.code, detail: err && err.detail };
+  });
+  check('R15e F1 only non-executable parseable shebang-free JSON is pure data; executable JSON, md, invalid JSON and other text are scanned',
+    r15eF1Cases.every((x) => x.code === 'sandbox-literal-tmp'), JSON.stringify(r15eF1Cases));
+
+  // R15e H13+ / F2: the executed entry itself must be declared in this hook's files[].
+  try { fs.rmSync(r15eEntryMarker, { force: true }); } catch {}
+  const r15eEntryCommand = 'bash "' + r15eEntryAbs.replace(/\\/g, '/') + '"';
+  const r15eEntryRaw = clone(freeze);
+  r15eEntryRaw.hooks = [Object.assign({}, r15eEntryRaw.hooks[4], {
+    command: r15eEntryCommand,
+    files: [r15eHelperRel],
+    runtimeHealthProbe: { version: 1, innerCommand: r15eEntryCommand, reliable: true, notes: 'R15e entry binding negative fixture' },
+  })];
+  r15eEntryRaw.sourceFiles = [
+    { path: r15eEntryRel, sha256: sha256(fs.readFileSync(r15eEntryAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e undeclared executed entry' },
+    { path: r15eHelperRel, sha256: sha256(fs.readFileSync(r15eHelperAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e declared helper only' },
+  ];
+  const r15eEntryFreeze = bindFreeze(r15eEntryRaw, 'r15e-entry-binding');
+  let r15eEntryErr = null;
+  try { runner.runCase({ freeze: r15eEntryFreeze, group: focusedGroup, c: { id: 'r15e-entry-binding', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { r15eEntryErr = e; }
+  check('R15e F2 hook entry outside files[] is refused before execution',
+    r15eEntryErr && ['freeze-inventory-validation-failed', 'sandbox-literal-tmp'].includes(r15eEntryErr.code) && !fs.existsSync(r15eEntryMarker),
+    JSON.stringify({ code: r15eEntryErr && r15eEntryErr.code, detail: r15eEntryErr && r15eEntryErr.detail, markerExists: fs.existsSync(r15eEntryMarker) }));
+  try { fs.rmSync(r15eEntryMarker, { force: true }); } catch {}
+
+  // R15e H3++: /tmp scanning is over every materialized source file, even outside every hook closure.
+  const r15eOrphanRaw = clone(freeze);
+  r15eOrphanRaw.hooks = [clone(r15eOrphanRaw.hooks[4])];
+  r15eOrphanRaw.sourceFiles = [
+    clone(sourceFiles[0]),
+    { path: r15eOrphanRel, sha256: sha256(fs.readFileSync(r15eOrphanAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e materialized but intentionally outside every hook closure' },
+  ];
+  const r15eOrphanFreeze = bindFreeze(r15eOrphanRaw, 'r15e-materialized-orphan');
+  let r15eOrphanErr = null;
+  try { runner.runCase({ freeze: r15eOrphanFreeze, group: focusedGroup, c: { id: 'r15e-materialized-orphan', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { r15eOrphanErr = e; }
+  check('R15e H3++ materialized file outside every hook closure is still scanned for literal /tmp',
+    r15eOrphanErr && r15eOrphanErr.code === 'sandbox-literal-tmp' && r15eOrphanErr.detail && r15eOrphanErr.detail.path === r15eOrphanRel,
+    JSON.stringify({ code: r15eOrphanErr && r15eOrphanErr.code, detail: r15eOrphanErr && r15eOrphanErr.detail }));
   const tmpEnvHome = fs.mkdtempSync(path.join(T, 'r15d-tmpdir-env-'));
   const tmpEnv = runner.isolatedEnv(tmpEnvHome, null);
   const tmpMissing = Object.assign({}, tmpEnv); delete tmpMissing.TMPDIR;

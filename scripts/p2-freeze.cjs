@@ -818,6 +818,7 @@ function validateReviewedInnerSimpleCommand(command, label) {
   if (tokens[i] !== 'bash' && tokens[i] !== 'node') {
     reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], 'interpreter-must-be-bash-or-node');
   }
+  const interpreter = tokens[i];
   i++;
   if (i >= tokens.length) reviewedInnerSyntaxError(label, parsed.input, i, '<eof>', 'missing-path');
   if (!REVIEWED_INNER_QUOTED_RE.test(tokens[i])) {
@@ -826,6 +827,7 @@ function validateReviewedInnerSimpleCommand(command, label) {
       : 'path-must-be-double-quoted-literal';
     reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], reason);
   }
+  const entryPath = tokens[i].slice(1, -1);
   i++;
   let redirections = false;
   for (; i < tokens.length; i++) {
@@ -840,7 +842,42 @@ function validateReviewedInnerSimpleCommand(command, label) {
     if (redirections) reviewedInnerSyntaxError(label, parsed.input, i, t, 'argument-after-redirection');
     if (!REVIEWED_INNER_ARG_RE.test(t)) reviewedInnerSyntaxError(label, parsed.input, i, t, 'invalid-argument');
   }
-  return parsed.input;
+  return { input: parsed.input, interpreter, entryPath };
+}
+
+function reviewedInnerCommandInfo(command, label) {
+  return validateReviewedInnerSimpleCommand(command, label);
+}
+
+function normalizePortableBindingPath(value) {
+  let s = posix(String(value || '').trim());
+  let m = /^\/cygdrive\/([A-Za-z])\/(.*)$/.exec(s);
+  if (m) s = m[1].toUpperCase() + ':/' + m[2];
+  else {
+    m = /^\/([A-Za-z])\/(.*)$/.exec(s);
+    if (m) s = m[1].toUpperCase() + ':/' + m[2];
+    else if (/^[A-Za-z]:\//.test(s)) s = s[0].toUpperCase() + s.slice(1);
+  }
+  s = path.posix.normalize(s);
+  return s.length > 1 ? s.replace(/\/+$/, '') : s;
+}
+
+function entryRelativeToLiveRoot(entryPath, liveRoot, label) {
+  if (typeof liveRoot !== 'string' || !liveRoot.trim()) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe entry binding requires the live root', {
+      field: 'runtimeHealthProbe.innerCommand', label, entryPath, reason: 'entry-live-root-missing',
+    });
+  }
+  const root = normalizePortableBindingPath(path.resolve(liveRoot));
+  const target = normalizePortableBindingPath(entryPath);
+  const fold = process.platform === 'win32' ? (x) => x.toLowerCase() : (x) => x;
+  const rootFold = fold(root), targetFold = fold(target);
+  if (!target || targetFold === rootFold || !targetFold.startsWith(rootFold + '/')) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe entry path must be inside the live root', {
+      field: 'runtimeHealthProbe.innerCommand', label, entryPath, liveRoot: root, reason: 'entry-path-outside-live-root',
+    });
+  }
+  return safeRelativeFile(target.slice(root.length + 1));
 }
 
 function reviewedInnerCommandForOuter(command) {
@@ -906,7 +943,7 @@ function normalizeRuntimeHealthProbe(h, label) {
   return { version: 1, innerCommand: p.innerCommand, reliable: p.reliable, notes: p.notes.trim() };
 }
 
-function validateInventory(inv, liveHooks) {
+function validateInventory(inv, liveHooks, liveRoot) {
   if (!inv || inv.version !== 1) throw new FreezeError('bad-inventory', 'inventory.version must be 1');
   if (!Array.isArray(inv.hooks) || !Array.isArray(inv.files)) throw new FreezeError('bad-inventory', 'inventory hooks/files must be arrays');
 
@@ -945,6 +982,7 @@ function validateInventory(inv, liveHooks) {
   const externalMap = normalizeExternalDependencies(inv);
   const generatedArtifacts = normalizeGeneratedArtifacts(inv);
 
+  const entryBindingChecks = [];
   const inventoryHooks = new Map();
   for (const h of inv.hooks) {
     if (!h || typeof h !== 'object' || !DISPOSITIONS.has(h.disposition)) throw new FreezeError('bad-inventory', 'hook disposition is missing/invalid');
@@ -972,6 +1010,7 @@ function validateInventory(inv, liveHooks) {
       runtimeHealthProbe,
     });
     for (const f of normalized.files) if (!fileMap.has(f)) throw new FreezeError('bad-inventory', 'hook references file absent from inventory: ' + f);
+    if (sourceRequired) entryBindingChecks.push({ label, hook: normalized });
     const key = hookIdentity(normalized);
     if (inventoryHooks.has(key)) throw new FreezeError('bad-inventory', 'duplicate hook inventory identity: ' + key);
     inventoryHooks.set(key, normalized);
@@ -983,6 +1022,16 @@ function validateInventory(inv, liveHooks) {
   for (const h of liveHooks) {
     const key = hookIdentity(h);
     if (!inventoryHooks.has(key)) throw new FreezeError('hook-inventory-mismatch', 'live hook is not exactly inventoried: ' + key);
+  }
+  for (const check of entryBindingChecks) {
+    const entryInfo = reviewedInnerCommandInfo(check.hook.runtimeHealthProbe.innerCommand, check.label);
+    const entryRel = entryRelativeToLiveRoot(entryInfo.entryPath, liveRoot, check.label);
+    if (!check.hook.files.includes(entryRel)) {
+      throw new FreezeError('bad-inventory', check.label + ' runtimeHealthProbe entry path must be declared in this hook files[]', {
+        field: 'runtimeHealthProbe.innerCommand', label: check.label, entryPath: entryInfo.entryPath, entryRelativePath: entryRel,
+        files: check.hook.files.slice(), reason: 'inner-command-entry-not-in-files',
+      });
+    }
   }
 
   if (!Array.isArray(inv.allowedDifferences)) throw new FreezeError('bad-inventory', 'allowedDifferences must be an array');
@@ -1040,7 +1089,7 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
     throw new FreezeError('settings-mirror-mismatch', 'live settings hooks do not exactly match tracked mirror: ' + settingsMirrorRel);
   }
   const settingsHookIdentitySha256 = hookIdentitySha256(liveHooks);
-  const { fileMap, inventoryHooks, externalMap, generatedArtifacts } = validateInventory(inv, liveHooks);
+  const { fileMap, inventoryHooks, externalMap, generatedArtifacts } = validateInventory(inv, liveHooks, live);
   if (!fileMap.has(settingsMirrorRel)) throw new FreezeError('bad-inventory', 'settingsMirror must also appear in files[] so its commit blob is frozen: ' + settingsMirrorRel);
 
   const blobs = new Map();
@@ -1178,7 +1227,7 @@ function parseArgs(argv) {
   return o;
 }
 
-module.exports = { FreezeError, flattenHooks, hookIdentity, validateInventory, normalizeGeneratedArtifacts, normalizeBusinessExitContract, normalizeRuntimeHealthProbe, analyzeDependencyReferences, inspectLiteralGeneratedArtifact, verifyGeneratedArtifactEvidence, detectLiteralDependencies, verifyDependencyClosure, buildManifest, generate, writeJsonAtomic, safeRelativeFile };
+module.exports = { FreezeError, flattenHooks, hookIdentity, validateInventory, normalizeGeneratedArtifacts, normalizeBusinessExitContract, normalizeRuntimeHealthProbe, reviewedInnerCommandInfo, entryRelativeToLiveRoot, analyzeDependencyReferences, inspectLiteralGeneratedArtifact, verifyGeneratedArtifactEvidence, detectLiteralDependencies, verifyDependencyClosure, buildManifest, generate, writeJsonAtomic, safeRelativeFile };
 
 if (require.main === module) {
   try {
