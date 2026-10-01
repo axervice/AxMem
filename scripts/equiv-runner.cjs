@@ -212,7 +212,7 @@ function portableAbsoluteToNative(value) {
 
 function isAbsolutePortable(value) {
   const s = String(value || '');
-  return /^[A-Za-z]:[\\/]/.test(s) || /^\/[A-Za-z]\//.test(s) || /^\/cygdrive\/[A-Za-z]\//.test(s) || /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(s) || path.posix.isAbsolute(s);
+  return path.win32.isAbsolute(s) || path.posix.isAbsolute(s) || /^[A-Za-z]:[\\/]/.test(s) || /^\/[A-Za-z]\//.test(s) || /^\/cygdrive\/[A-Za-z]\//.test(s) || /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(s);
 }
 
 function pathInsideSandbox(value, sandboxHome) {
@@ -302,6 +302,7 @@ function isolatedEnv(sandboxHome, sessionId) {
   const tmp = path.join(absHome, '.tmp');
   fs.mkdirSync(tmp, { recursive: true });
   const env = Object.assign({}, process.env);
+  deleteEnvPatternCI(env, /^BASH_FUNC_.*%%$/i);
   deleteEnvPatternCI(env, /^(?:PMM_|AXMEM_)/i);
   deleteEnvPatternCI(env, /^XDG_/i);
   deleteEnvPatternCI(env, /^PIPE_GATE_/i);
@@ -779,7 +780,9 @@ function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaul
     if (hookResults.length === 0) throw new EquivInfrastructureError('fixture-no-matching-hooks', 'no matching hooks for fixture case ' + c.id + ' (' + group.event + ')', { caseId: c.id, event: group.event });
     const prefixes = [sandboxHome, sandboxSource, sourceRoot];
     const after = walkFiles(sandboxHome);
-    return { id: c.id, event: group.event, inputCanonical: inputBinding.inputCanonical, inputSha256: inputBinding.inputSha256, exitCode, stdout: normalizeRuntimeText(stdout.join(''), prefixes), stderr: normalizeRuntimeText(stderr.join(''), prefixes), stateTree: diffState(before, after, prefixes), hookResults, executedHooks: executed };
+    const result = { id: c.id, event: group.event, inputCanonical: inputBinding.inputCanonical, inputSha256: inputBinding.inputSha256, exitCode, stdout: normalizeRuntimeText(stdout.join(''), prefixes), stderr: normalizeRuntimeText(stderr.join(''), prefixes), stateTree: diffState(before, after, prefixes), hookResults, executedHooks: executed };
+    Object.defineProperty(result, 'sandboxRoot', { value: posix(sandboxHome), enumerable: false });
+    return result;
   } finally {
     try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch {}
   }
@@ -797,11 +800,14 @@ function runFreezeReport(opts) {
   if (!sameSourcePath(sourceRoot, expectedSourceRoot)) throw new EquivInfrastructureError('source-root-mismatch', '--source-root must identify the frozen live source directory', { provided: sourceRoot, expected: expectedSourceRoot });
   const defaultTimeoutMs = Number.isFinite(Number(opts.defaultTimeoutMs)) && Number(opts.defaultTimeoutMs) > 0 ? Number(opts.defaultTimeoutMs) : 60000;
   const cases = [];
-  for (const group of fixture.events) for (const c of group.cases) cases.push(runCase({ freeze, group, c: Object.assign({}, c, { id: c.id.trim() }), repoRoot, sourceRoot, axmemRepoRoot, defaultTimeoutMs }));
+  for (const group of fixture.events) for (const c of group.cases) {
+    const result = runCase({ freeze, group, c: Object.assign({}, c, { id: c.id.trim() }), repoRoot, sourceRoot, axmemRepoRoot, defaultTimeoutMs });
+    cases.push(Object.assign({ sandboxRoot: result.sandboxRoot }, result));
+  }
   const report = {
     schema: 'axmem-equiv-report/v1', generatedAt: new Date().toISOString(),
     source: { commit: freeze.source.commit, treeOid: freeze.source.treeOid, sourceFiles: (freeze.sourceFiles || []).map((f) => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path)), sourceFilesSha256: hashObject((freeze.sourceFiles || []).map((f) => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path))) },
-    normalization: { pathPrefixes: [sourceRoot] }, fixtureCoverage: coverage, cases,
+    normalization: { pathPrefixes: cases.map((c) => c.sandboxRoot) }, fixtureCoverage: coverage, cases,
   };
   if (opts.out) {
     const out = path.resolve(opts.out);

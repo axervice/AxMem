@@ -305,10 +305,11 @@ try {
       probeExitCode: 0, probeOutcome: 'allow', sourceSyntaxChecked: ['synthetic.cjs'], probeNotes: 'synthetic structured evidence',
     };
   };
+  let synthCaseIndex = 0;
   const cases = fixture.events.flatMap((e) => e.cases.map((c) => {
     const inputCanonical = JSON.stringify(equiv.stable(c.input || {}));
     return {
-      id: c.id, event: e.event, inputCanonical,
+      id: c.id, event: e.event, sandboxRoot: 'C:/tmp/axmem-equiv-case-' + String(synthCaseIndex++).padStart(6, '0'), inputCanonical,
       inputSha256: crypto.createHash('sha256').update(inputCanonical).digest('hex'),
       exitCode: 0,
       stdout: 'root=C:/tmp/frozen ' + '2026-09-29T00:00:00Z',
@@ -318,7 +319,7 @@ try {
       hookResults: [{ logicalId: 'synthetic:' + e.event, phase: e.event, matcher: null, disposition: 'port', status: 'ran', exitCode: 0, outcome: 'allow', businessExitCodes: [2], runtimeHealth: synthHealth(c.id, e.event) }],
     };
   }));
-  const report = { schema: 'axmem-equiv-report/v1', source: synthSource, normalization: { pathPrefixes: ['C:/tmp/frozen'] }, cases };
+  const report = { schema: 'axmem-equiv-report/v1', source: synthSource, normalization: { pathPrefixes: cases.map((c) => c.sandboxRoot) }, cases };
   const same = equiv.compareReports(report, JSON.parse(JSON.stringify(report)), []);
   check('equiv frozen-vs-itself is exact green', same.equal && same.unexpected.length === 0 && same.cases === cases.length);
 
@@ -333,6 +334,7 @@ try {
   try {
     const dupReport = JSON.parse(JSON.stringify(report));
     dupReport.cases.push(JSON.parse(JSON.stringify(dupReport.cases[0])));
+    dupReport.normalization.pathPrefixes.push(dupReport.cases[0].sandboxRoot);
     equiv.compareReports(report, dupReport, []);
   } catch (e) { dupCaseErr = e.message; }
   check('equiv rejects duplicate report case ids fail-closed', /duplicate case id/.test(dupCaseErr), dupCaseErr);

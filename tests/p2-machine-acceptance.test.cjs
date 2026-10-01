@@ -169,6 +169,18 @@ try {
   const same = equiv.compareReports(reportA, reportB, []);
   check('full baseline compares green', same.equal === true && same.unexpected.length === 0);
 
+  // R15d S1: report-declared normalization prefixes must be bound to runner-recorded sandboxes.
+  const s1PrefixLeft = clone(reportA);
+  const s1PrefixRight = clone(reportA);
+  s1PrefixLeft.cases[0].stdout = 'DENY';
+  s1PrefixRight.cases[0].stdout = 'ALLOW';
+  s1PrefixRight.normalization.pathPrefixes = ['DENY', 'ALLOW'];
+  let s1PrefixErr = null, s1PrefixCompare = null;
+  try { s1PrefixCompare = equiv.compareReports(s1PrefixLeft, s1PrefixRight, []); } catch (e) { s1PrefixErr = e; }
+  check('R15d S1 rejects report-declared non-sandbox normalization prefixes before comparison',
+    s1PrefixErr && s1PrefixErr.code === 'report-normalization-path-prefix-invalid' && s1PrefixErr.detail && s1PrefixErr.detail.prefix === 'DENY',
+    JSON.stringify({ errorCode: s1PrefixErr && s1PrefixErr.code, detail: s1PrefixErr && s1PrefixErr.detail, compareEqual: s1PrefixCompare && s1PrefixCompare.equal, prefixes: s1PrefixRight.normalization.pathPrefixes }));
+
   // R15b B1: bind each report case to the original fixture input, not a hook payload.
   const fixtureInputs = new Map();
   for (const eventGroup of fixture.events) for (const fixtureCase of eventGroup.cases) fixtureInputs.set(fixtureCase.id, fixtureCase.input || {});
@@ -348,6 +360,22 @@ try {
   try { runner.runCase({ freeze: a1Freeze, group: focusedGroup, c: { id: 'a1-root-mismatch', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: path.dirname(live), defaultTimeoutMs: 5000 }); } catch (e) { sourceRootErr = e; }
   check('R15b A1 --source-root must equal frozen liveRelativePath root', sourceRootErr && sourceRootErr.code === 'source-root-mismatch' && sourceRootErr.detail && sourceRootErr.detail.expected, String(sourceRootErr && sourceRootErr.message));
 
+  const s1BashFuncKey = 'BASH_FUNC_node%%';
+  const s1BashFuncBefore = process.env[s1BashFuncKey];
+  const s1BashFuncHome = fs.mkdtempSync(path.join(T, 'r15d-s1-bash-func-home-'));
+  let s1BashFuncRun = null;
+  try {
+    process.env[s1BashFuncKey] = '() { printf INHERITED_FUNCTION; }';
+    const s1BashFuncEnv = runner.isolatedEnv(s1BashFuncHome, null);
+    s1BashFuncRun = runner.runHook('node --version', {}, s1BashFuncEnv, s1BashFuncHome, 5000, []);
+  } finally {
+    if (s1BashFuncBefore === undefined) delete process.env[s1BashFuncKey]; else process.env[s1BashFuncKey] = s1BashFuncBefore;
+    fs.rmSync(s1BashFuncHome, { recursive: true, force: true });
+  }
+  check('R15d S1 scrubs inherited BASH_FUNC_node%% before sandbox node --version executes',
+    s1BashFuncRun && s1BashFuncRun.exitCode === 0 && /^v\d+\./.test(String(s1BashFuncRun.stdout || '').trim()) && !String(s1BashFuncRun.stdout || '').includes('INHERITED_FUNCTION'),
+    JSON.stringify(s1BashFuncRun));
+
   const a2BashMarker = path.join(T, 'r15b-a2-bash-env.marker');
   const a2NodeMarker = path.join(T, 'r15b-a2-node-options.marker');
   const a2BashEnv = path.join(T, 'r15b-a2-bash-env.sh');
@@ -396,10 +424,17 @@ try {
 
   const a3Command = 'node "' + a3Abs.replace(/\\/g, '/') + '"';
   const a3Freeze = bindSingle(4, 'a3-path-guard', a3Command, [a3Rel]);
+  const a3WinRootBackslash = '\\Users\\axmem-r15d-outside.txt';
+  const a3WinRootSlash = '/Users/axmem-r15d-outside.txt';
+  check('R15d S1 win32 treats single-backslash and single-slash root-relative spellings as absolute',
+    path.win32.isAbsolute(a3WinRootBackslash) && path.win32.isAbsolute(a3WinRootSlash),
+    JSON.stringify({ backslash: path.win32.resolve('C:\\sandbox', a3WinRootBackslash), slash: path.win32.resolve('C:\\sandbox', a3WinRootSlash) }));
   const a3Cases = [
     ['drive', path.join(T, 'outside-drive.txt')],
     ['msys', toMsys(path.join(T, 'outside-msys.txt'))],
     ['unc', '\\\\server\\share\\outside.txt'],
+    ['win-root-backslash', a3WinRootBackslash],
+    ['win-root-slash', a3WinRootSlash],
   ];
   for (const [kind, outside] of a3Cases) {
     try { fs.rmSync(a3Marker, { force: true }); } catch {}

@@ -49,6 +49,42 @@ function isByteInteger(value) {
   return Number.isInteger(value) && value >= 0 && value <= 255;
 }
 
+function isRunnerSandboxRoot(value) {
+  if (typeof value !== 'string' || !value) return false;
+  if (!path.win32.isAbsolute(value) && !path.posix.isAbsolute(value)) return false;
+  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '');
+  const base = normalized.slice(normalized.lastIndexOf('/') + 1);
+  return /^axmem-equiv-case-[A-Za-z0-9_-]+$/.test(base);
+}
+
+function validateReportNormalization(report, side) {
+  const normalization = report && report.normalization;
+  const prefixes = normalization && normalization.pathPrefixes;
+  if (!Array.isArray(prefixes) || prefixes.length === 0) {
+    reportError('report-normalization-path-prefix-invalid', side + ' report must declare runner sandbox normalization prefixes', { side, field: 'normalization.pathPrefixes', prefix: null });
+  }
+  for (let i = 0; i < prefixes.length; i++) {
+    if (!isRunnerSandboxRoot(prefixes[i])) {
+      reportError('report-normalization-path-prefix-invalid', side + ' report normalization prefix is not an absolute runner sandbox root', { side, field: 'normalization.pathPrefixes[' + i + ']', index: i, prefix: prefixes[i], reason: 'not-runner-sandbox-root' });
+    }
+  }
+  const roots = report.cases.map((c) => c && c.sandboxRoot);
+  for (let i = 0; i < roots.length; i++) {
+    if (!isRunnerSandboxRoot(roots[i])) {
+      reportError('report-normalization-path-prefix-invalid', side + ' report case does not record a valid runner sandbox root', { side, field: 'cases[' + i + '].sandboxRoot', index: i, prefix: roots[i], reason: 'invalid-recorded-sandbox-root' });
+    }
+  }
+  if (prefixes.length !== roots.length) {
+    reportError('report-normalization-path-prefix-invalid', side + ' report normalization prefix count does not match recorded case sandbox roots', { side, field: 'normalization.pathPrefixes', prefix: prefixes[roots.length] === undefined ? null : prefixes[roots.length], actualCount: prefixes.length, expectedCount: roots.length });
+  }
+  for (let i = 0; i < roots.length; i++) {
+    if (prefixes[i] !== roots[i]) {
+      reportError('report-normalization-path-prefix-invalid', side + ' report normalization prefix is not the sandbox root recorded for that case', { side, field: 'normalization.pathPrefixes[' + i + ']', index: i, prefix: prefixes[i], expected: roots[i], reason: 'not-recorded-case-sandbox-root' });
+    }
+  }
+  return prefixes;
+}
+
 function normalizeStateTree(tree, prefixes) {
   const out = {};
   for (const key of Object.keys(tree || {}).sort()) {
@@ -182,7 +218,7 @@ function validateRuntimeHealth(health, report, caseId, event, h, side) {
   }
 }
 
-function validateReport(report, side, prefixes) {
+function validateReport(report, side) {
   if (!report || report.schema !== 'axmem-equiv-report/v1') throw new Error(side + ' report must use schema axmem-equiv-report/v1');
   if (!report.source || !/^[0-9a-f]{40}$/i.test(String(report.source.commit || '')) || !/^[0-9a-f]{40}$/i.test(String(report.source.treeOid || ''))) {
     throw new Error(side + ' report has invalid source identity');
@@ -192,6 +228,7 @@ function validateReport(report, side, prefixes) {
     throw new Error(side + ' report has invalid sourceFiles binding');
   }
   if (!Array.isArray(report.cases) || report.cases.length === 0) throw new Error(side + ' report must contain at least one case');
+  const prefixes = validateReportNormalization(report, side);
   const counts = new Map(REQUIRED_EVENTS.map((e) => [e, 0]));
   const out = new Map();
   for (const raw of report.cases) {
@@ -323,12 +360,9 @@ function compareHookTrace(caseId, leftHooks, rightHooks, mappings, unexpected, a
 }
 
 function compareReports(left, right, allowedRows) {
-  const prefixes = []
-    .concat((left && left.normalization && left.normalization.pathPrefixes) || [])
-    .concat((right && right.normalization && right.normalization.pathPrefixes) || []);
   const allowance = parseAllowanceSpec(allowedRows);
-  const lm = validateReport(left, 'left', prefixes);
-  const rm = validateReport(right, 'right', prefixes);
+  const lm = validateReport(left, 'left');
+  const rm = validateReport(right, 'right');
   const allow = allowedSet(allowance.differences);
   const mappings = hookMappingList(allowance.hookMappings);
   const unexpected = [], allowed = [], hookMappingsApplied = [];
