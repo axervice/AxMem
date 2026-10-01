@@ -1,0 +1,1529 @@
+{
+  "version": 1,
+  "status": "candidate-blocked-review-not-formal-freeze-input",
+  "settingsJson": "settings.json",
+  "sourceEvidence": [
+    "docs/audits/SURVEY-2026-09-17-live-vs-product.md",
+    "docs/P2-CC-PERFECT-SPEC.md §1.0/§3.3"
+  ],
+  "settingsSha256": "199f52f1f75f2dd8c509f8bfa6d22e729bf210a3fdd2131eb521c82cd8d2eaec",
+  "mirrorSettingsSha256": "199f52f1f75f2dd8c509f8bfa6d22e729bf210a3fdd2131eb521c82cd8d2eaec",
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-autopull.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-autopull.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2 spec §3.3 explicitly names autopull network pull/push as external prerequisite",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "externalDependencies": [
+        "home-origin-master-pull",
+        "home-origin-master-push",
+        "home-origin-master-lsremote"
+      ],
+      "sourcePath": "pmm-autopull.sh",
+      "sourceSha256": "98c74a4ba252b8456312365e5f3caa87b426fee509414283e6004cb06fd6ba3a",
+      "mirrorSourcePath": "memory/_local-config/pmm-autopull.sh",
+      "mirrorSourceSha256": "98c74a4ba252b8456312365e5f3caa87b426fee509414283e6004cb06fd6ba3a"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 1,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-session-start.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-session-start.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2 spec §3.3 explicitly names PMM plugin session-start as external prerequisite",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "externalDependencies": [
+        "pmm-plugin-2.7.0-session-start"
+      ]
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 2,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-size-watch.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-size-watch.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-size-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "live pmm-size-watch.sh SHA256 equals product hooks/pmm-size-watch.sh (4e3c418acadd13c6925788a84dcb9923f0662f87ea657c205c19c24559104499); exact existing replacement; R12b: wrapper replacement is not runtime-complete without the external PMM plugin session-start file; disposition remains replace pending review.",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/pmm-size-watch.sh\"",
+        "reliable": false,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      },
+      "externalDependencies": [
+        "pmm-plugin-2.7.0-session-start"
+      ]
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 3,
+      "matcher": null,
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-lessons-routing.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-lessons-routing.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "pmm-lessons-routing.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "memory lesson routing is live memory behavior and missing from product survey",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-lessons-routing.sh\"",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 4,
+      "matcher": null,
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-entry-length-watch.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-entry-length-watch.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-entry-length-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "product has hooks/pmm-entry-length-watch.sh but survey says diverged; frozen live semantics remain oracle",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-entry-length-watch.sh\"",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 5,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/hooks/pmm-permanent-inject.sh\"",
+      "timeout": null,
+      "targets": [
+        "hooks/pmm-permanent-inject.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2 spec §3.3 explicitly names permanent injection as external prerequisite",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "externalDependencies": [
+        "pmm-permanent-repo"
+      ]
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 6,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-dream-pending-watch.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-dream-pending-watch.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-dream-pending-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "survey marks product hooks/pmm-dream-pending-watch.sh PRESENT-same",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/pmm-dream-pending-watch.sh\"",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 7,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/hermes-memory-freshness.sh\"",
+      "timeout": null,
+      "targets": [
+        "hermes-memory-freshness.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "survey explicitly says live-only, not to port",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 8,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-banner.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-banner.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "reviewer-approved",
+      "notes": "standing-rule/Kernel banner is user workflow governance, not AxMem memory runtime; provisional pending final freeze review",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "reviewDecision": {
+        "reviewer": "Claude 主会话",
+        "date": "2026-09-30",
+        "scope": "P2.0 冻结清单与记忆等价量尺",
+        "conditions": [
+          "清单与每份等价报告逐条列出这 7 项及 skipImpact,不得写成行为等价。",
+          "等价夹具不得包含守卫自测/自检类 Bash 命令,也不得包含 Agent/Workflow 派发事件;将来若要纳入,隔离闸与模型闸另行立项审。",
+          "两条 --shadow 的排除以「清单内没有任何 port|replace 组件读取 .shadow 日志」为前提;用依赖闭包证据确认,发现消费者就停报。",
+          "pmm-banner 两条只是量尺范围裁决,不等于产品决定不做「常驻规则横幅」;该产品问题已上报 Jax,未定之前只记一条备忘,不据此删减任何产品文档。"
+        ]
+      }
+    },
+    {
+      "event": "UserPromptSubmit",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-prompt-pull.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-prompt-pull.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "prompt-triggered repo pull is the same network/git dependency class as autopull",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "externalDependencies": [
+        "home-origin-master-pull"
+      ]
+    },
+    {
+      "event": "UserPromptSubmit",
+      "groupIndex": 0,
+      "hookIndex": 1,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-banner.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-banner.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "reviewer-approved",
+      "notes": "standing-rule/Kernel banner is user workflow governance, not AxMem memory runtime; provisional pending final freeze review",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "reviewDecision": {
+        "reviewer": "Claude 主会话",
+        "date": "2026-09-30",
+        "scope": "P2.0 冻结清单与记忆等价量尺",
+        "conditions": [
+          "清单与每份等价报告逐条列出这 7 项及 skipImpact,不得写成行为等价。",
+          "等价夹具不得包含守卫自测/自检类 Bash 命令,也不得包含 Agent/Workflow 派发事件;将来若要纳入,隔离闸与模型闸另行立项审。",
+          "两条 --shadow 的排除以「清单内没有任何 port|replace 组件读取 .shadow 日志」为前提;用依赖闭包证据确认,发现消费者就停报。",
+          "pmm-banner 两条只是量尺范围裁决,不等于产品决定不做「常驻规则横幅」;该产品问题已上报 Jax,未定之前只记一条备忘,不据此删减任何产品文档。"
+        ]
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": "Agent|Workflow",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/model-guard.sh\" || { echo \"model-guard FAILED TO LAUNCH (missing/unreadable/bash error) — denying fail-closed\" >&2; exit 2; }",
+      "timeout": null,
+      "targets": [
+        "guards/model-guard.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "reviewer-approved",
+      "notes": "model/workflow routing guard is orchestration policy, not memory-product behavior; provisional pending final freeze review",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "reviewDecision": {
+        "reviewer": "Claude 主会话",
+        "date": "2026-09-30",
+        "scope": "P2.0 冻结清单与记忆等价量尺",
+        "conditions": [
+          "清单与每份等价报告逐条列出这 7 项及 skipImpact,不得写成行为等价。",
+          "等价夹具不得包含守卫自测/自检类 Bash 命令,也不得包含 Agent/Workflow 派发事件;将来若要纳入,隔离闸与模型闸另行立项审。",
+          "两条 --shadow 的排除以「清单内没有任何 port|replace 组件读取 .shadow 日志」为前提;用依赖闭包证据确认,发现消费者就停报。",
+          "pmm-banner 两条只是量尺范围裁决,不等于产品决定不做「常驻规则横幅」;该产品问题已上报 Jax,未定之前只记一条备忘,不据此删减任何产品文档。"
+        ]
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 1,
+      "hookIndex": 0,
+      "matcher": "Agent",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/opus-justification-guard.sh\" || { echo \"opus-justification-guard 自身故障 — 成本闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/opus-justification-guard.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "reviewer-approved",
+      "notes": "model-cost/justification policy is orchestration policy, not memory-product behavior; provisional pending final freeze review",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "reviewDecision": {
+        "reviewer": "Claude 主会话",
+        "date": "2026-09-30",
+        "scope": "P2.0 冻结清单与记忆等价量尺",
+        "conditions": [
+          "清单与每份等价报告逐条列出这 7 项及 skipImpact,不得写成行为等价。",
+          "等价夹具不得包含守卫自测/自检类 Bash 命令,也不得包含 Agent/Workflow 派发事件;将来若要纳入,隔离闸与模型闸另行立项审。",
+          "两条 --shadow 的排除以「清单内没有任何 port|replace 组件读取 .shadow 日志」为前提;用依赖闭包证据确认,发现消费者就停报。",
+          "pmm-banner 两条只是量尺范围裁决,不等于产品决定不做「常驻规则横幅」;该产品问题已上报 Jax,未定之前只记一条备忘,不据此删减任何产品文档。"
+        ]
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 2,
+      "hookIndex": 0,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-write-gate.sh\" || { echo \"pmm-trigger-write-gate 自身故障 — fail-open 放行(HIGH-5 写时拦截退化为 PostToolUse 纵深防线)\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-trigger-write-gate.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-trigger-write-gate.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.1 explicitly ports live trigger-write-gate semantics",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-write-gate.sh\"",
+        "reliable": false,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 3,
+      "hookIndex": 0,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "node \"C:/Users/jax-x/.claude/pmm-hook.cjs\" --shadow --pre || { echo \"pmm-hook --shadow --pre 自身故障 — 影子闸 fail-open 放行(C05-BUILD-SPEC B1,只记录不拦不注入)\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "pmm-hook.cjs"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "reviewer-approved",
+      "notes": "wired only as --shadow pre/post measurement; final product ports the underlying memory logic; provisional pending final freeze review",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "reviewDecision": {
+        "reviewer": "Claude 主会话",
+        "date": "2026-09-30",
+        "scope": "P2.0 冻结清单与记忆等价量尺",
+        "conditions": [
+          "清单与每份等价报告逐条列出这 7 项及 skipImpact,不得写成行为等价。",
+          "等价夹具不得包含守卫自测/自检类 Bash 命令,也不得包含 Agent/Workflow 派发事件;将来若要纳入,隔离闸与模型闸另行立项审。",
+          "两条 --shadow 的排除以「清单内没有任何 port|replace 组件读取 .shadow 日志」为前提;用依赖闭包证据确认,发现消费者就停报。",
+          "pmm-banner 两条只是量尺范围裁决,不等于产品决定不做「常驻规则横幅」;该产品问题已上报 Jax,未定之前只记一条备忘,不据此删减任何产品文档。"
+        ]
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 4,
+      "hookIndex": 0,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\" || { echo \"bash-pipe-exitcode-watch 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.2 explicitly ports pipe gate v2",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\"",
+        "reliable": false,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 4,
+      "hookIndex": 1,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/pmm-bash-impression.sh\" || { echo \"pmm-bash-impression 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-bash-impression.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-bash-impression.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.2 explicitly ports M0 impression observer",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/guards/pmm-bash-impression.sh\"",
+        "reliable": false,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 4,
+      "hookIndex": 2,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/pmm-isolation-gate.sh\" || { echo \"pmm-isolation-gate 自身故障 — fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-isolation-gate.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "reviewer-approved",
+      "notes": "development/self-test isolation second-line classifier, not end-user memory semantics; provisional pending final freeze review",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "reviewDecision": {
+        "reviewer": "Claude 主会话",
+        "date": "2026-09-30",
+        "scope": "P2.0 冻结清单与记忆等价量尺",
+        "conditions": [
+          "清单与每份等价报告逐条列出这 7 项及 skipImpact,不得写成行为等价。",
+          "等价夹具不得包含守卫自测/自检类 Bash 命令,也不得包含 Agent/Workflow 派发事件;将来若要纳入,隔离闸与模型闸另行立项审。",
+          "两条 --shadow 的排除以「清单内没有任何 port|replace 组件读取 .shadow 日志」为前提;用依赖闭包证据确认,发现消费者就停报。",
+          "pmm-banner 两条只是量尺范围裁决,不等于产品决定不做「常驻规则横幅」;该产品问题已上报 Jax,未定之前只记一条备忘,不据此删减任何产品文档。"
+        ]
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-lessons-routing.sh\" --block",
+      "timeout": null,
+      "targets": [
+        "pmm-lessons-routing.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "pmm-lessons-routing.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "memory lesson routing is live memory behavior and missing from product survey",
+      "businessExitCodes": [
+        2
+      ],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-lessons-routing.sh\" --block",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 0,
+      "hookIndex": 1,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-entry-length-watch.sh\" --block",
+      "timeout": null,
+      "targets": [
+        "pmm-entry-length-watch.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-entry-length-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "product has hooks/pmm-entry-length-watch.sh but survey says diverged; frozen live semantics remain oracle",
+      "businessExitCodes": [
+        2
+      ],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-entry-length-watch.sh\" --block",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 0,
+      "hookIndex": 2,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-recall.sh\" || exit 0",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-trigger-recall.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-trigger-recall.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.1 explicitly ports live trigger-recall semantics",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-recall.sh\"",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 1,
+      "hookIndex": 0,
+      "matcher": "NotebookEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-recall.sh\" || exit 0",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-trigger-recall.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-trigger-recall.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.1 explicitly ports live trigger-recall semantics",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-recall.sh\"",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 2,
+      "hookIndex": 0,
+      "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+      "command": "node \"C:/Users/jax-x/.claude/pmm-hook.cjs\" --shadow || { echo \"pmm-hook --shadow 自身故障 — 影子闸 fail-open 放行(C05-BUILD-SPEC B1,只记录不拦不注入)\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "pmm-hook.cjs"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "reviewer-approved",
+      "notes": "wired only as --shadow pre/post measurement; final product ports the underlying memory logic; provisional pending final freeze review",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "reviewDecision": {
+        "reviewer": "Claude 主会话",
+        "date": "2026-09-30",
+        "scope": "P2.0 冻结清单与记忆等价量尺",
+        "conditions": [
+          "清单与每份等价报告逐条列出这 7 项及 skipImpact,不得写成行为等价。",
+          "等价夹具不得包含守卫自测/自检类 Bash 命令,也不得包含 Agent/Workflow 派发事件;将来若要纳入,隔离闸与模型闸另行立项审。",
+          "两条 --shadow 的排除以「清单内没有任何 port|replace 组件读取 .shadow 日志」为前提;用依赖闭包证据确认,发现消费者就停报。",
+          "pmm-banner 两条只是量尺范围裁决,不等于产品决定不做「常驻规则横幅」;该产品问题已上报 Jax,未定之前只记一条备忘,不据此删减任何产品文档。"
+        ]
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 3,
+      "hookIndex": 0,
+      "matcher": "AskUserQuestion",
+      "command": "bash \"C:/Users/jax-x/.claude/memory/_local-config/pmm-receipt.sh\" from-hook || exit 0",
+      "timeout": null,
+      "targets": [
+        "memory/_local-config/pmm-receipt.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "memory/_local-config/pmm-receipt.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "product core/receipt.sh + receipt-fromhook replacement exists; survey says diverged",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/memory/_local-config/pmm-receipt.sh\" from-hook",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 4,
+      "hookIndex": 0,
+      "matcher": "Grep",
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-heat-collect.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-heat-collect.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-heat-collect.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "survey marks product hooks/pmm-heat-collect.sh PRESENT-same",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/pmm-heat-collect.sh\"",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 5,
+      "hookIndex": 0,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\" || { echo \"bash-pipe-exitcode-watch 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.2 explicitly ports pipe gate v2",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\"",
+        "reliable": false,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 6,
+      "hookIndex": 0,
+      "matcher": "Bash|PowerShell",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/pmm-shell-memory-watch.sh\" || { echo \"pmm-shell-memory-watch 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-shell-memory-watch.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-shell-memory-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "current live memory-safety observer covers Bash/PowerShell write paths absent from Edit/Write hooks; generic memory behavior added after 09-17 survey",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/guards/pmm-shell-memory-watch.sh\"",
+        "reliable": false,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PostToolUseFailure",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\" || { echo \"bash-pipe-exitcode-watch 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.2 explicitly ports pipe gate v2",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\"",
+        "reliable": false,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "SessionEnd",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "node \"C:/Users/jax-x/.claude/guards/pmm-recall-ledger.cjs\" --session-end >/dev/null 2>&1 || exit 0",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-recall-ledger.cjs"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-recall-ledger.cjs"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.1 explicitly ports ledger; active SessionEnd flush",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "node \"C:/Users/jax-x/.claude/guards/pmm-recall-ledger.cjs\" --session-end >/dev/null 2>&1",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "Stop",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-should-save.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-should-save.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2 spec §3.3 explicitly names PMM plugin should-save as external prerequisite",
+      "businessExitCodes": [],
+      "runtimeHealthState": "not-replayed",
+      "runtimeHealthEvidence": null,
+      "externalDependencies": [
+        "pmm-plugin-2.7.0-should-save"
+      ]
+    },
+    {
+      "event": "Stop",
+      "groupIndex": 0,
+      "hookIndex": 1,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/memory/_local-config/pmm-receipt.sh\" stop-check",
+      "timeout": null,
+      "targets": [
+        "memory/_local-config/pmm-receipt.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "memory/_local-config/pmm-receipt.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "product core/receipt.sh + receipt-fromhook replacement exists; survey says diverged",
+      "businessExitCodes": [
+        2
+      ],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/memory/_local-config/pmm-receipt.sh\" stop-check",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    },
+    {
+      "event": "PreCompact",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-pre-compact.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-pre-compact.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-pre-compact.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "survey marks product hooks/pmm-pre-compact.sh PRESENT-same",
+      "businessExitCodes": [],
+      "runtimeHealthProbe": {
+        "version": 1,
+        "innerCommand": "bash \"C:/Users/jax-x/.claude/pmm-pre-compact.sh\"",
+        "reliable": true,
+        "notes": "R12b reviewed leave-one-out evidence. reliable=false means current mechanically-derived innerCommand is not yet machine-proven; deep module-load preflight evidence is proposal-only in DEEP-PROBE-RESULTS.json and is not part of this innerCommand."
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "guards/bash-pipe-exitcode-watch.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-bash-impression.cjs",
+        "guards/pmm-cmd-parse.cjs",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-recall-policy.cjs",
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "57598814ceab0e1a36a1dfd0141caa93dbb026bf0564c1468e467bb734eaae99"
+    },
+    {
+      "path": "guards/bash-pipe-exitcode-watch.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/bash-pipe-exitcode-watch.cjs"
+      ],
+      "notes": "P2.2 explicitly ports pipe gate v2",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "23626d5cd46463710596dc16832aecdcca73664ab0434a0e28ea439295bdc6e2"
+    },
+    {
+      "path": "guards/pmm-bash-impression.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-cmd-parse.cjs",
+        "guards/pmm-core.cjs",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-recall-policy.cjs",
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "ab9afa09321b108803c4cf6689d3005bfaa55a860b0490a3dc7714f1a4e289a4"
+    },
+    {
+      "path": "guards/pmm-bash-impression.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-bash-impression.cjs"
+      ],
+      "notes": "P2.2 explicitly ports M0 impression observer",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "62ccfc3e6f0a2d1078a16c493c6dc61dddeefeb41428f717ec26a67dfbf52c81"
+    },
+    {
+      "path": "guards/pmm-cmd-parse.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "266f9ecbbee3a8b2d47410bcd62180307a91be62de142ff00a6c141be5c64cb0"
+    },
+    {
+      "path": "guards/pmm-core.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-trigger-glob.cjs",
+        "guards/vendor/path-is-inside.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "f3dcb1753616b1e3c564b58d91540f45dd228901f442e70d0b327e7a9dd7d456"
+    },
+    {
+      "path": "guards/pmm-home.sh",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "e8eafd51d361565a2cacea27f81f476029c9cae0d77645ef42913dccc72683ce"
+    },
+    {
+      "path": "guards/pmm-recall-ledger.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "P2.1 explicitly ports ledger; active SessionEnd flush",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "d52fea9785cc4bb331fe220099a5cc6acc58959936afa346198d81d7672af4df"
+    },
+    {
+      "path": "guards/pmm-recall-policy.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-recall-ledger.cjs",
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "37a25473a884e273750ee761e428809e35dbb438b6f2d5c3bdc3b9be069b4ea3"
+    },
+    {
+      "path": "guards/pmm-shell-memory-watch.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-home.sh",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-trigger-write-gate.cjs",
+        "guards/selftest-iso.sh"
+      ],
+      "notes": "current live memory-safety observer covers Bash/PowerShell write paths absent from Edit/Write hooks; generic memory behavior added after 09-17 survey",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "1e0490df11463e9065a4fe776ec8ca3f95cc9e9dc36e4609b7ea0b048a3c204d"
+    },
+    {
+      "path": "guards/pmm-trigger-glob.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "d5525d8e297c77f3acf2af5c9c3c2389001793692834c9aa1f26fd24a1d267b4"
+    },
+    {
+      "path": "guards/pmm-trigger-recall.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-core.cjs",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-recall-policy.cjs",
+        "guards/pmm-trigger-glob.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "726877e723993aff264886f7c3f633b7f142f11dbecc33619231d61f96d72267"
+    },
+    {
+      "path": "guards/pmm-trigger-recall.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-home.sh",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-recall-policy.cjs",
+        "guards/pmm-trigger-recall.cjs",
+        "guards/selftest-iso.sh"
+      ],
+      "notes": "P2.1 explicitly ports live trigger-recall semantics",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "058b42caf6fad1db89cc29cc107d33a3f86f2c3ab6b7d0d86a4cae8f343548d3"
+    },
+    {
+      "path": "guards/pmm-trigger-write-gate.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-core.cjs",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "da66643632a8d78ddd33064804ec57336b56b0448e2e0bcde9aecbec03d2a02c"
+    },
+    {
+      "path": "guards/pmm-trigger-write-gate.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/fixtures/v3/trigger-write-gate-probe.cjs",
+        "guards/pmm-trigger-write-gate.cjs",
+        "guards/selftest-iso.sh"
+      ],
+      "notes": "P2.1 explicitly ports live trigger-write-gate semantics",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "bbaa63a0f8c601d7aa21e46829e42c6f42ad67bba809b009127381a5c682833d"
+    },
+    {
+      "path": "guards/selftest-iso.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-recall-ledger.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "9f3240bdfcdfea4bdbb41cd9ffa28c8c3ba479b6b6867b474a411cf1f7da4645"
+    },
+    {
+      "path": "guards/selftest-iso.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "f610ecbf643bac459b4a1a6db522391c567f2774a92125e386d2c8ec2b837b12"
+    },
+    {
+      "path": "memory/_local-config/pmm-receipt-fromhook.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review",
+      "sourceSha256": "ac442f9326cc65acfa28b1f7f358139233ac87262d32e01ec2ad7ad7f62e6a00"
+    },
+    {
+      "path": "memory/_local-config/pmm-receipt.sh",
+      "disposition": "replace",
+      "dependencies": [
+        "memory/_local-config/pmm-receipt-fromhook.cjs"
+      ],
+      "notes": "product core/receipt.sh + receipt-fromhook replacement exists; survey says diverged",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "670f873f2c4b16f59bb52b17e56d0db73034552a31c64bb43aa0d83d1110809d"
+    },
+    {
+      "path": "pmm-dream-pending-watch.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "survey marks product hooks/pmm-dream-pending-watch.sh PRESENT-same",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "4c24bf5a7088b8ebb463241e169fe33e3f2d1176711d142c6f01c411e87c7395"
+    },
+    {
+      "path": "pmm-entry-length-watch.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "product has hooks/pmm-entry-length-watch.sh but survey says diverged; frozen live semantics remain oracle",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "62bf737f88a7331749533d8f4995dd1c102e1256a53dd566a4d43a276a52a29b"
+    },
+    {
+      "path": "pmm-heat-collect.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "survey marks product hooks/pmm-heat-collect.sh PRESENT-same",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "20e81adc3a0a7ded72476e6e67f92c3462a5db973157194d86a1632c91faa58d"
+    },
+    {
+      "path": "pmm-lessons-routing.sh",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "memory lesson routing is live memory behavior and missing from product survey",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "bda900ae580bd4bdcd6c1790125fcecd085d41a1df88cabc5bebe1ad93202f2c"
+    },
+    {
+      "path": "pmm-pre-compact.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "survey marks product hooks/pmm-pre-compact.sh PRESENT-same",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "dbf89a3afb156e81fc696a64dcaaf626dceec6580c1faeb9c4e7940b53d9536c"
+    },
+    {
+      "path": "pmm-size-watch.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "live SHA256 exactly equals product hooks/pmm-size-watch.sh; existing replacement",
+      "reviewStatus": "evidence-backed",
+      "sourceSha256": "4e3c418acadd13c6925788a84dcb9923f0662f87ea657c205c19c24559104499"
+    },
+    {
+      "path": "guards/vendor/path-is-inside.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "v1 candidate: transitively required static dependency discovered from current live source",
+      "reviewStatus": "candidate-static-closure",
+      "sourceSha256": "fc19a6e71a74779232bc9f7244f667b4b9a6731b15bd9164a6bee97fb7215616"
+    },
+    {
+      "path": "guards/fixtures/v3/trigger-write-gate-probe.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "v1 candidate: transitively required static dependency discovered from current live source",
+      "reviewStatus": "candidate-static-closure",
+      "sourceSha256": "12ea21ed3c8f406b3f00b40a254548c92129137082957ce35ad4dfb0869f5714"
+    },
+    {
+      "path": "memory/_local-config/settings.json",
+      "disposition": "port",
+      "dependencies": [],
+      "unresolvedDependencies": [],
+      "notes": "R9 candidate tracked settings mirror; current bytes equal live settings.json but formal source-capture commit not yet created",
+      "reviewStatus": "candidate-settings-mirror",
+      "sourceSha256": "199f52f1f75f2dd8c509f8bfa6d22e729bf210a3fdd2131eb521c82cd8d2eaec"
+    }
+  ],
+  "allowedDifferences": [],
+  "auditEvidence": [
+    "WebCodex 2026-09-29: exact 32-hook seed exported from live settings.json; dispositions/closure remain reviewable until promoted to version 1"
+  ],
+  "dynamicDependencyReview": [
+    {
+      "file": "guards/bash-pipe-exitcode-watch.cjs",
+      "scannerExpression": "require(injectPathRaw)",
+      "faithfulExpression": "require(injectPathRaw)",
+      "classification": "conditional-selftest-injection",
+      "target": "runtime path from PIPE_GATE_INJECT, not a fixed repo blob",
+      "conditions": "PIPE_GATE_SELFTEST=1; PIPE_GATE_INJECT set; PMM_RECALL_ROOT set and non-default; injected path resolves inside PMM_RECALL_ROOT",
+      "anchors": [
+        {
+          "line": 48,
+          "text": "  const injectPathRaw = process.env.PIPE_GATE_INJECT;"
+        },
+        {
+          "line": 64,
+          "text": "    const mod = require(injectPathRaw);"
+        }
+      ],
+      "schemaStatus": "gap-fixed-dependency-schema-cannot-represent-conditioned-runtime-injection"
+    },
+    {
+      "file": "guards/pmm-shell-memory-watch.sh",
+      "scannerExpression": "$SELF",
+      "faithfulExpression": "bash \"$SELF\"",
+      "classification": "self-reference",
+      "target": "guards/pmm-shell-memory-watch.sh",
+      "conditions": "--self-test branch only",
+      "anchors": [
+        {
+          "line": 53,
+          "text": "  SELF=\"$G/$(basename \"${BASH_SOURCE[0]}\")\""
+        }
+      ],
+      "schemaStatus": "gap-self-reference-is-not-an-external-blob-dependency"
+    },
+    {
+      "file": "guards/pmm-shell-memory-watch.sh",
+      "scannerExpression": "$_jh",
+      "faithfulExpression": "node \"$_jh\" \"$_shadow_win\" \"$_live_win\" \"$SID\"",
+      "classification": "runtime-generated-temp-script",
+      "target": "mktemp file populated by JSON_HELPER_EOF heredoc",
+      "conditions": "changed memory file exists and node is available",
+      "anchors": [
+        {
+          "line": 315,
+          "text": "      _jh=\"$(mktemp)\" 2>/dev/null || _jh=\"\""
+        },
+        {
+          "line": 329,
+          "text": "        _twg_out=\"$(node \"$_jh\" \"$_shadow_win\" \"$_live_win\" \"$SID\" 2>/dev/null | PMM_CANONICAL_MEMORY=\"$_snap_win\" PMM_DENIAL_LEDGER_SKIP=observer node \"$G/pmm-trigger-write-gate.cjs\" 2>/dev/null)\""
+        }
+      ],
+      "schemaStatus": "gap-generated-ephemeral-file-is-not-git-blob"
+    },
+    {
+      "file": "guards/pmm-shell-memory-watch.sh",
+      "scannerExpression": "$_ch",
+      "faithfulExpression": "node \"$_ch\" \"$(printf",
+      "classification": "runtime-generated-temp-script",
+      "target": "mktemp file populated by CTX_HELPER_EOF heredoc",
+      "conditions": "MSG non-empty and node available",
+      "anchors": [
+        {
+          "line": 358,
+          "text": "    _ch=\"$(mktemp)\" 2>/dev/null || _ch=\"\""
+        },
+        {
+          "line": 363,
+          "text": "      node \"$_ch\" \"$(printf '%b' \"$MSG\")\" 2>/dev/null"
+        }
+      ],
+      "schemaStatus": "gap-generated-ephemeral-file-is-not-git-blob"
+    },
+    {
+      "file": "guards/pmm-trigger-recall.sh",
+      "scannerExpression": "$(dirname",
+      "faithfulExpression": "source \"$(dirname \"$0\")/pmm-home.sh\"",
+      "classification": "scanner-truncation-static-target",
+      "target": "guards/pmm-home.sh",
+      "conditions": "--self-test branch",
+      "anchors": [
+        {
+          "line": 111,
+          "text": "  source \"$(dirname \"$0\")/pmm-home.sh\""
+        }
+      ],
+      "schemaStatus": "gap-scanner-expression-key-is-truncated-and-cannot-faithfully-key-review"
+    },
+    {
+      "file": "guards/selftest-iso.cjs",
+      "scannerExpression": "require(__filename)",
+      "faithfulExpression": "require(__filename)",
+      "classification": "self-reference",
+      "target": "guards/selftest-iso.cjs",
+      "conditions": "self-test code path",
+      "anchors": [
+        {
+          "line": 1675,
+          "text": "    const gen = require(__filename).strictManifest.generate;"
+        },
+        {
+          "line": 1676,
+          "text": "    const cmp = require(__filename).strictManifest.compare;"
+        }
+      ],
+      "schemaStatus": "gap-self-reference-is-not-an-external-blob-dependency"
+    },
+    {
+      "file": "guards/selftest-iso.sh",
+      "scannerExpression": "$SELFTEST_ISO_CJS",
+      "faithfulExpression": "node \"$SELFTEST_ISO_CJS\" ...",
+      "classification": "resolved-variable-static-target",
+      "target": "guards/selftest-iso.cjs",
+      "conditions": "helper functions/self-test paths",
+      "anchors": [
+        {
+          "line": 36,
+          "text": "SELFTEST_ISO_CJS=\"$SELFTEST_ISO_SH_DIR/selftest-iso.cjs\""
+        },
+        {
+          "line": 65,
+          "text": "  if raw=\"$(node \"$SELFTEST_ISO_CJS\" --selftest-root-binding 2>/dev/null)\"; then"
+        },
+        {
+          "line": 87,
+          "text": "  plan=\"$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR node \"$SELFTEST_ISO_CJS\" --git-scrub-env \"$mt\")\" || return 1"
+        },
+        {
+          "line": 124,
+          "text": "  if node \"$SELFTEST_ISO_CJS\" --check-isolated >/dev/null 2>&1; then"
+        },
+        {
+          "line": 140,
+          "text": "    if _pmm_scrub_plan=\"$(node \"$SELFTEST_ISO_CJS\" --fastpath-pmm-scrub)\"; then"
+        }
+      ],
+      "schemaStatus": "representable-manual-unresolved-review",
+      "manualDependencies": [
+        "guards/selftest-iso.cjs"
+      ]
+    },
+    {
+      "file": "guards/selftest-iso.sh",
+      "scannerExpression": "$RG_LIB/selftest-iso.sh",
+      "faithfulExpression": ". \"$RG_LIB/selftest-iso.sh\"",
+      "classification": "self-reference-through-generated-probe-env",
+      "target": "guards/selftest-iso.sh",
+      "conditions": "generated RG probe with RG_GATE=1; RG_LIB is set to SELFTEST_ISO_SH_DIR by parent",
+      "anchors": [
+        {
+          "line": 524,
+          "text": "  . \"$RG_LIB/selftest-iso.sh\" || exit 3"
+        },
+        {
+          "line": 556,
+          "text": "    local -a E=(env -i PATH=\"$PATH\" HOME=\"$h\" USERPROFILE=\"$h\" TMPDIR=\"$VT\" TEMP=\"$VT\" TMP=\"$VT\" RG_GATE=\"$gate\" RG_LIB=\"$SELFTEST_ISO_SH_DIR\" RG_MARK=\"$mark\")"
+        }
+      ],
+      "schemaStatus": "gap-self-reference-through-runtime-env"
+    },
+    {
+      "file": "memory/_local-config/pmm-receipt.sh",
+      "scannerExpression": "$0",
+      "faithfulExpression": "bash \"$0\" <subcommand>",
+      "classification": "self-reference",
+      "target": "memory/_local-config/pmm-receipt.sh",
+      "conditions": "pending/cover/stop-check/self-test recursion",
+      "anchors": [
+        {
+          "line": 46,
+          "text": "    n=\"$(bash \"$0\" pending-rows | grep -c . || true)\""
+        },
+        {
+          "line": 48,
+          "text": "    [ \"$n\" -gt 0 ] && bash \"$0\" pending-rows | cut -f1,4,5,6 | head -20"
+        },
+        {
+          "line": 63,
+          "text": "      ids=\"$(bash \"$0\" pending-rows | cut -f1)\""
+        },
+        {
+          "line": 69,
+          "text": "      oldest=\"$(bash \"$0\" pending-rows | cut -f2 | sort | head -1)\""
+        },
+        {
+          "line": 92,
+          "text": "    n=\"$(bash \"$0\" pending | head -1)\""
+        },
+        {
+          "line": 99,
+          "text": "    n=\"$(bash \"$0\" pending | head -1)\""
+        },
+        {
+          "line": 106,
+          "text": "    id=\"$(CLAUDE_SESSION_ID=selftest bash \"$0\" add test-kind ref1 一条测试收据)\" || true"
+        },
+        {
+          "line": 107,
+          "text": "    [ \"$(bash \"$0\" pending | head -1)\" = \"1\" ] && ok=$((ok+1))"
+        },
+        {
+          "line": 108,
+          "text": "    printf '{\"session_id\":\"selftest\",\"stop_hook_active\":false}' | bash \"$0\" stop-check 2>/dev/null; [ $? -eq 2 ] && ok=$((ok+1))"
+        },
+        {
+          "line": 109,
+          "text": "    printf '{\"session_id\":\"selftest\",\"stop_hook_active\":false}' | bash \"$0\" stop-check 2>/dev/null; [ $? -eq 0 ] && ok=$((ok+1))  # 二次不拦"
+        },
+        {
+          "line": 110,
+          "text": "    bash \"$0\" cover \"$id\" >/dev/null"
+        },
+        {
+          "line": 111,
+          "text": "    [ \"$(bash \"$0\" pending | head -1)\" = \"0\" ] && ok=$((ok+1))"
+        },
+        {
+          "line": 112,
+          "text": "    printf '{\"session_id\":\"x\",\"stop_hook_active\":true}' | bash \"$0\" stop-check; [ $? -eq 0 ] && ok=$((ok+1))  # 递归防护"
+        },
+        {
+          "line": 114,
+          "text": "    for i in $(seq 1 25); do CLAUDE_SESSION_ID=bulk bash \"$0\" add k r \"n$i\" >/dev/null; done"
+        },
+        {
+          "line": 115,
+          "text": "    bash \"$0\" cover --all >/dev/null"
+        },
+        {
+          "line": 116,
+          "text": "    [ \"$(bash \"$0\" pending | head -1)\" = \"0\" ] && ok=$((ok+1))"
+        }
+      ],
+      "schemaStatus": "gap-self-reference-is-not-an-external-blob-dependency"
+    },
+    {
+      "file": "pmm-entry-length-watch.sh",
+      "scannerExpression": "$_scope_helper",
+      "faithfulExpression": "node \"$_scope_helper\" \"$MEM\" \"$HOME/.claude/guards/pmm-core.cjs\"",
+      "classification": "runtime-generated-temp-script",
+      "target": "mktemp file populated by SCOPE_CHECK_EOF heredoc",
+      "conditions": "--block hook input, node available, temp allocation succeeds",
+      "anchors": [
+        {
+          "line": 173,
+          "text": "        _scope_helper=\"$(mktemp)\" 2>/dev/null || _scope_helper=\"\""
+        },
+        {
+          "line": 187,
+          "text": "          printf '%s' \"$_hin\" | node \"$_scope_helper\" \"$MEM\" \"$HOME/.claude/guards/pmm-core.cjs\" 2>/dev/null"
+        }
+      ],
+      "schemaStatus": "gap-generated-ephemeral-file-is-not-git-blob"
+    },
+    {
+      "file": "pmm-size-watch.sh",
+      "scannerExpression": "${PMM}hooks/scripts/session-start.sh",
+      "faithfulExpression": "bash \"${PMM}hooks/scripts/session-start.sh\"",
+      "classification": "external-version-selected-plugin",
+      "target": "plugins/cache/claude-community/pmm/*/hooks/scripts/session-start.sh selected by lexicographic tail -1",
+      "conditions": "SessionStart; PMM glob resolves non-empty",
+      "anchors": [
+        {
+          "line": 33,
+          "text": "PMM=$(ls -d plugins/cache/claude-community/pmm/*/ 2>/dev/null | tail -1)"
+        },
+        {
+          "line": 37,
+          "text": "OUT=$(bash \"${PMM}hooks/scripts/session-start.sh\" 2>/dev/null) || exit 0"
+        }
+      ],
+      "schemaStatus": "gap-external-version-selected-file-needs-external-dependency-kind-with-selection-rule",
+      "currentSelectionEvidence": {
+        "selectedVersion": "2.7.0",
+        "path": "C:/Users/jax-x/.claude/plugins/cache/claude-community/pmm/2.7.0/hooks/scripts/session-start.sh",
+        "exists": true,
+        "sha256": "1dd2df3ee4cfc31ec3a505e924f9fdad2bf7a1fef854fe748532c24b196e4464"
+      }
+    }
+  ],
+  "review": {
+    "staticClosure": {
+      "originalFiles": 25,
+      "candidateFiles": 27,
+      "addedFiles": [
+        "guards/vendor/path-is-inside.cjs",
+        "guards/fixtures/v3/trigger-write-gate-probe.cjs"
+      ],
+      "addedStaticEdges": 8
+    },
+    "runtimeHealth": "not accepted; see health-probe-results.json and minimal-runtime-health-spec.md",
+    "freshness": "automatic freshness remains unproven; separate byte/log binding is recorded in source-plan.json"
+  },
+  "settingsMirror": "memory/_local-config/settings.json",
+  "generatedArtifacts": [
+    {
+      "version": 1,
+      "id": "JSON",
+      "generatorPath": "guards/pmm-shell-memory-watch.sh",
+      "generatorSha256": "1e0490df11463e9065a4fe776ec8ca3f95cc9e9dc36e4609b7ea0b048a3c204d",
+      "heredoc": {
+        "variable": "_jh",
+        "marker": "JSON_HELPER_EOF",
+        "startLine": 317,
+        "endLine": 325,
+        "bodyBytes": 347,
+        "bodySha256": "5a26fc5b2596abbd07dab7cc500e55c23586d081a7d4e6f8c428ca1383910f9d",
+        "bodyEndsWithLf": true
+      },
+      "call": {
+        "line": 329,
+        "expression": "        _twg_out=\"$(node \"$_jh\" \"$_shadow_win\" \"$_live_win\" \"$SID\" 2>/dev/null | PMM_CANONICAL_MEMORY=\"$_snap_win\" PMM_DENIAL_LEDGER_SKIP=observer node \"$G/pmm-trigger-write-gate.cjs\" 2>/dev/null)\"",
+        "lineSha256": "dcf7f9ab9167187fccfcbcebb145ebfb366004b80591d50a4e71ae9510b259a6"
+      }
+    },
+    {
+      "version": 1,
+      "id": "CTX",
+      "generatorPath": "guards/pmm-shell-memory-watch.sh",
+      "generatorSha256": "1e0490df11463e9065a4fe776ec8ca3f95cc9e9dc36e4609b7ea0b048a3c204d",
+      "heredoc": {
+        "variable": "_ch",
+        "marker": "CTX_HELPER_EOF",
+        "startLine": 360,
+        "endLine": 362,
+        "bodyBytes": 132,
+        "bodySha256": "06d8cc0a7405640780a8d29957472873a9f2027999db305173336dc4172be81f",
+        "bodyEndsWithLf": true
+      },
+      "call": {
+        "line": 363,
+        "expression": "      node \"$_ch\" \"$(printf '%b' \"$MSG\")\" 2>/dev/null",
+        "lineSha256": "301f00a6a4ded9ed6a3c51c4689ca1b01c9230b4e0e7f34d61ea1b991f34f252"
+      }
+    }
+  ],
+  "externalDependencies": [
+    {
+      "id": "home-origin-master-pull",
+      "kind": "command",
+      "command": "git -C \"C:/Users/jax-x\" pull --ff-only origin master",
+      "notes": "HOME repo network refresh used by SessionStart autopull and prompt-triggered pull. Current local origin URL evidence: https://github.com/axervice/claude-pmm.git; R10 does not execute it."
+    },
+    {
+      "id": "home-origin-master-push",
+      "kind": "command",
+      "command": "git -C \"C:/Users/jax-x\" push -q origin master",
+      "notes": "Conditional ahead-repair push in pmm-autopull.sh. Current local origin URL evidence: https://github.com/axervice/claude-pmm.git; R10 does not execute it."
+    },
+    {
+      "id": "home-origin-master-lsremote",
+      "kind": "command",
+      "command": "git -C \"C:/Users/jax-x\" ls-remote origin refs/heads/master",
+      "notes": "Conditional remote truth check for stale post-commit push status in pmm-autopull.sh. Current local origin URL evidence: https://github.com/axervice/claude-pmm.git; R10 does not execute it."
+    },
+    {
+      "id": "pmm-plugin-2.7.0-session-start",
+      "kind": "file",
+      "path": "plugins/cache/claude-community/pmm/2.7.0/hooks/scripts/session-start.sh",
+      "version": "2.7.0",
+      "notes": "Exact PMM plugin session-start entry delegated by pmm-session-start.sh; current file SHA-256 1dd2df3ee4cfc31ec3a505e924f9fdad2bf7a1fef854fe748532c24b196e4464."
+    },
+    {
+      "id": "pmm-plugin-2.7.0-should-save",
+      "kind": "file",
+      "path": "plugins/cache/claude-community/pmm/2.7.0/hooks/scripts/should-save.sh",
+      "version": "2.7.0",
+      "notes": "Exact PMM plugin should-save entry delegated by pmm-should-save.sh; current file SHA-256 f8930afd9c625a922d995cac89e969f2a840a40751c0dad3cc22fe47ae07b277."
+    },
+    {
+      "id": "pmm-permanent-repo",
+      "kind": "repo",
+      "path": "pmm-permanent",
+      "version": "75c69f18f30ef61043502baa4245cdb1b6efcbc8",
+      "notes": "Independent read-only crown-jewel repo used by pmm-permanent-inject.sh. Current local origin URL evidence: https://github.com/axervice/pmm-permanent.git; check-permanent.sh SHA-256 cb296972e0fb3335c9be7136bcb217fed13289f060ba80b33db65d2933bc68c9."
+    }
+  ],
+  "r11Review": {
+    "status": "BLOCKED-REVIEW-CANDIDATE",
+    "rebuiltFrom": "clean draft + R9/R10 structural deltas; all text-bearing sources re-read with Node utf8",
+    "previousCandidates": [
+      "R9",
+      "R10"
+    ],
+    "previousUtf8Defect": "confirmed mojibake in prior candidates; prior text values are not reused as authority",
+    "runtimeHealth": "unchanged BLOCKED",
+    "closure": "unchanged except reviewer-approved private-exclude decisions and shadow-consumer evidence generated separately",
+    "formalFreeze": false
+  },
+  "r12bReview": {
+    "status": "runtime-contract-candidate-with-blockers",
+    "matrixRawCounts": {
+      "detected": 41,
+      "silentChange": 33,
+      "noEffect": 17
+    },
+    "matrixSemanticCounts": {
+      "detected": 41,
+      "silentChange": 17,
+      "noEffect": 33
+    },
+    "deepProbe": {
+      "tested": 17,
+      "detected": 17,
+      "contractStatus": "proposal-only"
+    },
+    "reliableTrue": [
+      "SessionStart/0/3",
+      "SessionStart/0/4",
+      "SessionStart/0/6",
+      "PostToolUse/0/0",
+      "PostToolUse/0/1",
+      "PostToolUse/0/2",
+      "PostToolUse/1/0",
+      "PostToolUse/3/0",
+      "PostToolUse/4/0",
+      "SessionEnd/0/0",
+      "Stop/0/1",
+      "PreCompact/0/0"
+    ],
+    "reliableFalse": [
+      "PostToolUse/5/0",
+      "PostToolUse/6/0",
+      "PostToolUseFailure/0/0",
+      "PreToolUse/2/0",
+      "PreToolUse/4/0",
+      "PreToolUse/4/1",
+      "SessionStart/0/2"
+    ],
+    "formalFreeze": false
+  }
+}

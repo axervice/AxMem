@@ -1,0 +1,820 @@
+{
+  "version": 0,
+  "status": "draft-not-formal",
+  "settingsJson": "settings.json",
+  "sourceEvidence": [
+    "docs/audits/SURVEY-2026-09-17-live-vs-product.md",
+    "docs/P2-CC-PERFECT-SPEC.md §1.0/§3.3"
+  ],
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-autopull.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-autopull.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2 spec §3.3 explicitly names autopull network pull/push as external prerequisite"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 1,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-session-start.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-session-start.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2 spec §3.3 explicitly names PMM plugin session-start as external prerequisite"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 2,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-size-watch.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-size-watch.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-size-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "live pmm-size-watch.sh SHA256 equals product hooks/pmm-size-watch.sh (4e3c418acadd13c6925788a84dcb9923f0662f87ea657c205c19c24559104499); exact existing replacement"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 3,
+      "matcher": null,
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-lessons-routing.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-lessons-routing.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "pmm-lessons-routing.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "memory lesson routing is live memory behavior and missing from product survey"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 4,
+      "matcher": null,
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-entry-length-watch.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-entry-length-watch.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-entry-length-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "product has hooks/pmm-entry-length-watch.sh but survey says diverged; frozen live semantics remain oracle"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 5,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/hooks/pmm-permanent-inject.sh\"",
+      "timeout": null,
+      "targets": [
+        "hooks/pmm-permanent-inject.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2 spec §3.3 explicitly names permanent injection as external prerequisite"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 6,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-dream-pending-watch.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-dream-pending-watch.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-dream-pending-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "survey marks product hooks/pmm-dream-pending-watch.sh PRESENT-same"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 7,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/hermes-memory-freshness.sh\"",
+      "timeout": null,
+      "targets": [
+        "hermes-memory-freshness.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "survey explicitly says live-only, not to port"
+    },
+    {
+      "event": "SessionStart",
+      "groupIndex": 0,
+      "hookIndex": 8,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-banner.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-banner.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "provisional",
+      "notes": "standing-rule/Kernel banner is user workflow governance, not AxMem memory runtime; provisional pending final freeze review"
+    },
+    {
+      "event": "UserPromptSubmit",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-prompt-pull.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-prompt-pull.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "prompt-triggered repo pull is the same network/git dependency class as autopull"
+    },
+    {
+      "event": "UserPromptSubmit",
+      "groupIndex": 0,
+      "hookIndex": 1,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-banner.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-banner.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "provisional",
+      "notes": "standing-rule/Kernel banner is user workflow governance, not AxMem memory runtime; provisional pending final freeze review"
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": "Agent|Workflow",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/model-guard.sh\" || { echo \"model-guard FAILED TO LAUNCH (missing/unreadable/bash error) — denying fail-closed\" >&2; exit 2; }",
+      "timeout": null,
+      "targets": [
+        "guards/model-guard.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "provisional",
+      "notes": "model/workflow routing guard is orchestration policy, not memory-product behavior; provisional pending final freeze review"
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 1,
+      "hookIndex": 0,
+      "matcher": "Agent",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/opus-justification-guard.sh\" || { echo \"opus-justification-guard 自身故障 — 成本闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/opus-justification-guard.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "provisional",
+      "notes": "model-cost/justification policy is orchestration policy, not memory-product behavior; provisional pending final freeze review"
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 2,
+      "hookIndex": 0,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-write-gate.sh\" || { echo \"pmm-trigger-write-gate 自身故障 — fail-open 放行(HIGH-5 写时拦截退化为 PostToolUse 纵深防线)\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-trigger-write-gate.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-trigger-write-gate.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.1 explicitly ports live trigger-write-gate semantics"
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 3,
+      "hookIndex": 0,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "node \"C:/Users/jax-x/.claude/pmm-hook.cjs\" --shadow --pre || { echo \"pmm-hook --shadow --pre 自身故障 — 影子闸 fail-open 放行(C05-BUILD-SPEC B1,只记录不拦不注入)\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "pmm-hook.cjs"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "provisional",
+      "notes": "wired only as --shadow pre/post measurement; final product ports the underlying memory logic; provisional pending final freeze review"
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 4,
+      "hookIndex": 0,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\" || { echo \"bash-pipe-exitcode-watch 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.2 explicitly ports pipe gate v2"
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 4,
+      "hookIndex": 1,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/pmm-bash-impression.sh\" || { echo \"pmm-bash-impression 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-bash-impression.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-bash-impression.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.2 explicitly ports M0 impression observer"
+    },
+    {
+      "event": "PreToolUse",
+      "groupIndex": 4,
+      "hookIndex": 2,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/pmm-isolation-gate.sh\" || { echo \"pmm-isolation-gate 自身故障 — fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-isolation-gate.sh"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "provisional",
+      "notes": "development/self-test isolation second-line classifier, not end-user memory semantics; provisional pending final freeze review"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-lessons-routing.sh\" --block",
+      "timeout": null,
+      "targets": [
+        "pmm-lessons-routing.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "pmm-lessons-routing.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "memory lesson routing is live memory behavior and missing from product survey"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 0,
+      "hookIndex": 1,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/pmm-entry-length-watch.sh\" --block",
+      "timeout": null,
+      "targets": [
+        "pmm-entry-length-watch.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-entry-length-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "product has hooks/pmm-entry-length-watch.sh but survey says diverged; frozen live semantics remain oracle"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 0,
+      "hookIndex": 2,
+      "matcher": "Edit|Write|MultiEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-recall.sh\" || exit 0",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-trigger-recall.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-trigger-recall.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.1 explicitly ports live trigger-recall semantics"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 1,
+      "hookIndex": 0,
+      "matcher": "NotebookEdit",
+      "command": "PMM_TEE_LOG=\"C:/Users/jax-x/.claude/.shadow/legacy-JaxStuuu.log\" bash \"C:/Users/jax-x/.claude/guards/pmm-trigger-recall.sh\" || exit 0",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-trigger-recall.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-trigger-recall.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.1 explicitly ports live trigger-recall semantics"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 2,
+      "hookIndex": 0,
+      "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+      "command": "node \"C:/Users/jax-x/.claude/pmm-hook.cjs\" --shadow || { echo \"pmm-hook --shadow 自身故障 — 影子闸 fail-open 放行(C05-BUILD-SPEC B1,只记录不拦不注入)\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "pmm-hook.cjs"
+      ],
+      "disposition": "private-exclude",
+      "files": [],
+      "reviewStatus": "provisional",
+      "notes": "wired only as --shadow pre/post measurement; final product ports the underlying memory logic; provisional pending final freeze review"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 3,
+      "hookIndex": 0,
+      "matcher": "AskUserQuestion",
+      "command": "bash \"C:/Users/jax-x/.claude/memory/_local-config/pmm-receipt.sh\" from-hook || exit 0",
+      "timeout": null,
+      "targets": [
+        "memory/_local-config/pmm-receipt.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "memory/_local-config/pmm-receipt.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "product core/receipt.sh + receipt-fromhook replacement exists; survey says diverged"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 4,
+      "hookIndex": 0,
+      "matcher": "Grep",
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-heat-collect.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-heat-collect.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-heat-collect.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "survey marks product hooks/pmm-heat-collect.sh PRESENT-same"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 5,
+      "hookIndex": 0,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\" || { echo \"bash-pipe-exitcode-watch 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.2 explicitly ports pipe gate v2"
+    },
+    {
+      "event": "PostToolUse",
+      "groupIndex": 6,
+      "hookIndex": 0,
+      "matcher": "Bash|PowerShell",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/pmm-shell-memory-watch.sh\" || { echo \"pmm-shell-memory-watch 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-shell-memory-watch.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-shell-memory-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "current live memory-safety observer covers Bash/PowerShell write paths absent from Edit/Write hooks; generic memory behavior added after 09-17 survey"
+    },
+    {
+      "event": "PostToolUseFailure",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": "Bash",
+      "command": "bash \"C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh\" || { echo \"bash-pipe-exitcode-watch 自身故障 — 报告闸 fail-open 放行\" >&2; exit 0; }",
+      "timeout": null,
+      "targets": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/bash-pipe-exitcode-watch.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.2 explicitly ports pipe gate v2"
+    },
+    {
+      "event": "SessionEnd",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "node \"C:/Users/jax-x/.claude/guards/pmm-recall-ledger.cjs\" --session-end >/dev/null 2>&1 || exit 0",
+      "timeout": null,
+      "targets": [
+        "guards/pmm-recall-ledger.cjs"
+      ],
+      "disposition": "port",
+      "files": [
+        "guards/pmm-recall-ledger.cjs"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2.1 explicitly ports ledger; active SessionEnd flush"
+    },
+    {
+      "event": "Stop",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-should-save.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-should-save.sh"
+      ],
+      "disposition": "external-prerequisite",
+      "files": [],
+      "reviewStatus": "evidence-backed",
+      "notes": "P2 spec §3.3 explicitly names PMM plugin should-save as external prerequisite"
+    },
+    {
+      "event": "Stop",
+      "groupIndex": 0,
+      "hookIndex": 1,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/memory/_local-config/pmm-receipt.sh\" stop-check",
+      "timeout": null,
+      "targets": [
+        "memory/_local-config/pmm-receipt.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "memory/_local-config/pmm-receipt.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "product core/receipt.sh + receipt-fromhook replacement exists; survey says diverged"
+    },
+    {
+      "event": "PreCompact",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "bash \"C:/Users/jax-x/.claude/pmm-pre-compact.sh\"",
+      "timeout": null,
+      "targets": [
+        "pmm-pre-compact.sh"
+      ],
+      "disposition": "replace",
+      "files": [
+        "pmm-pre-compact.sh"
+      ],
+      "reviewStatus": "evidence-backed",
+      "notes": "survey marks product hooks/pmm-pre-compact.sh PRESENT-same"
+    }
+  ],
+  "files": [
+    {
+      "path": "guards/bash-pipe-exitcode-watch.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-cmd-parse.cjs",
+        "guards/pmm-recall-policy.cjs",
+        "guards/selftest-iso.cjs",
+        "guards/pmm-bash-impression.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/bash-pipe-exitcode-watch.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/bash-pipe-exitcode-watch.cjs"
+      ],
+      "notes": "P2.2 explicitly ports pipe gate v2",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "guards/pmm-bash-impression.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-cmd-parse.cjs",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-recall-policy.cjs",
+        "guards/pmm-core.cjs",
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/pmm-bash-impression.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-bash-impression.cjs"
+      ],
+      "notes": "P2.2 explicitly ports M0 impression observer",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "guards/pmm-cmd-parse.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/pmm-core.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/pmm-home.sh",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/pmm-recall-ledger.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "P2.1 explicitly ports ledger; active SessionEnd flush",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "guards/pmm-recall-policy.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/pmm-shell-memory-watch.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-home.sh",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-trigger-write-gate.cjs",
+        "guards/selftest-iso.sh"
+      ],
+      "notes": "current live memory-safety observer covers Bash/PowerShell write paths absent from Edit/Write hooks; generic memory behavior added after 09-17 survey",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "guards/pmm-trigger-glob.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/pmm-trigger-recall.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-trigger-glob.cjs",
+        "guards/pmm-core.cjs",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-recall-policy.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/pmm-trigger-recall.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-trigger-recall.cjs",
+        "guards/pmm-home.sh",
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-recall-policy.cjs",
+        "guards/selftest-iso.sh"
+      ],
+      "notes": "P2.1 explicitly ports live trigger-recall semantics",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "guards/pmm-trigger-write-gate.cjs",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-recall-ledger.cjs",
+        "guards/pmm-core.cjs",
+        "guards/selftest-iso.cjs"
+      ],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/pmm-trigger-write-gate.sh",
+      "disposition": "port",
+      "dependencies": [
+        "guards/pmm-trigger-write-gate.cjs",
+        "guards/selftest-iso.sh"
+      ],
+      "notes": "P2.1 explicitly ports live trigger-write-gate semantics",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "guards/selftest-iso.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "guards/selftest-iso.sh",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "memory/_local-config/pmm-receipt-fromhook.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "dependency of an inventoried hook; disposition inherits conservative port until final review",
+      "reviewStatus": "closure-pending-review"
+    },
+    {
+      "path": "memory/_local-config/pmm-receipt.sh",
+      "disposition": "replace",
+      "dependencies": [
+        "memory/_local-config/pmm-receipt-fromhook.cjs"
+      ],
+      "notes": "product core/receipt.sh + receipt-fromhook replacement exists; survey says diverged",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "pmm-dream-pending-watch.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "survey marks product hooks/pmm-dream-pending-watch.sh PRESENT-same",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "pmm-entry-length-watch.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "product has hooks/pmm-entry-length-watch.sh but survey says diverged; frozen live semantics remain oracle",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "pmm-heat-collect.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "survey marks product hooks/pmm-heat-collect.sh PRESENT-same",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "pmm-lessons-routing.sh",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "memory lesson routing is live memory behavior and missing from product survey",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "pmm-pre-compact.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "survey marks product hooks/pmm-pre-compact.sh PRESENT-same",
+      "reviewStatus": "evidence-backed"
+    },
+    {
+      "path": "pmm-size-watch.sh",
+      "disposition": "replace",
+      "dependencies": [],
+      "notes": "live SHA256 exactly equals product hooks/pmm-size-watch.sh; existing replacement",
+      "reviewStatus": "evidence-backed"
+    }
+  ],
+  "allowedDifferences": [],
+  "auditEvidence": [
+    "WebCodex 2026-09-29: exact 32-hook seed exported from live settings.json; dispositions/closure remain reviewable until promoted to version 1"
+  ],
+  "review": {
+    "provisionalHooks": [
+      [
+        "SessionStart",
+        0,
+        8,
+        "private-exclude",
+        "standing-rule/Kernel banner is user workflow governance, not AxMem memory runtime; provisional pending final freeze review"
+      ],
+      [
+        "UserPromptSubmit",
+        0,
+        1,
+        "private-exclude",
+        "standing-rule/Kernel banner is user workflow governance, not AxMem memory runtime; provisional pending final freeze review"
+      ],
+      [
+        "PreToolUse",
+        0,
+        0,
+        "private-exclude",
+        "model/workflow routing guard is orchestration policy, not memory-product behavior; provisional pending final freeze review"
+      ],
+      [
+        "PreToolUse",
+        1,
+        0,
+        "private-exclude",
+        "model-cost/justification policy is orchestration policy, not memory-product behavior; provisional pending final freeze review"
+      ],
+      [
+        "PreToolUse",
+        3,
+        0,
+        "private-exclude",
+        "wired only as --shadow pre/post measurement; final product ports the underlying memory logic; provisional pending final freeze review"
+      ],
+      [
+        "PreToolUse",
+        4,
+        2,
+        "private-exclude",
+        "development/self-test isolation second-line classifier, not end-user memory semantics; provisional pending final freeze review"
+      ],
+      [
+        "PostToolUse",
+        2,
+        0,
+        "private-exclude",
+        "wired only as --shadow pre/post measurement; final product ports the underlying memory logic; provisional pending final freeze review"
+      ]
+    ],
+    "closurePendingFiles": [
+      "guards/bash-pipe-exitcode-watch.cjs",
+      "guards/pmm-bash-impression.cjs",
+      "guards/pmm-cmd-parse.cjs",
+      "guards/pmm-core.cjs",
+      "guards/pmm-home.sh",
+      "guards/pmm-recall-policy.cjs",
+      "guards/pmm-trigger-glob.cjs",
+      "guards/pmm-trigger-recall.cjs",
+      "guards/pmm-trigger-write-gate.cjs",
+      "guards/selftest-iso.cjs",
+      "guards/selftest-iso.sh",
+      "memory/_local-config/pmm-receipt-fromhook.cjs"
+    ]
+  }
+}

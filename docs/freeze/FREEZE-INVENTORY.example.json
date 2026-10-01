@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "settingsJson": "settings.json",
+  "hooks": [
+    {
+      "event": "UserPromptSubmit",
+      "groupIndex": 0,
+      "hookIndex": 0,
+      "matcher": null,
+      "command": "<exact live command>",
+      "timeout": null,
+      "disposition": "port",
+      "files": [
+        "guards/example.cjs"
+      ],
+      "implementation": "core/example.cjs",
+      "notes": "example only"
+    }
+  ],
+  "files": [
+    {
+      "path": "guards/example.cjs",
+      "disposition": "port",
+      "dependencies": [],
+      "notes": "example only"
+    }
+  ],
+  "auditEvidence": [
+    "guards/CHANGELOG.md: historical fab/codex/Opus closure; replace with exact current evidence"
+  ],
+  "allowedDifferences": [],
+  "fixtureSet": "tests/fixtures/p2-equiv/events.json"
+}
