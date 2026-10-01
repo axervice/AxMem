@@ -329,13 +329,14 @@ function parseRunArgs(argv) {
     if (argv[i] === '--freeze') o.freeze = argv[++i];
     else if (argv[i] === '--fixtures') o.fixtures = argv[++i];
     else if (argv[i] === '--repo') o.repo = argv[++i];
+    else if (argv[i] === '--axmem-repo') o.axmemRepo = argv[++i];
     else if (argv[i] === '--source-root') o.sourceRoot = argv[++i];
     else if (argv[i] === '--out') o.out = argv[++i];
     else if (argv[i] === '--timeout-ms') o.timeoutMs = Number(argv[++i]);
     else throw new Error('unknown run arg: ' + argv[i]);
   }
-  if (!o.freeze || !o.fixtures || !o.repo || !o.sourceRoot || !o.out) {
-    throw new Error('usage: equiv.cjs run --freeze <FREEZE.json> --fixtures <events.json> --repo <git-root> --source-root <live-.claude> --out <report.json> [--timeout-ms <ms>]');
+  if (!o.freeze || !o.fixtures || !o.repo || !o.axmemRepo || !o.sourceRoot || !o.out) {
+    throw new Error('usage: equiv.cjs run --freeze <FREEZE.json> --fixtures <events.json> --repo <source-git-root> --axmem-repo <AxMem-root> --source-root <live-.claude> --out <report.json> [--timeout-ms <ms>]');
   }
   return o;
 }
@@ -352,6 +353,7 @@ if (require.main === module) {
         freeze: path.resolve(o.freeze),
         fixture: path.resolve(o.fixtures),
         repoRoot: path.resolve(o.repo),
+        axmemRepoRoot: path.resolve(o.axmemRepo),
         sourceRoot: path.resolve(o.sourceRoot),
         out: path.resolve(o.out),
         defaultTimeoutMs: o.timeoutMs,

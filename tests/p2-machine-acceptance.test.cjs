@@ -25,6 +25,21 @@ function git(cwd, args) {
 }
 function sha256(b) { return crypto.createHash('sha256').update(b).digest('hex'); }
 function clone(x) { return JSON.parse(JSON.stringify(x)); }
+function localHookIdentity(h) {
+  return JSON.stringify([h.event, h.groupIndex, h.hookIndex, h.matcher === undefined ? null : h.matcher, h.command, h.timeout === undefined ? null : h.timeout]);
+}
+function settingsForHooks(hooks) {
+  const events = {};
+  for (const h of hooks) {
+    if (!events[h.event]) events[h.event] = [];
+    if (!events[h.event][h.groupIndex]) events[h.event][h.groupIndex] = { matcher: h.matcher === undefined ? null : h.matcher, hooks: [] };
+    events[h.event][h.groupIndex].hooks[h.hookIndex] = { type: 'command', command: h.command, timeout: h.timeout };
+  }
+  for (const [event, groups] of Object.entries(events)) {
+    if (groups.some((x) => !x) || groups.some((g) => g.hooks.some((x) => !x))) throw new Error('sparse synthetic hook settings for ' + event);
+  }
+  return { hooks: events };
+}
 
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-p20-machine-accept-'));
 try {
@@ -55,13 +70,56 @@ try {
   const hookRel = 'guards/hook.cjs';
   const command = 'node "' + hookAbs.replace(/\\/g, '/') + '"';
   const sourceFiles = [{ path: hookRel, sha256: sha256(fs.readFileSync(hookAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'fixture' }];
+  let bindSeq = 0;
+  function bindFreeze(raw, label) {
+    const out = clone(raw);
+    out.hooks = (out.hooks || []).map((h) => Object.assign({}, h, {
+      files: clone(h.files || []), implementation: h.implementation || null, notes: h.notes || '',
+      externalDependencies: clone(h.externalDependencies || []), businessExitCodes: clone(h.businessExitCodes || []),
+      runtimeHealthProbe: h.runtimeHealthProbe ? clone(h.runtimeHealthProbe) : null,
+    }));
+    const seq = ++bindSeq;
+    const mirrorRel = 'memory/_local-config/r15b-' + String(seq).padStart(3, '0') + '-' + label + '.json';
+    const mirrorAbs = path.join(live, ...mirrorRel.split('/'));
+    const settings = settingsForHooks(out.hooks || []);
+    const mirrorBytes = Buffer.from(JSON.stringify(settings, null, 2) + '\n');
+    fs.mkdirSync(path.dirname(mirrorAbs), { recursive: true });
+    fs.writeFileSync(mirrorAbs, mirrorBytes);
+    git(repo, ['add', '--', '.claude/' + mirrorRel]);
+    git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'bind freeze ' + label + ' ' + seq]);
+    out.source.commit = git(repo, ['rev-parse', 'HEAD']).trim();
+    out.source.treeOid = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
+    out.sourceFiles = (out.sourceFiles || []).filter((x) => x.path !== mirrorRel).map((x) => {
+      const abs = path.join(live, ...x.path.split('/'));
+      return fs.existsSync(abs) ? Object.assign({}, x, { sha256: sha256(fs.readFileSync(abs)) }) : x;
+    });
+    out.sourceFiles.push({ path: mirrorRel, sha256: sha256(mirrorBytes), disposition: 'private-exclude', dependencies: [], unresolvedDependencies: [], notes: 'synthetic tracked settings mirror' });
+    const inventory = { version: 1, hooks: (out.hooks || []).map((h) => ({
+      event: h.event, groupIndex: h.groupIndex, hookIndex: h.hookIndex,
+      matcher: h.matcher === undefined ? null : h.matcher, command: h.command,
+      timeout: h.timeout === undefined ? null : h.timeout,
+      disposition: h.disposition, files: clone(h.files || []), implementation: h.implementation || null,
+      notes: h.notes || '', externalDependencies: clone(h.externalDependencies || []),
+      businessExitCodes: clone(h.businessExitCodes || []), runtimeHealthProbe: h.runtimeHealthProbe ? clone(h.runtimeHealthProbe) : null,
+    })) };
+    const inventoryRel = 'r15b-inventory-' + String(seq).padStart(3, '0') + '-' + label + '.json';
+    const inventoryBytes = Buffer.from(JSON.stringify(inventory, null, 2) + '\n');
+    fs.writeFileSync(path.join(repo, inventoryRel), inventoryBytes);
+    out.inventoryPath = inventoryRel;
+    out.inventorySha256 = sha256(inventoryBytes);
+    out.settingsEvidence = {
+      livePath: 'settings.json', liveSha256: sha256(mirrorBytes), mirrorPath: mirrorRel,
+      mirrorSha256: sha256(mirrorBytes), hookIdentitySha256: sha256(Buffer.from((out.hooks || []).map(localHookIdentity).join('\n'), 'utf8')),
+    };
+    return out;
+  }
   const rh = (logicalId, event, matcher, hookIndex) => ({
     logicalId, event, groupIndex: 0, hookIndex, matcher, command, timeout: 5,
     disposition: 'port', files: [hookRel], implementation: null, notes: 'temp fixture runnable', externalDependencies: [],
     businessExitCodes: [2],
     runtimeHealthProbe: { version: 1, innerCommand: command, reliable: true, notes: 'reviewed exact inner command; case-specific branches remain observable to the inner execution' },
   });
-  const freeze = {
+  const freeze = bindFreeze({
     schema: 'axmem-p2-freeze/v1',
     source: { commit, liveRelativePath: '.claude', treeOid, clean: true, uncommittedPatch: { empty: true, sha256: null } },
     sourceFiles,
@@ -78,16 +136,16 @@ try {
       },
       rh('pre-compact', 'PreCompact', null, 0),
     ],
-  };
+  }, 'base');
   const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'p2-equiv', 'events.json'), 'utf8'));
 
   let emptyFixtureErr = '';
-  try { runner.runFreezeReport({ freeze, fixture: { version: 1, events: [] }, repoRoot: repo, sourceRoot: live }); }
+  try { runner.runFreezeReport({ freeze, fixture: { version: 1, events: [] }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live }); }
   catch (e) { emptyFixtureErr = e.message; }
   check('runner rejects empty fixture', /non-empty events/.test(emptyFixtureErr), emptyFixtureErr);
 
   let partialFixtureErr = '';
-  try { runner.runFreezeReport({ freeze, fixture: { version: 1, events: [{ event: 'Bash', cases: [{ id: 'b1' }] }] }, repoRoot: repo, sourceRoot: live }); }
+  try { runner.runFreezeReport({ freeze, fixture: { version: 1, events: [{ event: 'Bash', cases: [{ id: 'b1' }] }] }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live }); }
   catch (e) { partialFixtureErr = e.message; }
   check('runner enforces seven event classes with >=3 cases', /at least 3 cases/.test(partialFixtureErr), partialFixtureErr);
 
@@ -102,8 +160,8 @@ try {
   const escape = path.join(T, 'escape-write');
   const prior = process.env.PMM_MEM_DIR;
   process.env.PMM_MEM_DIR = escape;
-  const reportA = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, sourceRoot: live });
-  const reportB = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, sourceRoot: live });
+  const reportA = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live });
+  const reportB = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live });
   if (prior === undefined) delete process.env.PMM_MEM_DIR; else process.env.PMM_MEM_DIR = prior;
   check('runner emits full 21-case baseline', reportA.cases.length === 21 && reportA.fixtureCoverage.caseCount === 21);
   check('runner keeps writes inside temp sandbox despite inherited PMM path', !fs.existsSync(escape));
@@ -143,8 +201,296 @@ try {
 
   const focusedGroup = { event: 'UserPromptSubmit', hookEvents: ['UserPromptSubmit'] };
   const focusedCase = { id: 'deny', input: { prompt: 'deny' } };
-  const deny = runner.runCase({ freeze, group: focusedGroup, c: focusedCase, repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  const deny = runner.runCase({ freeze, group: focusedGroup, c: focusedCase, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
   check('runner classifies exit2 as legal business deny', deny.exitCode === 2 && deny.hookResults.some((h) => h.status === 'ran' && h.exitCode === 2 && h.outcome === 'deny'));
+
+  // R15b A1/A3/A4/A5/A8 hardening. These cases use the pre-existing runCase/rewriteSourceRoot API
+  // so the same tests exercise 765c159 behavior instead of failing on a missing new export.
+  const toMsys = (p) => {
+    const s = String(p).replace(/\\/g, '/');
+    const m = /^([A-Za-z]):\/(.*)$/.exec(s);
+    return m ? '/' + m[1].toLowerCase() + '/' + m[2] : s;
+  };
+  const a1Rel = 'guards/r15b-a1-marker.cjs';
+  const a2Rel = 'guards/r15b-a2-env.cjs';
+  const a3Rel = 'guards/r15b-a3-marker.cjs';
+  const a5Rel = 'guards/r15b-a5-state.cjs';
+  const a7Rel = 'guards/r15b-a7-output.cjs';
+  const a1Abs = path.join(live, ...a1Rel.split('/'));
+  const a2Abs = path.join(live, ...a2Rel.split('/'));
+  const a3Abs = path.join(live, ...a3Rel.split('/'));
+  const a5Abs = path.join(live, ...a5Rel.split('/'));
+  const a7Abs = path.join(live, ...a7Rel.split('/'));
+  const a3Marker = path.join(T, 'r15b-a3-hook-executed.marker');
+  fs.writeFileSync(a1Abs, "'use strict';const fs=require('fs'),path=require('path');fs.writeFileSync(path.join(__dirname,'r15b-a1.marker'),'sandbox-only');\n");
+  fs.writeFileSync(a2Abs, [
+    "'use strict';",
+    "const cp=require('child_process');",
+    "const run=(args)=>{const r=cp.spawnSync('git',args,{encoding:'utf8'});return {status:r.status,stdout:String(r.stdout||'').trim(),stderr:String(r.stderr||'').trim()};};",
+    "const env=process.env;",
+    "console.log(JSON.stringify({",
+    "  HOME:env.HOME,USERPROFILE:env.USERPROFILE,HOMEDRIVE:env.HOMEDRIVE,HOMEPATH:env.HOMEPATH,",
+    "  APPDATA:env.APPDATA,LOCALAPPDATA:env.LOCALAPPDATA,XDG_CONFIG_HOME:env.XDG_CONFIG_HOME,XDG_DATA_HOME:env.XDG_DATA_HOME,",
+    "  XDG_STATE_HOME:env.XDG_STATE_HOME,XDG_CACHE_HOME:env.XDG_CACHE_HOME,HERMES_HOME:env.HERMES_HOME,TEMP:env.TEMP,TMP:env.TMP,TMPDIR:env.TMPDIR,",
+    "  CLAUDE_CONFIG_DIR:env.CLAUDE_CONFIG_DIR,CLAUDE_SESSION_ID:env.CLAUDE_SESSION_ID,CLAUDE_CODE_SESSION_ID:env.CLAUDE_CODE_SESSION_ID,",
+    "  BASH_ENV:Object.keys(env).find(k=>k.toLowerCase()==='bash_env')||null,NODE_OPTIONS:env.NODE_OPTIONS||null,NODE_PATH:env.NODE_PATH||null,",
+    "  gitVersion:run(['--version']),hooksPath:run(['config','core.hooksPath']),gitTop:run(['rev-parse','--show-toplevel']),",
+    "  pathKeys:Object.keys(env).filter(k=>k.toLowerCase()==='path')",
+    "}));",
+    '',
+  ].join('\n'));
+  fs.writeFileSync(a3Abs, "'use strict';require('fs').writeFileSync(" + JSON.stringify(a3Marker.replace(/\\/g, '/')) + ",'executed');\n");
+  fs.writeFileSync(a5Abs, [
+    "'use strict';",
+    "const fs=require('fs'),path=require('path');",
+    "const j=JSON.parse(fs.readFileSync(0,'utf8'));",
+    "let b;",
+    "if(j.prompt==='b80') b=Buffer.from([0x80]);",
+    "else if(j.prompt==='b81') b=Buffer.from([0x81]);",
+    "else b=Buffer.concat([Buffer.from(String(process.env.HOME).replace(/\\\\/g,'/')+'\\n','latin1'),Buffer.from([0x80])]);",
+    "fs.writeFileSync(path.join(process.env.HOME,'r15b-a5-state.bin'),b);",
+    '',
+  ].join('\n'));
+  fs.writeFileSync(a7Abs, "'use strict';process.stdout.write(process.argv[2]==='crlf'?'x\\r\\n':'x\\n');\n");
+  git(repo, ['add', '--', '.claude/' + a1Rel, '.claude/' + a2Rel, '.claude/' + a3Rel, '.claude/' + a5Rel, '.claude/' + a7Rel]);
+  git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'r15b hardening fixtures']);
+  const sourceRow = (rel) => ({ path: rel, sha256: sha256(fs.readFileSync(path.join(live, ...rel.split('/')))), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15b hardening fixture' });
+  const bindSingle = (baseIndex, label, command, files, extra) => {
+    const raw = clone(freeze);
+    const h = Object.assign({}, raw.hooks[baseIndex], extra || {}, { command, files: clone(files) });
+    h.runtimeHealthProbe = Object.assign({}, h.runtimeHealthProbe || { version: 1, reliable: true, notes: 'R15b exact inner' }, { version: 1, innerCommand: command, reliable: true, notes: 'R15b exact inner' });
+    raw.hooks = [h];
+    raw.sourceFiles = files.map(sourceRow);
+    return bindFreeze(raw, label);
+  };
+
+  const a1Sandbox = path.join(T, 'r15b-a1-sandbox', '.claude');
+  const liveLower = live.replace(/\\/g, '/').toLowerCase();
+  const rewrittenCase = runner.rewriteSourceRoot('node "' + liveLower + '/guards/hook.cjs"', live, a1Sandbox);
+  check('R15b A1 rewrites case-different spelling of the same source root', rewrittenCase.toLowerCase().includes(a1Sandbox.replace(/\\/g, '/').toLowerCase()) && !rewrittenCase.toLowerCase().includes(liveLower));
+  const msysLive = toMsys(live);
+  const rewrittenMsys = runner.rewriteSourceRoot('node "' + msysLive + '/guards/hook.cjs"', live, a1Sandbox);
+  check('R15b A1 rewrites /c/ source-root spelling', !rewrittenMsys.includes(msysLive) && /guards\/hook\.cjs/.test(rewrittenMsys.replace(/\\/g, '/')));
+  let zeroRewriteErr = null;
+  try { runner.rewriteSourceRoot('printf no-reviewed-root', live, a1Sandbox); } catch (e) { zeroRewriteErr = e; }
+  check('R15b A1 rejects commands with zero source-root replacements', zeroRewriteErr && zeroRewriteErr.code === 'source-root-rewrite-zero' && zeroRewriteErr.detail && zeroRewriteErr.detail.sourceRoot === live, String(zeroRewriteErr && zeroRewriteErr.message));
+  const residualHealth = typeof runner.sourceRootResidual === 'function' && runner.sourceRootResidual('x ' + msysLive + '/guards/hook.cjs', live) === true;
+  check('R15b A1 independent residual detector recognizes /c/ spelling', residualHealth);
+  const cygLive = msysLive.replace(/^\/([A-Za-z])\//, '/cygdrive/$1/');
+  const rewrittenCyg = runner.rewriteSourceRoot('node "' + cygLive + '/guards/hook.cjs"', live, a1Sandbox);
+  check('R15b A1 rewrites /cygdrive/c/ source-root spelling', !rewrittenCyg.includes(cygLive) && /guards\/hook\.cjs/.test(rewrittenCyg.replace(/\\/g, '/')));
+  check('R15b A1 residual detector handles cygdrive and mixed slash spellings', runner.sourceRootResidual('x ' + cygLive.replace(/\//g, '//') + '/guards/hook.cjs', live) === true);
+  const a1Command = 'node "' + toMsys(a1Abs) + '"';
+  const a1Freeze = bindSingle(4, 'a1-msys-marker', a1Command, [a1Rel]);
+  const a1LiveMarker = path.join(path.dirname(a1Abs), 'r15b-a1.marker');
+  try { fs.rmSync(a1LiveMarker, { force: true }); } catch {}
+  const a1Run = runner.runCase({ freeze: a1Freeze, group: focusedGroup, c: { id: 'a1-marker', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  check('R15b A1 end-to-end hook executes only materialized sandbox copy', !fs.existsSync(a1LiveMarker) && Object.keys(a1Run.stateTree).some((k) => /guards\/r15b-a1\.marker$/.test(k.replace(/\\/g, '/'))));
+  let sourceRootErr = null;
+  try { runner.runCase({ freeze: a1Freeze, group: focusedGroup, c: { id: 'a1-root-mismatch', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: path.dirname(live), defaultTimeoutMs: 5000 }); } catch (e) { sourceRootErr = e; }
+  check('R15b A1 --source-root must equal frozen liveRelativePath root', sourceRootErr && sourceRootErr.code === 'source-root-mismatch' && sourceRootErr.detail && sourceRootErr.detail.expected, String(sourceRootErr && sourceRootErr.message));
+
+  const a2BashMarker = path.join(T, 'r15b-a2-bash-env.marker');
+  const a2NodeMarker = path.join(T, 'r15b-a2-node-options.marker');
+  const a2BashEnv = path.join(T, 'r15b-a2-bash-env.sh');
+  const a2NodeRequire = path.join(T, 'r15b-a2-node-require.cjs');
+  const a2GitConfig = path.join(T, 'r15b-a2-gitconfig');
+  const a2Hooks = path.join(T, 'r15b-a2-hooks');
+  const a2App = path.join(T, 'r15b-a2-appdata');
+  fs.mkdirSync(a2Hooks, { recursive: true });
+  fs.writeFileSync(a2BashEnv, 'printf touched > "' + a2BashMarker.replace(/\\/g, '/') + '"\n');
+  fs.writeFileSync(a2NodeRequire, "require('fs').writeFileSync(" + JSON.stringify(a2NodeMarker.replace(/\\/g, '/')) + ",'loaded');\n");
+  fs.writeFileSync(a2GitConfig, '[core]\n\thooksPath = ' + a2Hooks.replace(/\\/g, '/') + '\n');
+  const a2LureRepo = path.join(T, 'r15b-a2-lure-repo');
+  fs.mkdirSync(a2LureRepo, { recursive: true });
+  git(a2LureRepo, ['init', '-q']);
+  const parentEnvKeys = ['BASH_ENV','Bash_Env','NODE_OPTIONS','NODE_PATH','APPDATA','LOCALAPPDATA','GIT_CONFIG_GLOBAL','GIT_CONFIG_KEY_0','GIT_CONFIG_VALUE_0','CLAUDE_CODE_FAKE','PIPE_GATE_FAKE','TEMP','TMP'];
+  const parentEnvBefore = Object.fromEntries(parentEnvKeys.map((k) => [k, process.env[k]]));
+  process.env.Bash_Env = a2BashEnv;
+  process.env.NODE_OPTIONS = '--require=' + a2NodeRequire;
+  process.env.NODE_PATH = path.join(T, 'r15b-a2-node-path');
+  process.env.APPDATA = a2App;
+  process.env.LOCALAPPDATA = path.join(T, 'r15b-a2-localapp');
+  process.env.GIT_CONFIG_GLOBAL = a2GitConfig;
+  process.env.GIT_CONFIG_KEY_0 = 'core.hooksPath';
+  process.env.GIT_CONFIG_VALUE_0 = a2Hooks;
+  process.env.CLAUDE_CODE_FAKE = 'must-be-removed';
+  process.env.PIPE_GATE_FAKE = 'must-be-removed';
+  process.env.TEMP = a2LureRepo;
+  process.env.TMP = a2LureRepo;
+  const a2Command = 'node "' + a2Abs.replace(/\\/g, '/') + '"';
+  const a2Freeze = bindSingle(4, 'a2-env', a2Command, [a2Rel]);
+  let a2Run;
+  try {
+    a2Run = runner.runCase({ freeze: a2Freeze, group: focusedGroup, c: { id: 'a2-env', input: { session_id: 'r15b-session' } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  } finally {
+    for (const k of parentEnvKeys) { if (parentEnvBefore[k] === undefined) delete process.env[k]; else process.env[k] = parentEnvBefore[k]; }
+  }
+  const a2JsonLine = a2Run.stdout.split(/\r?\n/).find((line) => line.startsWith('{') && line.endsWith('}'));
+  const a2Observed = JSON.parse(a2JsonLine);
+  check('R15b A2 scrubs mixed-case BASH_ENV and NODE_OPTIONS before real child processes execute', !fs.existsSync(a2BashMarker) && !fs.existsSync(a2NodeMarker) && a2Observed.BASH_ENV === null && a2Observed.NODE_OPTIONS === null && a2Observed.NODE_PATH === null, JSON.stringify(a2Observed));
+  check('R15b A2 overwrites app/home/temp/XDG paths into the sandbox and preserves explicit session ids',
+    [a2Observed.HOME,a2Observed.USERPROFILE,a2Observed.APPDATA,a2Observed.LOCALAPPDATA,a2Observed.XDG_CONFIG_HOME,a2Observed.XDG_DATA_HOME,a2Observed.XDG_STATE_HOME,a2Observed.XDG_CACHE_HOME,a2Observed.HERMES_HOME,a2Observed.TEMP,a2Observed.TMP,a2Observed.TMPDIR,a2Observed.CLAUDE_CONFIG_DIR].every((v) => typeof v === 'string' && v.includes('<ROOT>')) &&
+    a2Observed.CLAUDE_SESSION_ID === 'r15b-session' && a2Observed.CLAUDE_CODE_SESSION_ID === 'r15b-session', JSON.stringify(a2Observed));
+  check('R15b A2 preserves executable PATH, dedupes Path/PATH case-insensitively, and scrubs inherited Git config',
+    a2Observed.gitVersion.status === 0 && /^git version /.test(a2Observed.gitVersion.stdout) && a2Observed.hooksPath.stdout === '' && Array.isArray(a2Observed.pathKeys) && a2Observed.pathKeys.length === 1, JSON.stringify(a2Observed));
+  check('R15b A2 GIT_CEILING blocks discovery of the parent lure repository', a2Observed.gitTop.status !== 0 && a2Observed.gitTop.stdout === '', JSON.stringify(a2Observed.gitTop));
+
+  const a3Command = 'node "' + a3Abs.replace(/\\/g, '/') + '"';
+  const a3Freeze = bindSingle(4, 'a3-path-guard', a3Command, [a3Rel]);
+  const a3Cases = [
+    ['drive', path.join(T, 'outside-drive.txt')],
+    ['msys', toMsys(path.join(T, 'outside-msys.txt'))],
+    ['unc', '\\\\server\\share\\outside.txt'],
+  ];
+  for (const [kind, outside] of a3Cases) {
+    try { fs.rmSync(a3Marker, { force: true }); } catch {}
+    let err = null;
+    try { runner.runCase({ freeze: a3Freeze, group: focusedGroup, c: { id: 'a3-' + kind, input: { transcript_path: outside } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { err = e; }
+    check('R15b A3 rejects ' + kind + ' absolute payload path before any hook executes', err && err.code === 'payload-path-outside-sandbox' && err.detail && err.detail.field === '$.transcript_path' && !fs.existsSync(a3Marker), String(err && err.message));
+    try { fs.rmSync(a3Marker, { force: true }); } catch {}
+  }
+
+  const unknownRaw = clone(freeze);
+  unknownRaw.hooks.push({
+    logicalId: 'r15b-untriggered-unknown-disposition', event: 'PostToolUseFailure', groupIndex: 0, hookIndex: 0, matcher: 'Bash',
+    command: command, timeout: 5, disposition: 'mystery', files: [hookRel], implementation: null,
+    notes: 'must be rejected even though focused UserPromptSubmit cannot trigger it', externalDependencies: [], businessExitCodes: [2],
+    runtimeHealthProbe: { version: 1, innerCommand: command, reliable: true, notes: 'unused' },
+  });
+  const unknownFreeze = bindFreeze(unknownRaw, 'a4-unknown-disposition');
+  let unknownDispositionErr = null;
+  try { runner.runCase({ freeze: unknownFreeze, group: focusedGroup, c: { id: 'a4-unknown', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { unknownDispositionErr = e; }
+  check('R15b A4 rejects unknown disposition on an untriggered freeze hook at entry', unknownDispositionErr && unknownDispositionErr.code === 'freeze-hook-disposition-invalid' && unknownDispositionErr.detail && unknownDispositionErr.detail.disposition === 'mystery', String(unknownDispositionErr && unknownDispositionErr.message));
+  const triggeredUnknownRaw = clone(freeze);
+  triggeredUnknownRaw.hooks[4].disposition = 'mystery';
+  const triggeredUnknownFreeze = bindFreeze(triggeredUnknownRaw, 'a4-triggered-unknown-disposition');
+  let triggeredUnknownErr = null;
+  try { runner.runCase({ freeze: triggeredUnknownFreeze, group: focusedGroup, c: { id: 'a4-triggered-unknown', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { triggeredUnknownErr = e; }
+  check('R15b A4 rejects unknown disposition on a triggered freeze hook', triggeredUnknownErr && triggeredUnknownErr.code === 'freeze-hook-disposition-invalid' && triggeredUnknownErr.detail && triggeredUnknownErr.detail.disposition === 'mystery', String(triggeredUnknownErr && triggeredUnknownErr.message));
+
+  const a5Command = 'node "' + a5Abs.replace(/\\/g, '/') + '"';
+  const a5Freeze = bindSingle(4, 'a5-invalid-utf8', a5Command, [a5Rel]);
+  const a5Run = (id, prompt) => runner.runCase({ freeze: a5Freeze, group: focusedGroup, c: { id, input: { prompt } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  const stateRec = (r) => Object.entries(r.stateTree).find(([k]) => /r15b-a5-state\.bin$/.test(k.replace(/\\/g, '/')))?.[1];
+  const a580 = stateRec(a5Run('a5-b80', 'b80'));
+  const a581 = stateRec(a5Run('a5-b81', 'b81'));
+  check('R15b A5 invalid UTF-8 bytes 0x80 and 0x81 keep distinct state digests', a580 && a581 && a580.sha256 !== a581.sha256, JSON.stringify({ a580, a581 }));
+  const a5Path1 = stateRec(a5Run('a5-path-1', 'path'));
+  const a5Path2 = stateRec(a5Run('a5-path-2', 'path'));
+  check('R15b A5 invalid UTF-8 state still normalizes sandbox path deterministically', a5Path1 && a5Path2 && a5Path1.sha256 === a5Path2.sha256, JSON.stringify({ a5Path1, a5Path2 }));
+
+  // R15b A6: materialization gate bound to the real candidate inventory hook identities/derived fields.
+  const a6AxmemRoot = path.join(__dirname, '..');
+  const a6InventoryRel = 'docs/freeze/INVENTORY-V1-CANDIDATE-R12b.json';
+  const a6InventoryAbs = path.join(a6AxmemRoot, ...a6InventoryRel.split('/'));
+  const a6InventoryBytes = fs.readFileSync(a6InventoryAbs);
+  const a6Inventory = JSON.parse(a6InventoryBytes.toString('utf8'));
+  const a6Hooks = a6Inventory.hooks.map((h) => {
+    const runnable = h.disposition === 'port' || h.disposition === 'replace';
+    return {
+      event: h.event, groupIndex: h.groupIndex, hookIndex: h.hookIndex,
+      matcher: h.matcher === undefined ? null : h.matcher, command: h.command,
+      timeout: h.timeout === undefined ? null : h.timeout,
+      disposition: h.disposition, files: clone(h.files || []), implementation: h.implementation || null,
+      notes: h.notes || '', externalDependencies: clone(h.externalDependencies || []),
+      businessExitCodes: runnable ? clone(h.businessExitCodes || []) : [],
+      runtimeHealthProbe: runnable ? clone(h.runtimeHealthProbe) : null,
+    };
+  });
+  const a6Repo = path.join(T, 'r15b-a6-real-inventory-repo');
+  const a6Live = path.join(a6Repo, '.claude');
+  const a6MirrorRel = a6Inventory.settingsMirror;
+  const a6MirrorAbs = path.join(a6Live, ...a6MirrorRel.split('/'));
+  const a6Settings = settingsForHooks(a6Hooks);
+  const a6MirrorBytes = Buffer.from(JSON.stringify(a6Settings, null, 2) + '\n');
+  fs.mkdirSync(path.dirname(a6MirrorAbs), { recursive: true });
+  fs.writeFileSync(a6MirrorAbs, a6MirrorBytes);
+  git(a6Repo, ['init', '-q']);
+  git(a6Repo, ['add', '--', '.claude/' + a6MirrorRel]);
+  git(a6Repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'r15b a6 real inventory shape']);
+  const a6Freeze = {
+    schema: 'axmem-p2-freeze/v1',
+    source: { commit: git(a6Repo, ['rev-parse', 'HEAD']).trim(), liveRelativePath: '.claude', treeOid: git(a6Repo, ['rev-parse', 'HEAD:.claude']).trim(), clean: true, uncommittedPatch: { empty: true, sha256: null } },
+    inventoryPath: a6InventoryRel,
+    inventorySha256: sha256(a6InventoryBytes),
+    settingsEvidence: {
+      mirrorPath: a6MirrorRel,
+      mirrorSha256: sha256(a6MirrorBytes),
+      hookIdentitySha256: sha256(Buffer.from(a6Hooks.map(localHookIdentity).join('\n'), 'utf8')),
+    },
+    hooks: a6Hooks,
+    sourceFiles: [{ path: a6MirrorRel, sha256: sha256(a6MirrorBytes), disposition: 'private-exclude', dependencies: [], unresolvedDependencies: [], notes: 'real candidate hook settings mirror' }],
+  };
+  const a6GoodHome = fs.mkdtempSync(path.join(T, 'r15b-a6-good-'));
+  let a6GoodDir = null, a6GoodErr = null;
+  try { a6GoodDir = runner.materializeFreeze(a6Freeze, a6Repo, a6GoodHome, a6AxmemRoot); } catch (e) { a6GoodErr = e; }
+  check('R15b A6 real candidate inventory shape passes materialization provenance gate', !a6GoodErr && a6GoodDir && fs.existsSync(path.join(a6GoodDir, ...a6MirrorRel.split('/'))), String(a6GoodErr && a6GoodErr.message));
+  fs.rmSync(a6GoodHome, { recursive: true, force: true });
+  const a6RejectBeforeExecution = (label, mutate, expectedCode, expectedField) => {
+    const bad = clone(a6Freeze);
+    mutate(bad);
+    const home = fs.mkdtempSync(path.join(T, 'r15b-a6-bad-'));
+    const marker = path.join(T, 'r15b-a6-would-execute-' + label + '.marker');
+    try { fs.rmSync(marker, { force: true }); } catch {}
+    let err = null;
+    try {
+      runner.materializeFreeze(bad, a6Repo, home, a6AxmemRoot);
+      fs.writeFileSync(marker, 'materialization returned; hook execution boundary reached');
+    } catch (e) { err = e; }
+    const fieldOK = expectedField === undefined || (err && err.detail && err.detail.field === expectedField);
+    check('R15b A6 rejects ' + label + ' before hook execution boundary', err && err.code === expectedCode && fieldOK && !fs.existsSync(marker), JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+    fs.rmSync(home, { recursive: true, force: true });
+    try { fs.rmSync(marker, { force: true }); } catch {}
+  };
+  a6RejectBeforeExecution('missing sourceFile sha256', (x) => { delete x.sourceFiles[0].sha256; }, 'freeze-source-hash-missing');
+  a6RejectBeforeExecution('tampered source treeOid', (x) => { x.source.treeOid = '0'.repeat(40); }, 'freeze-tree-oid-mismatch');
+  a6RejectBeforeExecution('deleted hook', (x) => { x.hooks.splice(1, 1); }, 'freeze-settings-hook-mismatch');
+  a6RejectBeforeExecution('swapped hook order', (x) => { [x.hooks[0], x.hooks[1]] = [x.hooks[1], x.hooks[0]]; }, 'freeze-settings-hook-mismatch');
+  a6RejectBeforeExecution('mutated disposition', (x) => { const h = x.hooks.find((v) => v.disposition === 'port'); h.disposition = 'private-exclude'; }, 'freeze-inventory-derived-mismatch', 'disposition');
+  a6RejectBeforeExecution('mutated runtimeHealthProbe.innerCommand', (x) => { const h = x.hooks.find((v) => v.runtimeHealthProbe); h.runtimeHealthProbe.innerCommand += ' --tampered'; }, 'freeze-inventory-derived-mismatch', 'runtimeHealthProbe');
+
+  const a7CrlfCommand = 'node "' + a7Abs.replace(/\\/g, '/') + '" crlf';
+  const a7LfCommand = 'node "' + a7Abs.replace(/\\/g, '/') + '" lf';
+  const a7CrlfFreeze = bindSingle(4, 'a7-crlf', a7CrlfCommand, [a7Rel]);
+  const a7LfFreeze = bindSingle(4, 'a7-lf', a7LfCommand, [a7Rel]);
+  const a7Crlf = runner.runCase({ freeze: a7CrlfFreeze, group: focusedGroup, c: { id: 'a7-line', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  const a7Lf = runner.runCase({ freeze: a7LfFreeze, group: focusedGroup, c: { id: 'a7-line', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  const a7LeftReport = clone(reportA), a7RightReport = clone(reportA);
+  a7LeftReport.cases[0].stdout = a7Crlf.stdout;
+  a7RightReport.cases[0].stdout = a7Lf.stdout;
+  const a7Compared = equiv.compareReports(a7LeftReport, a7RightReport, []);
+  check('R15b A7 runCase preserves CRLF-vs-LF stdout so compareReports differs', a7Crlf.stdout !== a7Lf.stdout && a7Compared.equal === false && a7Compared.unexpected.some((x) => x.field === 'stdout'), JSON.stringify(a7Compared.unexpected));
+
+  const matcherGroup = { event: 'Write', hookEvents: ['PreToolUse'] };
+  const matcherRun = (label, matcher, toolName) => {
+    const raw = clone(freeze);
+    const h = Object.assign({}, raw.hooks[0], { logicalId: 'r15b-matcher-' + label, matcher });
+    raw.hooks = [h]; raw.sourceFiles = [sourceRow(hookRel)];
+    const f = bindFreeze(raw, 'a8-' + label);
+    return runner.runCase({ freeze: f, group: matcherGroup, c: { id: 'a8-' + label, input: toolName ? { tool_name: toolName } : {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  };
+  let badRegex = null;
+  try { matcherRun('bad-regex', 'Bash[', 'Write'); } catch (e) { badRegex = e; }
+  check('R15b A8 invalid regex matcher is a stable infrastructure error', badRegex && badRegex.code === 'hook-matcher-regex' && badRegex.detail && badRegex.detail.matcher === 'Bash[', String(badRegex && badRegex.message));
+  check('R15b A8 star matcher matches any tool', matcherRun('star', '*', 'Write').executedHooks === 1);
+  check('R15b A8 pipe exact-list matcher matches Write', matcherRun('pipe-list', 'Edit|Write', 'Write').executedHooks === 1);
+  check('R15b A8 comma exact-list matcher matches Write', matcherRun('comma-list', 'Edit, Write', 'Write').executedHooks === 1);
+  let notebookNoMatch = null;
+  try { matcherRun('notebook-exact', 'Notebook', 'NotebookEdit'); } catch (e) { notebookNoMatch = e; }
+  check('R15b A8 simple matcher is exact, so Notebook does not match NotebookEdit', notebookNoMatch && notebookNoMatch.code === 'fixture-no-matching-hooks' && notebookNoMatch.detail && notebookNoMatch.detail.caseId === 'a8-notebook-exact', String(notebookNoMatch && notebookNoMatch.message));
+  check('R15b A8 regex matcher is unanchored, so Note. matches NotebookEdit', matcherRun('unanchored-regex', 'Note.', 'NotebookEdit').executedHooks === 1);
+  let numericMatcher = null;
+  try { matcherRun('numeric', 123, 'Write'); } catch (e) { numericMatcher = e; }
+  check('R15b A8 non-string matcher is rejected', numericMatcher && numericMatcher.code === 'hook-matcher-type' && numericMatcher.detail && numericMatcher.detail.matcherType === 'number', String(numericMatcher && numericMatcher.message));
+  const a8CandidateInventory = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'docs', 'freeze', 'INVENTORY-V1-CANDIDATE-R12b.json'), 'utf8'));
+  const a8CandidateMatchers = a8CandidateInventory.hooks.filter((h) => ['PreToolUse','PostToolUse','PostToolUseFailure'].includes(h.event) && typeof h.matcher === 'string' && h.matcher.trim());
+  const a8Counts = a8CandidateMatchers.reduce((m, h) => { m[h.event] = (m[h.event] || 0) + 1; return m; }, {});
+  const a8ReverseGuard = a8CandidateMatchers.every((h) => {
+    const expectedTool = h.matcher.split(/[|,]/).map((x) => x.trim()).find(Boolean);
+    return !!expectedTool && runner.matcherMatches(h.event, h.matcher, { tool_name: expectedTool });
+  });
+  check('R15b A8 all 17 non-empty candidate tool matchers match their expected tool under new semantics', a8CandidateMatchers.length === 17 && a8Counts.PreToolUse === 7 && a8Counts.PostToolUse === 9 && a8Counts.PostToolUseFailure === 1 && a8ReverseGuard, JSON.stringify(a8Counts));
 
   // P2 runtime-health v1: exact reviewed inner command, per-case execution, independent sandbox.
   const branchyRel = 'guards/branchy.cjs';
@@ -167,7 +513,7 @@ try {
   const branchTree = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
   const branchSha = sha256(fs.readFileSync(branchyAbs));
   const branchInner = 'node "' + branchyAbs.replace(/\\/g, '/') + '"';
-  const mkBranchFreeze = (outer, inner, reliable = true) => ({
+  const mkBranchFreeze = (outer, inner, reliable = true) => bindFreeze({
     schema: 'axmem-p2-freeze/v1',
     source: { commit: branchCommit, liveRelativePath: '.claude', treeOid: branchTree, clean: true, uncommittedPatch: { empty: true, sha256: null } },
     sourceFiles: [{ path: branchyRel, sha256: branchSha, disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'runtime health branch fixture' }],
@@ -177,9 +523,9 @@ try {
       notes: 'runtime health branch fixture', externalDependencies: [], businessExitCodes: [2],
       runtimeHealthProbe: { version: 1, innerCommand: inner, reliable, notes: reliable ? 'exact reviewed inner command' : 'inner intentionally swallows failures; health cannot be proven' },
     }],
-  });
+  }, 'branch');
   const runBranch = (outer, prompt, inner = branchInner, reliable = true) =>
-    runner.runCase({ freeze: mkBranchFreeze(outer, inner, reliable), group: focusedGroup, c: { id: 'rh-' + prompt, input: { prompt } }, repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+    runner.runCase({ freeze: mkBranchFreeze(outer, inner, reliable), group: focusedGroup, c: { id: 'rh-' + prompt, input: { prompt } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
   const simpleOuter = branchInner + ' || exit 0';
   const braceOuter = branchInner + ' || { echo masked >&2; exit 0; }';
   const silentOuter = branchInner + ' >/dev/null 2>&1 || exit 0';
@@ -225,7 +571,7 @@ try {
   const syntaxCommit = git(repo, ['rev-parse', 'HEAD']).trim();
   const syntaxTree = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
   const syntaxCmd = 'node "' + syntaxAbs.replace(/\\/g, '/') + '"';
-  const syntaxFreeze = {
+  const syntaxFreeze = bindFreeze({
     schema: 'axmem-p2-freeze/v1',
     source: { commit: syntaxCommit, liveRelativePath: '.claude', treeOid: syntaxTree, clean: true, uncommittedPatch: { empty: true, sha256: null } },
     sourceFiles: [{ path: syntaxRel, sha256: sha256(fs.readFileSync(syntaxAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'syntax fixture' }],
@@ -233,14 +579,14 @@ try {
       command: syntaxCmd + ' >/dev/null 2>&1 || exit 0', timeout: 5, disposition: 'port', files: [syntaxRel],
       implementation: null, notes: 'syntax fixture', externalDependencies: [], businessExitCodes: [2],
       runtimeHealthProbe: { version: 1, innerCommand: syntaxCmd, reliable: true, notes: 'exact reviewed inner' } }],
-  };
+  }, 'syntax');
   let syntaxHealthErr = null;
-  try { runner.runCase({ freeze: syntaxFreeze, group: focusedGroup, c: { id: 'rh-syntax', input: {} }, repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { syntaxHealthErr = e; }
+  try { runner.runCase({ freeze: syntaxFreeze, group: focusedGroup, c: { id: 'rh-syntax', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { syntaxHealthErr = e; }
   check('runtime health blocks syntax/startup failure hidden by outer exit0', syntaxHealthErr && /source health preflight failed/.test(syntaxHealthErr.message), String(syntaxHealthErr && syntaxHealthErr.message));
 
   // Comparator must reject missing/text-only/stale/cross-case health metadata and two equally bad reports.
-  const validHealthReportA = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, sourceRoot: live });
-  const validHealthReportB = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, sourceRoot: live });
+  const validHealthReportA = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live });
+  const validHealthReportB = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live });
 
   // Cross-source equivalence: provenance must validate independently on each side,
   // but comment-only source changes and enclosing empty commits are not behavior.
@@ -251,7 +597,7 @@ try {
   commentFreeze.source.commit = git(repo, ['rev-parse', 'HEAD']).trim();
   commentFreeze.source.treeOid = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
   commentFreeze.sourceFiles[0].sha256 = sha256(fs.readFileSync(hookAbs));
-  const commentReport = runner.runFreezeReport({ freeze: commentFreeze, fixture, repoRoot: repo, sourceRoot: live });
+  const commentReport = runner.runFreezeReport({ freeze: commentFreeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live });
   const commentEquivalent = equiv.compareReports(validHealthReportA, commentReport, []);
   check('comparator accepts behavior-equivalent comment-only source revision',
     commentEquivalent.equal === true && commentEquivalent.unexpected.length === 0);
@@ -259,7 +605,7 @@ try {
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '--allow-empty', '-qm', 'metadata-only empty commit']);
   const emptyCommitFreeze = clone(commentFreeze);
   emptyCommitFreeze.source.commit = git(repo, ['rev-parse', 'HEAD']).trim();
-  const emptyCommitReport = runner.runFreezeReport({ freeze: emptyCommitFreeze, fixture, repoRoot: repo, sourceRoot: live });
+  const emptyCommitReport = runner.runFreezeReport({ freeze: emptyCommitFreeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live });
   const emptyCommitEquivalent = equiv.compareReports(commentReport, emptyCommitReport, []);
   check('comparator accepts identical source tree across different enclosing commits',
     emptyCommitEquivalent.equal === true && emptyCommitEquivalent.unexpected.length === 0
@@ -292,17 +638,23 @@ try {
 
   let missingErr = null;
   try {
-    const bad = clone(freeze);
-    bad.hooks = [Object.assign({}, bad.hooks[4], { logicalId: 'missing', command: 'command_that_does_not_exist_axmem_p2' })];
-    runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'missing', input: {} }, repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
+    const raw = clone(freeze);
+    const missingCommand = '"' + path.join(live, 'guards', 'command_that_does_not_exist_axmem_p2').replace(/\\/g, '/') + '"';
+    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'missing', command: missingCommand,
+      runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: missingCommand }) })];
+    const bad = bindFreeze(raw, 'missing-command');
+    runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'missing', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
   } catch (e) { missingErr = e; }
   check('runner classifies command-not-found as infrastructure failure', missingErr && missingErr.code === 'equiv-infrastructure' && /command-start:127/.test(missingErr.message), String(missingErr && missingErr.message));
 
   let timeoutErr = null;
   try {
-    const bad = clone(freeze);
-    bad.hooks = [Object.assign({}, bad.hooks[4], { logicalId: 'timeout', command: 'sleep 1', timeout: 0.01 })];
-    runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'timeout', input: {} }, repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
+    const raw = clone(freeze);
+    const timeoutCommand = 'cd "' + live.replace(/\\/g, '/') + '" && sleep 1';
+    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'timeout', command: timeoutCommand, timeout: 0.01,
+      runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: timeoutCommand }) })];
+    const bad = bindFreeze(raw, 'timeout-command');
+    runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'timeout', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
   } catch (e) { timeoutErr = e; }
   check('runner classifies timeout as infrastructure failure', timeoutErr && timeoutErr.code === 'equiv-infrastructure' && /timeout/.test(timeoutErr.message), String(timeoutErr && timeoutErr.message));
   // R2: a runtime dependency/startup failure must not become a business deny,
@@ -320,7 +672,7 @@ try {
     businessExitCodes: [2],
     runtimeHealthProbe: { version: 1, innerCommand: 'node "' + missingDepAbs.replace(/\\/g, '/') + '" 2>/dev/null', reliable: true, notes: 'reviewed exact inner command; exit 1 is not admitted' },
   });
-  const missingFreeze = Object.assign({}, freeze, {
+  const missingFreeze = bindFreeze(Object.assign({}, freeze, {
     sourceFiles: freeze.sourceFiles.concat([missingSourceRow]),
     hooks: [
       badRh('r2-tool-pre', 'PreToolUse', 'Bash|Edit|Write'),
@@ -330,10 +682,10 @@ try {
       badRh('r2-user-prompt', 'UserPromptSubmit', null),
       badRh('r2-pre-compact', 'PreCompact', null),
     ],
-  });
+  }), 'missing-runtime');
   const missingRunErrors = [];
   for (let i = 0; i < 2; i++) {
-    try { runner.runFreezeReport({ freeze: missingFreeze, fixture, repoRoot: repo, sourceRoot: live }); }
+    try { runner.runFreezeReport({ freeze: missingFreeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live }); }
     catch (e) { missingRunErrors.push(e); }
   }
   check('R2 missing runtime module blocks both full baselines despite stderr redirect',
@@ -343,24 +695,25 @@ try {
   let missingContractErr = null;
   try {
     const bad = clone(freeze);
-    bad.hooks = [Object.assign({}, bad.hooks[4], { logicalId: 'missing-contract' })];
-    delete bad.hooks[0].businessExitCodes;
-    runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'missing-contract', input: {} }, repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
+    delete bad.hooks[4].businessExitCodes;
+    runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'missing-contract', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
   } catch (e) { missingContractErr = e; }
   check('R2 runnable hook without explicit business exit contract is infrastructure failure',
-    missingContractErr && missingContractErr.code === 'equiv-infrastructure' && /businessExitCodes/.test(missingContractErr.message),
+    missingContractErr && missingContractErr.code === 'freeze-inventory-derived-mismatch' && missingContractErr.detail && missingContractErr.detail.field === 'businessExitCodes',
     String(missingContractErr && missingContractErr.message));
 
   let badSyntaxErr = null;
   try {
     const badRel = 'guards/bad-syntax.cjs';
-    const bad = clone(freeze);
-    bad.sourceFiles.push({ path: badRel, sha256: sha256(fs.readFileSync(badSyntaxAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R2 syntax fixture' });
-    bad.hooks = [Object.assign({}, bad.hooks[4], {
-      logicalId: 'bad-syntax', command: 'node "' + badSyntaxAbs.replace(/\\/g, '/') + '" 2>/dev/null',
-      files: [badRel],
+    const raw = clone(freeze);
+    raw.sourceFiles.push({ path: badRel, sha256: sha256(fs.readFileSync(badSyntaxAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R2 syntax fixture' });
+    const badSyntaxCommand = 'node "' + badSyntaxAbs.replace(/\\/g, '/') + '" 2>/dev/null';
+    raw.hooks = [Object.assign({}, raw.hooks[4], {
+      logicalId: 'bad-syntax', command: badSyntaxCommand, files: [badRel],
+      runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: badSyntaxCommand }),
     })];
-    runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'bad-syntax', input: {} }, repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
+    const bad = bindFreeze(raw, 'bad-syntax');
+    runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'bad-syntax', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
   } catch (e) { badSyntaxErr = e; }
   check('R2 syntax/startup failure is caught before execution despite stderr redirect',
     badSyntaxErr && badSyntaxErr.code === 'equiv-infrastructure' && /source health preflight failed/.test(badSyntaxErr.message),

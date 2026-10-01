@@ -8,15 +8,17 @@ const crypto = require('crypto');
 const cp = require('child_process');
 const acorn = require('../guards/vendor/acorn.js');
 const bashAst = require('./private/p2-bash-ast/adapter.cjs');
+const hookSemantics = require('./p2-hook-semantics.cjs');
 
-const DISPOSITIONS = new Set(['port', 'replace', 'external-prerequisite', 'private-exclude']);
+const DISPOSITIONS = hookSemantics.DISPOSITIONS;
 const EXTERNAL_KINDS = new Set(['file', 'repo', 'command', 'network']);
 
 class FreezeError extends Error {
-  constructor(code, message) {
+  constructor(code, message, detail) {
     super(message);
     this.name = 'FreezeError';
     this.code = code;
+    this.detail = detail || null;
   }
 }
 
@@ -44,31 +46,15 @@ function safeRelativeFile(p) {
   return n;
 }
 
+function hookSemanticsOptions() {
+  return {
+    unsupportedMatcher: 'ignore',
+    fail(code, message, detail) { throw new FreezeError(code, message, detail); },
+  };
+}
+
 function flattenHooks(settings) {
-  const hooks = settings && settings.hooks;
-  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) throw new FreezeError('bad-settings', 'settings.json hooks must be an object');
-  const rows = [];
-  for (const event of Object.keys(hooks)) {
-    const groups = hooks[event];
-    if (!Array.isArray(groups)) throw new FreezeError('bad-settings', 'hooks.' + event + ' must be an array');
-    groups.forEach((group, groupIndex) => {
-      if (!group || typeof group !== 'object' || !Array.isArray(group.hooks)) {
-        throw new FreezeError('bad-settings', 'hooks.' + event + '[' + groupIndex + '].hooks must be an array');
-      }
-      const matcher = Object.prototype.hasOwnProperty.call(group, 'matcher') ? group.matcher : null;
-      group.hooks.forEach((hook, hookIndex) => {
-        if (!hook || typeof hook !== 'object' || typeof hook.command !== 'string' || !hook.command) {
-          throw new FreezeError('bad-settings', 'hook command must be a non-empty string at ' + event + '/' + groupIndex + '/' + hookIndex);
-        }
-        rows.push({
-          event, groupIndex, hookIndex, matcher,
-          command: hook.command,
-          timeout: Object.prototype.hasOwnProperty.call(hook, 'timeout') ? hook.timeout : null,
-        });
-      });
-    });
-  }
-  return rows;
+  return hookSemantics.flattenHooks(settings, hookSemanticsOptions());
 }
 
 function shellVariableRoots(fromPath, text) {
@@ -597,7 +583,7 @@ function verifyDependencyClosure({ fileMap, repoRoot, commit, relLive, blobs, ge
 }
 
 function hookIdentity(h) {
-  return JSON.stringify([h.event, h.groupIndex, h.hookIndex, h.matcher === undefined ? null : h.matcher, h.command, h.timeout === undefined ? null : h.timeout]);
+  return hookSemantics.hookIdentity(h);
 }
 
 function hookIdentitySha256(rows) {
@@ -835,7 +821,21 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
   try { treeOid = String(git(repoRoot, ['rev-parse', commit + ':' + relLive])).trim(); }
   catch { throw new FreezeError('untracked-live-root', 'live root is not present in source commit: ' + relLive); }
 
-  const inv = loadJson(path.resolve(inventoryPath), 'bad-inventory');
+  const inventoryAbs = path.resolve(inventoryPath);
+  let inventoryRepoRoot;
+  try { inventoryRepoRoot = String(git(path.dirname(inventoryAbs), ['rev-parse', '--show-toplevel'])).trim(); }
+  catch { throw new FreezeError('bad-inventory', 'inventory must be inside a git repository: ' + inventoryAbs); }
+  const inventoryRel = posix(path.relative(inventoryRepoRoot, inventoryAbs));
+  if (!inventoryRel || inventoryRel === '.' || inventoryRel.startsWith('../') || path.posix.isAbsolute(inventoryRel)) {
+    throw new FreezeError('bad-inventory', 'inventory path must be inside its repository: ' + inventoryAbs);
+  }
+  let inventoryBytes;
+  try { inventoryBytes = fs.readFileSync(inventoryAbs); }
+  catch (e) { throw new FreezeError('bad-inventory', 'cannot read inventory: ' + e.message); }
+  let inv;
+  try { inv = JSON.parse(inventoryBytes.toString('utf8')); }
+  catch (e) { throw new FreezeError('bad-inventory', 'invalid inventory JSON: ' + e.message); }
+  const inventorySha256 = sha256(inventoryBytes);
   const settingsRel = safeRelativeFile(inv.settingsJson || 'settings.json');
   const settingsAbs = path.join(live, ...settingsRel.split('/'));
   let settingsBytes;
@@ -928,6 +928,8 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
       clean: true,
       uncommittedPatch: { empty: true, sha256: null },
     },
+    inventoryPath: inventoryRel,
+    inventorySha256,
     settingsJson: settingsRel,
     settingsSha256,
     settingsEvidence: {
@@ -975,7 +977,7 @@ function parseArgs(argv) {
   return o;
 }
 
-module.exports = { FreezeError, flattenHooks, validateInventory, normalizeGeneratedArtifacts, normalizeBusinessExitContract, normalizeRuntimeHealthProbe, analyzeDependencyReferences, inspectLiteralGeneratedArtifact, verifyGeneratedArtifactEvidence, detectLiteralDependencies, verifyDependencyClosure, buildManifest, generate, writeJsonAtomic, safeRelativeFile };
+module.exports = { FreezeError, flattenHooks, hookIdentity, validateInventory, normalizeGeneratedArtifacts, normalizeBusinessExitContract, normalizeRuntimeHealthProbe, analyzeDependencyReferences, inspectLiteralGeneratedArtifact, verifyGeneratedArtifactEvidence, detectLiteralDependencies, verifyDependencyClosure, buildManifest, generate, writeJsonAtomic, safeRelativeFile };
 
 if (require.main === module) {
   try {

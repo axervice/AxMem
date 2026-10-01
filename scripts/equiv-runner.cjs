@@ -6,8 +6,11 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const cp = require('child_process');
+const { TextDecoder } = require('util');
+const hookSemantics = require('./p2-hook-semantics.cjs');
 
 const RUN_DISPOSITIONS = new Set(['port', 'replace']);
+const ALL_DISPOSITIONS = hookSemantics.DISPOSITIONS;
 const TOOL_EVENTS = new Set(['Bash', 'Edit', 'Write']);
 
 function posix(p) { return String(p).replace(/\\/g, '/'); }
@@ -15,14 +18,20 @@ function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('he
 function safeRel(p) {
   const n = posix(String(p || '').trim()).replace(/^\.\//, '');
   if (!n || path.posix.isAbsolute(n) || n === '..' || n.startsWith('../') || n.includes('/../')) {
-    throw new Error('unsafe relative path: ' + p);
+    throw new EquivInfrastructureError('unsafe-relative-path', 'unsafe relative path: ' + p, { path: p });
   }
   return n;
 }
-function loadJson(file) { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+function loadJson(file) {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch (e) { throw new EquivInfrastructureError('json-read-failed', 'cannot read JSON: ' + file, { file, cause: String(e && e.message || e) }); }
+  try { return JSON.parse(raw); }
+  catch (e) { throw new EquivInfrastructureError('json-invalid', 'invalid JSON: ' + file, { file, cause: String(e && e.message || e) }); }
+}
 
 function normalizeRuntimeText(value, prefixes) {
-  let s = String(value === undefined || value === null ? '' : value).replace(/\r\n/g, '\n');
+  let s = String(value === undefined || value === null ? '' : value);
   for (const p of prefixes || []) {
     if (!p) continue;
     const forms = new Set([String(p), posix(p), String(p).replace(/\//g, '\\')]);
@@ -39,42 +48,200 @@ function gitBlob(repoRoot, spec) {
   });
 }
 
-function materializeFreeze(freeze, repoRoot, sandboxHome) {
-  if (!freeze || freeze.schema !== 'axmem-p2-freeze/v1') throw new Error('freeze schema must be axmem-p2-freeze/v1');
-  if (!freeze.source || !/^[0-9a-f]{40}$/i.test(String(freeze.source.commit || ''))) throw new Error('freeze source commit missing/invalid');
-  if (!Array.isArray(freeze.sourceFiles)) throw new Error('freeze sourceFiles must be an array');
+function materializeFreeze(freeze, repoRoot, sandboxHome, axmemRepoRoot) {
+  if (!freeze || freeze.schema !== 'axmem-p2-freeze/v1') throw new EquivInfrastructureError('freeze-schema-invalid', 'freeze schema must be axmem-p2-freeze/v1');
+  if (!freeze.source || !/^[0-9a-f]{40}$/i.test(String(freeze.source.commit || '')) || !/^[0-9a-f]{40}$/i.test(String(freeze.source.treeOid || ''))) {
+    throw new EquivInfrastructureError('freeze-source-invalid', 'freeze source commit/treeOid missing or invalid', { source: freeze.source });
+  }
+  if (!Array.isArray(freeze.sourceFiles) || freeze.sourceFiles.length === 0) throw new EquivInfrastructureError('freeze-source-files-invalid', 'freeze sourceFiles must be a non-empty array');
+  validateFreezeHooks(freeze);
   const liveRel = safeRel(freeze.source.liveRelativePath);
+  let actualTree;
+  try {
+    actualTree = String(cp.execFileSync('git', ['-C', repoRoot, 'rev-parse', freeze.source.commit + ':' + liveRel], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).trim();
+  } catch {
+    throw new EquivInfrastructureError('freeze-tree-read-failed', 'cannot resolve frozen live-root tree', { commit: freeze.source.commit, liveRelativePath: liveRel });
+  }
+  if (actualTree.toLowerCase() !== String(freeze.source.treeOid).toLowerCase()) {
+    throw new EquivInfrastructureError('freeze-tree-oid-mismatch', 'freeze source treeOid does not match source commit', { expected: freeze.source.treeOid, actual: actualTree });
+  }
   const sourceDir = path.join(sandboxHome, ...liveRel.split('/'));
   for (const f of freeze.sourceFiles) {
     const rel = safeRel(f.path);
+    if (!/^[0-9a-f]{64}$/i.test(String(f.sha256 || ''))) throw new EquivInfrastructureError('freeze-source-hash-missing', 'freeze source file sha256 is required', { path: rel, sha256: f.sha256 });
     const repoRel = path.posix.join(liveRel, rel);
-    const blob = gitBlob(repoRoot, freeze.source.commit + ':' + repoRel);
-    if (f.sha256 && sha256(blob) !== f.sha256) throw new Error('freeze blob hash mismatch: ' + rel);
+    let blob;
+    try { blob = gitBlob(repoRoot, freeze.source.commit + ':' + repoRel); }
+    catch { throw new EquivInfrastructureError('freeze-source-blob-read-failed', 'cannot read frozen source blob', { path: rel, commit: freeze.source.commit }); }
+    const got = sha256(blob);
+    if (got.toLowerCase() !== String(f.sha256).toLowerCase()) throw new EquivInfrastructureError('freeze-source-hash-mismatch', 'freeze blob hash mismatch', { path: rel, expected: f.sha256, actual: got });
     const dst = path.join(sourceDir, ...rel.split('/'));
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     fs.writeFileSync(dst, blob);
   }
+  const se = freeze.settingsEvidence;
+  if (!se || typeof se !== 'object' || Array.isArray(se) || typeof se.mirrorPath !== 'string' || !se.mirrorPath.trim()
+      || !/^[0-9a-f]{64}$/i.test(String(se.mirrorSha256 || '')) || !/^[0-9a-f]{64}$/i.test(String(se.hookIdentitySha256 || ''))) {
+    throw new EquivInfrastructureError('freeze-settings-evidence-missing', 'freeze settingsEvidence mirror binding is required', { settingsEvidence: se });
+  }
+  const mirrorRel = safeRel(se.mirrorPath);
+  let mirrorBlob;
+  try { mirrorBlob = gitBlob(repoRoot, freeze.source.commit + ':' + path.posix.join(liveRel, mirrorRel)); }
+  catch { throw new EquivInfrastructureError('freeze-settings-mirror-read-failed', 'cannot read frozen settings mirror', { mirrorPath: mirrorRel }); }
+  const mirrorSha = sha256(mirrorBlob);
+  if (mirrorSha.toLowerCase() !== String(se.mirrorSha256).toLowerCase()) throw new EquivInfrastructureError('freeze-settings-mirror-hash-mismatch', 'settings mirror sha256 mismatch', { mirrorPath: mirrorRel, expected: se.mirrorSha256, actual: mirrorSha });
+  let mirrorSettings;
+  try { mirrorSettings = JSON.parse(mirrorBlob.toString('utf8')); }
+  catch (e) { throw new EquivInfrastructureError('freeze-settings-mirror-json-invalid', 'settings mirror is invalid JSON', { mirrorPath: mirrorRel, cause: String(e && e.message || e) }); }
+  const settingsHooks = hookSemantics.flattenHooks(mirrorSettings, { unsupportedMatcher: 'reject', fail: semanticsFail });
+  const hookIdentitySha256 = sha256(Buffer.from(settingsHooks.map((h) => hookSemantics.hookIdentity(h)).join('\n'), 'utf8'));
+  if (hookIdentitySha256.toLowerCase() !== String(se.hookIdentitySha256).toLowerCase()) throw new EquivInfrastructureError('freeze-settings-hook-hash-mismatch', 'settings mirror hook identity sha256 mismatch', { expected: se.hookIdentitySha256, actual: hookIdentitySha256 });
+  validateInventoryBinding(freeze, axmemRepoRoot, settingsHooks);
   return sourceDir;
 }
 
+function regexEscape(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function portablePathInfo(value) {
+  const native = posix(path.resolve(String(value)));
+  const m = /^([A-Za-z]):\/(.*)$/.exec(native);
+  if (!m) return { native, drive: null, rest: native.replace(/^\/+/, '').split('/').filter(Boolean) };
+  return { native, drive: m[1], rest: m[2].split('/').filter(Boolean) };
+}
+
+function toMsysPath(value) {
+  const p = posix(path.resolve(String(value)));
+  const m = /^([A-Za-z]):\/(.*)$/.exec(p);
+  return m ? '/' + m[1].toLowerCase() + '/' + m[2] : p;
+}
+
+function toCygdrivePath(value) {
+  const p = posix(path.resolve(String(value)));
+  const m = /^([A-Za-z]):\/(.*)$/.exec(p);
+  return m ? '/cygdrive/' + m[1].toLowerCase() + '/' + m[2] : p;
+}
+
+function canonicalPathForComparison(value) {
+  let x = String(value || '').replace(/\\/g, '/');
+  x = x.replace(/\/cygdrive\/([A-Za-z])\//g, '$1:/');
+  x = x.replace(/\/([A-Za-z])\//g, '$1:/');
+  x = x.replace(/\/+/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? x.toLowerCase() : x;
+}
+
+function sameSourcePath(a, b) {
+  return canonicalPathForComparison(path.resolve(String(a))) === canonicalPathForComparison(path.resolve(String(b)));
+}
+
+function sourceRootResidual(command, sourceRoot) {
+  const hay = canonicalPathForComparison(command);
+  const needle = canonicalPathForComparison(sourceRoot);
+  let from = 0;
+  while (needle && (from = hay.indexOf(needle, from)) >= 0) {
+    const before = from === 0 ? '' : hay[from - 1];
+    const after = hay[from + needle.length] || '';
+    const boundary = (ch) => !ch || !/[A-Za-z0-9_.~-]/.test(ch);
+    if (boundary(before) && boundary(after)) return true;
+    from += needle.length;
+  }
+  return false;
+}
+
 function rewriteSourceRoot(command, sourceRoot, sandboxSource) {
-  let out = String(command || '');
-  const src = new Set([String(sourceRoot), posix(sourceRoot), String(sourceRoot).replace(/\//g, '\\')]);
-  const dstBy = (x) => x.indexOf('\\') >= 0 ? String(sandboxSource).replace(/\//g, '\\') : posix(sandboxSource);
-  for (const f of src) if (f) out = out.split(f).join(dstBy(f));
+  const info = portablePathInfo(sourceRoot);
+  let variants;
+  if (info.drive) {
+    const tail = info.rest.map(regexEscape).join('[\\\\/]+');
+    const drive = regexEscape(info.drive);
+    variants = [
+      drive + ':[\\\\/]+' + tail,
+      '[\\\\/]+cygdrive[\\\\/]+' + drive + '[\\\\/]+' + tail,
+      '[\\\\/]+' + drive + '[\\\\/]+' + tail,
+    ];
+  } else {
+    variants = [info.rest.map(regexEscape).join('[\\\\/]+')];
+  }
+  const re = new RegExp('(^|[^A-Za-z0-9_.~-])(' + variants.join('|') + ')(?=$|[^A-Za-z0-9_.~-])', process.platform === 'win32' ? 'gi' : 'g');
+  let replacements = 0;
+  const out = String(command || '').replace(re, (all, prefix, matched) => {
+    replacements++;
+    let dst;
+    if (/^[\\/]+cygdrive[\\/]+/i.test(matched)) dst = toCygdrivePath(sandboxSource);
+    else if (/^[\\/]+[A-Za-z][\\/]+/.test(matched)) dst = toMsysPath(sandboxSource);
+    else if (matched.includes('\\')) dst = String(path.resolve(sandboxSource)).replace(/\//g, '\\');
+    else dst = posix(path.resolve(sandboxSource));
+    return prefix + dst;
+  });
+  if (replacements === 0) {
+    throw new EquivInfrastructureError('source-root-rewrite-zero', 'hook command does not contain the reviewed live source root', { sourceRoot, command: String(command || '') });
+  }
+  if (sourceRootResidual(out, sourceRoot)) {
+    throw new EquivInfrastructureError('source-root-rewrite-residual', 'hook command still contains the reviewed live source root after rewrite', { sourceRoot, command: String(command || ''), rewritten: out });
+  }
   return out;
 }
 
-function matcherMatches(matcher, toolName) {
-  if (matcher === null || matcher === undefined || matcher === '') return true;
-  if (!toolName) return false;
-  try { return new RegExp('^(?:' + matcher + ')$').test(toolName); }
-  catch { return String(matcher).split('|').includes(String(toolName)); }
+function matcherOptions() {
+  return {
+    unsupportedMatcher: 'ignore',
+    fail(code, message, detail) { throw new EquivInfrastructureError(code, message, detail); },
+  };
+}
+
+function matcherMatches(event, matcher, payload) {
+  return hookSemantics.matcherMatches(event, matcher, payload, matcherOptions());
 }
 
 function hookEventsForGroup(group) {
   if (Array.isArray(group.hookEvents) && group.hookEvents.length) return group.hookEvents.slice();
   return TOOL_EVENTS.has(group.event) ? ['PreToolUse', 'PostToolUse'] : [group.event];
+}
+
+function isDevicePath(value) {
+  return /^NUL$/i.test(String(value || '')) || String(value || '') === '/dev/null';
+}
+
+function portableAbsoluteToNative(value) {
+  const raw = String(value || '');
+  let m = /^\/cygdrive\/([A-Za-z])\/(.*)$/.exec(raw);
+  if (m) return m[1] + ':/' + m[2];
+  m = /^\/([A-Za-z])\/(.*)$/.exec(raw);
+  if (m) return m[1] + ':/' + m[2];
+  return raw;
+}
+
+function isAbsolutePortable(value) {
+  const s = String(value || '');
+  return /^[A-Za-z]:[\\/]/.test(s) || /^\/[A-Za-z]\//.test(s) || /^\/cygdrive\/[A-Za-z]\//.test(s) || /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+/.test(s) || path.posix.isAbsolute(s);
+}
+
+function pathInsideSandbox(value, sandboxHome) {
+  const native = portableAbsoluteToNative(value);
+  if (/^(?:\\\\|\/\/)/.test(native)) return false;
+  const root = canonicalPathForComparison(path.resolve(sandboxHome));
+  const target = canonicalPathForComparison(path.resolve(native));
+  return target === root || target.startsWith(root + '/');
+}
+
+function prepareCaseInput(rawInput, sandboxHome) {
+  const input = JSON.parse(JSON.stringify(rawInput || {}));
+  const targets = [[input, 'cwd', '$.cwd'], [input, 'transcript_path', '$.transcript_path']];
+  if (input.tool_input && typeof input.tool_input === 'object' && !Array.isArray(input.tool_input)) {
+    for (const key of ['file_path', 'path', 'notebook_path']) targets.push([input.tool_input, key, '$.tool_input.' + key]);
+  }
+  for (const [obj, key, label] of targets) {
+    if (!Object.prototype.hasOwnProperty.call(obj, key) || typeof obj[key] !== 'string') continue;
+    let value = obj[key];
+    if (value === '<TMP>') value = posix(sandboxHome);
+    else if (value.startsWith('<TMP>/') || value.startsWith('<TMP>\\')) value = posix(sandboxHome) + '/' + value.slice(6).replace(/^[\\/]+/, '');
+    obj[key] = value;
+    if (isDevicePath(value) || !isAbsolutePortable(value)) continue;
+    if (!pathInsideSandbox(value, sandboxHome)) {
+      throw new EquivInfrastructureError('payload-path-outside-sandbox', 'payload path escapes the case sandbox: ' + label, { field: label, value, sandboxHome: posix(sandboxHome) });
+    }
+  }
+  if (!input.cwd) input.cwd = posix(sandboxHome);
+  return input;
 }
 
 function casePayload(group, c, hookEvent, sandboxHome) {
@@ -96,34 +263,81 @@ function findBash() {
   return 'bash';
 }
 
-function isolatedEnv(sandboxHome) {
-  const home = posix(sandboxHome);
-  const tmp = path.join(sandboxHome, '.tmp');
+const GIT_LOCAL_ENV_VARS_STATIC = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT',
+  'GIT_OBJECT_DIRECTORY', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE',
+  'GIT_INDEX_FILE', 'GIT_NO_REPLACE_OBJECTS', 'GIT_REPLACE_REF_BASE', 'GIT_PREFIX', 'GIT_SHALLOW_FILE',
+  'GIT_COMMON_DIR', 'GIT_DISCOVERY_ACROSS_FILESYSTEM', 'GIT_NAMESPACE', 'GIT_QUARANTINE_PATH',
+  'GIT_INTERNAL_SUPER_PREFIX', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM',
+];
+const DANGEROUS_ENV_EXACT = ['BASH_ENV', 'ENV', 'NODE_OPTIONS', 'NODE_PATH', 'SHELLOPTS', 'BASHOPTS', 'PS4', 'PROMPT_COMMAND', 'CDPATH', 'GLOBIGNORE', 'CLAUDE_SETTINGS_JSON_OVERRIDE'];
+let gitLocalEnvVarsCache = null;
+
+function deleteEnvKeyCI(env, name) {
+  const want = String(name).toLowerCase();
+  for (const k of Object.keys(env)) if (k.toLowerCase() === want) delete env[k];
+}
+function setEnvKeyCI(env, name, value) { deleteEnvKeyCI(env, name); env[name] = value; }
+function deleteEnvPatternCI(env, re) { for (const k of Object.keys(env)) if (re.test(k)) delete env[k]; }
+function gitLocalEnvVars() {
+  if (gitLocalEnvVarsCache) return gitLocalEnvVarsCache.slice();
+  const set = new Set(GIT_LOCAL_ENV_VARS_STATIC);
+  try {
+    const clean = Object.assign({}, process.env);
+    for (const k of Object.keys(clean)) if (/^GIT_/i.test(k)) delete clean[k];
+    const r = cp.spawnSync('git', ['rev-parse', '--local-env-vars'], { env: clean, encoding: 'utf8', timeout: 10000 });
+    if (r.status === 0 && r.stdout) for (const line of String(r.stdout).split(/\r?\n/)) { const v = line.trim(); if (/^GIT_[A-Z0-9_]+$/.test(v)) set.add(v); }
+  } catch {}
+  gitLocalEnvVarsCache = [...set];
+  return gitLocalEnvVarsCache.slice();
+}
+function gitCeilingForSandbox(sandboxHome) {
+  let parent = path.dirname(path.resolve(sandboxHome));
+  try { parent = fs.realpathSync.native(parent); } catch {}
+  return String(parent).replace(/\\/g, '/').replace(/\/+$/, '');
+}
+function isolatedEnv(sandboxHome, sessionId) {
+  const absHome = path.resolve(sandboxHome);
+  const home = posix(absHome);
+  const tmp = path.join(absHome, '.tmp');
   fs.mkdirSync(tmp, { recursive: true });
-  const env = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (/^(?:PMM_|AXMEM_)/i.test(k)) continue;
-    if (/^(?:CLAUDE_CONFIG_DIR|CLAUDE_HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|XDG_CACHE_HOME)$/i.test(k)) continue;
-    env[k] = v;
-  }
-  Object.assign(env, {
-    HOME: home,
-    USERPROFILE: home,
-    PMM_HOME: home,
-    PMM_SELFTEST_ACTIVE: '1',
-    PMM_SELFTEST_ROOT: home,
-    AXMEM_HOME: posix(path.join(sandboxHome, '.axmem')),
-    AXMEM_MEMORY_DIR: posix(path.join(sandboxHome, 'memory')),
-    AXMEM_STATE_DIR: posix(path.join(sandboxHome, '.axmem-state')),
-    CLAUDE_CONFIG_DIR: posix(path.join(sandboxHome, '.claude')),
-    XDG_CONFIG_HOME: posix(path.join(sandboxHome, '.config')),
-    XDG_STATE_HOME: posix(path.join(sandboxHome, '.local', 'state')),
-    XDG_CACHE_HOME: posix(path.join(sandboxHome, '.cache')),
-    TMPDIR: posix(tmp),
-    TEMP: posix(tmp),
-    TMP: posix(tmp),
+  const env = Object.assign({}, process.env);
+  deleteEnvPatternCI(env, /^(?:PMM_|AXMEM_)/i);
+  deleteEnvPatternCI(env, /^XDG_/i);
+  deleteEnvPatternCI(env, /^PIPE_GATE_/i);
+  deleteEnvPatternCI(env, /^CLAUDE_CODE_/i);
+  for (const name of DANGEROUS_ENV_EXACT) deleteEnvKeyCI(env, name);
+  for (const name of gitLocalEnvVars()) deleteEnvKeyCI(env, name);
+  deleteEnvPatternCI(env, /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/i);
+  const parsed = path.parse(absHome);
+  const drive = process.platform === 'win32' ? parsed.root.replace(/[\\/]+$/, '') : '';
+  const homePath = process.platform === 'win32' && drive ? posix(absHome).slice(drive.length) : home;
+  const safe = {
+    HOME: home, USERPROFILE: home, HOMEDRIVE: drive, HOMEPATH: homePath,
+    APPDATA: posix(path.join(absHome, 'AppData', 'Roaming')),
+    LOCALAPPDATA: posix(path.join(absHome, 'AppData', 'Local')),
+    XDG_CONFIG_HOME: posix(path.join(absHome, '.config')),
+    XDG_DATA_HOME: posix(path.join(absHome, '.local', 'share')),
+    XDG_STATE_HOME: posix(path.join(absHome, '.local', 'state')),
+    XDG_CACHE_HOME: posix(path.join(absHome, '.cache')),
+    HERMES_HOME: posix(path.join(absHome, '.hermes')),
+    TEMP: posix(tmp), TMP: posix(tmp), TMPDIR: posix(tmp),
+    CLAUDE_CONFIG_DIR: posix(path.join(absHome, '.claude')),
+    PMM_HOME: home, PMM_SELFTEST_ACTIVE: '1', PMM_SELFTEST_ROOT: home,
+    AXMEM_HOME: posix(path.join(absHome, '.axmem')),
+    AXMEM_MEMORY_DIR: posix(path.join(absHome, 'memory')),
+    AXMEM_STATE_DIR: posix(path.join(absHome, '.axmem-state')),
     AXMEM_EQUIV_ACTIVE: '1',
-  });
+    GIT_CEILING_DIRECTORIES: gitCeilingForSandbox(absHome),
+  };
+  for (const [k, v] of Object.entries(safe)) setEnvKeyCI(env, k, v);
+  if (typeof sessionId === 'string' && sessionId) {
+    setEnvKeyCI(env, 'CLAUDE_SESSION_ID', sessionId);
+    setEnvKeyCI(env, 'CLAUDE_CODE_SESSION_ID', sessionId);
+  } else {
+    deleteEnvKeyCI(env, 'CLAUDE_SESSION_ID');
+    deleteEnvKeyCI(env, 'CLAUDE_CODE_SESSION_ID');
+  }
   if (process.platform === 'win32') {
     const toMsys = (p) => {
       const s = String(p || '').replace(/\\/g, '/');
@@ -132,7 +346,7 @@ function isolatedEnv(sandboxHome) {
     };
     const entries = [toMsys(path.dirname(process.execPath)), '/usr/bin', '/bin'];
     for (const e of String(process.env.PATH || '').split(';')) if (e.trim()) entries.push(toMsys(e.trim()));
-    env.PATH = [...new Set(entries)].join(':');
+    setEnvKeyCI(env, 'PATH', [...new Set(entries)].join(':'));
   }
   return env;
 }
@@ -153,9 +367,12 @@ function walkFiles(root) {
 }
 
 function normalizedFileDigest(buf, prefixes) {
-  const binary = buf.includes(0);
-  const norm = binary ? buf : Buffer.from(normalizeRuntimeText(buf.toString('utf8'), prefixes), 'utf8');
-  return { sha256: sha256(norm), size: norm.length, binary };
+  let text, encoding = 'utf8', invalidUtf8 = false;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  catch { text = buf.toString('latin1'); encoding = 'latin1'; invalidUtf8 = true; }
+  const normalized = normalizeRuntimeText(text, prefixes);
+  const norm = Buffer.from(normalized, encoding);
+  return { sha256: sha256(norm), size: norm.length, binary: invalidUtf8 };
 }
 
 function diffState(before, after, prefixes) {
@@ -200,7 +417,7 @@ function copySandbox(src) {
 function bindingEnv(env, prefixes) {
   const out = {};
   for (const k of Object.keys(env).sort()) {
-    if (/^(?:HOME|USERPROFILE|PATH|TMPDIR|TEMP|TMP|PMM_|AXMEM_|CLAUDE_CONFIG_DIR|XDG_)/i.test(k)) {
+    if (/^(?:HOME|USERPROFILE|TMPDIR|TEMP|TMP|CLAUDE_CONFIG_DIR|PMM_.*|AXMEM_.*|XDG_.*)$/i.test(k)) {
       out[k] = normalizeRuntimeText(env[k], prefixes);
     }
   }
@@ -233,12 +450,104 @@ function payloadBinding(payload, prefixes) {
 }
 
 class EquivInfrastructureError extends Error {
-  constructor(message, detail) {
+  constructor(codeOrMessage, messageOrDetail, detail) {
+    let code, message, resolvedDetail;
+    if (typeof messageOrDetail === 'string' || arguments.length >= 3) {
+      code = String(codeOrMessage || 'equiv-infrastructure');
+      message = String(messageOrDetail || code);
+      resolvedDetail = detail || null;
+    } else {
+      code = 'equiv-infrastructure';
+      message = String(codeOrMessage || code);
+      resolvedDetail = messageOrDetail || null;
+    }
     super(message);
     this.name = 'EquivInfrastructureError';
-    this.code = 'equiv-infrastructure';
-    this.detail = detail || null;
+    this.code = code;
+    this.detail = resolvedDetail;
   }
+}
+
+function semanticsFail(code, message, detail) { throw new EquivInfrastructureError(code, message, detail); }
+
+function validateFreezeHooks(freeze) {
+  if (!freeze || !Array.isArray(freeze.hooks)) throw new EquivInfrastructureError('freeze-hooks-invalid', 'freeze.hooks must be an array');
+  const identities = new Set();
+  for (const h of freeze.hooks) {
+    if (!h || typeof h !== 'object' || Array.isArray(h) || typeof h.event !== 'string' || !h.event.trim()
+        || !Number.isInteger(h.groupIndex) || h.groupIndex < 0 || !Number.isInteger(h.hookIndex) || h.hookIndex < 0
+        || typeof h.command !== 'string' || !h.command) {
+      throw new EquivInfrastructureError('freeze-hook-identity-invalid', 'freeze hook identity fields are invalid', { hook: h });
+    }
+    if (!ALL_DISPOSITIONS.has(h.disposition)) throw new EquivInfrastructureError('freeze-hook-disposition-invalid', 'freeze hook disposition is invalid', { identity: hookSemantics.hookIdentity(h), disposition: h.disposition });
+    hookSemantics.compileMatcher(h.event, Object.prototype.hasOwnProperty.call(h, 'matcher') ? h.matcher : null, matcherOptions());
+    const identity = hookSemantics.hookIdentity(h);
+    if (identities.has(identity)) throw new EquivInfrastructureError('freeze-hook-identity-duplicate', 'duplicate freeze hook identity', { identity });
+    identities.add(identity);
+    if (!RUN_DISPOSITIONS.has(h.disposition)) {
+      const reason = typeof h.notes === 'string' ? h.notes.trim() : '';
+      if (!reason) throw new EquivInfrastructureError('freeze-hook-skip-rationale-missing', 'skipped hook lacks explicit rationale', { identity, disposition: h.disposition });
+      if (h.disposition === 'external-prerequisite' && (!Array.isArray(h.externalDependencies) || h.externalDependencies.length === 0)) throw new EquivInfrastructureError('freeze-hook-external-dependency-missing', 'external-prerequisite hook lacks dependency list', { identity });
+    }
+  }
+  return identities.size;
+}
+
+function normalizeInventoryDerivedHook(h) {
+  if (!h || typeof h !== 'object' || !ALL_DISPOSITIONS.has(h.disposition)) throw new EquivInfrastructureError('freeze-inventory-hook-invalid', 'inventory hook disposition is missing/invalid', { hook: h });
+  const sourceRequired = h.disposition === 'port' || h.disposition === 'replace';
+  const files = Array.isArray(h.files) ? h.files.map(safeRel) : null;
+  if (!files) throw new EquivInfrastructureError('freeze-inventory-hook-invalid', 'inventory hook files must be an array');
+  const externalDependencies = Array.isArray(h.externalDependencies) ? h.externalDependencies.map((x) => String(x || '').trim()) : [];
+  if (externalDependencies.some((x) => !x)) throw new EquivInfrastructureError('freeze-inventory-hook-invalid', 'inventory hook externalDependencies contains empty id');
+  let businessExitCodes = [], runtimeHealthProbe = null;
+  if (sourceRequired) {
+    if (!Array.isArray(h.businessExitCodes)) throw new EquivInfrastructureError('freeze-inventory-hook-invalid', 'inventory hook businessExitCodes[] missing');
+    businessExitCodes = h.businessExitCodes.map((x) => Number(x)).sort((a, b) => a - b);
+    if (businessExitCodes.some((x, i) => !Number.isInteger(x) || x <= 0 || x > 255 || x === 124 || x === 126 || x === 127 || (i > 0 && businessExitCodes[i - 1] === x))) throw new EquivInfrastructureError('freeze-inventory-hook-invalid', 'inventory hook businessExitCodes[] invalid');
+    const p = h.runtimeHealthProbe;
+    if (!p || typeof p !== 'object' || Array.isArray(p) || p.version !== 1 || typeof p.innerCommand !== 'string' || !p.innerCommand.trim()
+        || typeof p.reliable !== 'boolean' || typeof p.notes !== 'string' || !p.notes.trim()) throw new EquivInfrastructureError('freeze-inventory-hook-invalid', 'inventory hook runtimeHealthProbe invalid');
+    runtimeHealthProbe = { version: 1, innerCommand: p.innerCommand, reliable: p.reliable, notes: p.notes.trim() };
+  }
+  return { disposition: h.disposition, files, implementation: h.implementation || null, notes: h.notes || '', externalDependencies, businessExitCodes, runtimeHealthProbe };
+}
+
+function validateInventoryBinding(freeze, axmemRepoRoot, settingsHooks) {
+  if (typeof freeze.inventoryPath !== 'string' || !freeze.inventoryPath.trim() || !/^[0-9a-f]{64}$/i.test(String(freeze.inventorySha256 || ''))) throw new EquivInfrastructureError('freeze-inventory-binding-missing', 'freeze inventoryPath/inventorySha256 are required', { inventoryPath: freeze.inventoryPath, inventorySha256: freeze.inventorySha256 });
+  if (!axmemRepoRoot) throw new EquivInfrastructureError('freeze-axmem-root-missing', 'AxMem repository root is required for inventory verification');
+  const rel = safeRel(freeze.inventoryPath);
+  const abs = path.join(path.resolve(axmemRepoRoot), ...rel.split('/'));
+  let bytes;
+  try { bytes = fs.readFileSync(abs); }
+  catch (e) { throw new EquivInfrastructureError('freeze-inventory-read-failed', 'cannot read bound inventory file', { path: rel, cause: String(e && e.message || e) }); }
+  const got = sha256(bytes);
+  if (got.toLowerCase() !== String(freeze.inventorySha256).toLowerCase()) throw new EquivInfrastructureError('freeze-inventory-hash-mismatch', 'bound inventory sha256 mismatch', { path: rel, expected: freeze.inventorySha256, actual: got });
+  let inv;
+  try { inv = JSON.parse(bytes.toString('utf8')); }
+  catch (e) { throw new EquivInfrastructureError('freeze-inventory-json-invalid', 'bound inventory is invalid JSON', { path: rel, cause: String(e && e.message || e) }); }
+  if (!Array.isArray(inv.hooks)) throw new EquivInfrastructureError('freeze-inventory-hook-invalid', 'bound inventory hooks must be an array', { path: rel });
+  if (settingsHooks.length !== freeze.hooks.length) throw new EquivInfrastructureError('freeze-settings-hook-mismatch', 'settings mirror hook count differs from freeze hooks');
+  for (let i = 0; i < settingsHooks.length; i++) if (hookSemantics.hookIdentity(settingsHooks[i]) !== hookSemantics.hookIdentity(freeze.hooks[i])) throw new EquivInfrastructureError('freeze-settings-hook-mismatch', 'settings mirror hook identity/order differs from freeze hooks', { index: i });
+  const invByIdentity = new Map();
+  for (const h of inv.hooks) {
+    hookSemantics.compileMatcher(h.event, Object.prototype.hasOwnProperty.call(h, 'matcher') ? h.matcher : null, { unsupportedMatcher: 'reject', fail: semanticsFail });
+    const id = hookSemantics.hookIdentity(h);
+    if (invByIdentity.has(id)) throw new EquivInfrastructureError('freeze-inventory-hook-invalid', 'duplicate bound inventory hook identity', { identity: id });
+    invByIdentity.set(id, h);
+  }
+  if (invByIdentity.size !== freeze.hooks.length) throw new EquivInfrastructureError('freeze-inventory-hook-mismatch', 'bound inventory hook count differs from freeze hooks');
+  const fields = ['disposition', 'files', 'implementation', 'notes', 'externalDependencies', 'businessExitCodes', 'runtimeHealthProbe'];
+  for (const h of freeze.hooks) {
+    const id = hookSemantics.hookIdentity(h);
+    const invHook = invByIdentity.get(id);
+    if (!invHook) throw new EquivInfrastructureError('freeze-inventory-hook-mismatch', 'freeze hook absent from bound inventory', { identity: id });
+    const expected = normalizeInventoryDerivedHook(invHook);
+    for (const field of fields) {
+      if (JSON.stringify(stableObject(h[field] === undefined ? null : h[field])) !== JSON.stringify(stableObject(expected[field] === undefined ? null : expected[field]))) throw new EquivInfrastructureError('freeze-inventory-derived-mismatch', 'freeze hook inventory-derived field mismatch', { identity: id, field, expected: expected[field], actual: h[field] });
+    }
+  }
+  return { path: rel, sha256: got };
 }
 
 function logicalHookId(h, phase) {
@@ -351,8 +660,10 @@ function runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRo
     if (initialOuter !== initialProbe) throw new EquivInfrastructureError('runtime health sandbox clone mismatch for ' + logicalId);
     const liveRel = safeRel(freeze.source.liveRelativePath);
     const probeSource = path.join(probeHome, ...liveRel.split('/'));
-    const probeEnv = isolatedEnv(probeHome);
-    const probePayload = casePayload(group, c, phase, probeHome);
+    const probeInput = prepareCaseInput(c && c.input ? c.input : {}, probeHome);
+    const probeCase = Object.assign({}, c, { input: probeInput });
+    const probeEnv = isolatedEnv(probeHome, probeInput.session_id);
+    const probePayload = casePayload(group, probeCase, phase, probeHome);
     const sourceBinding = sourceBindingForHook(freeze, h);
     const outerCommand = String(h.command || '');
     const innerCommand = String(contract.runtimeHealthProbe.innerCommand || '');
@@ -419,79 +730,49 @@ function validateFixture(fixture) {
   return { requiredEvents: required, counts: Object.fromEntries(counts), caseCount: ids.size };
 }
 
-function runCase({ freeze, group, c, repoRoot, sourceRoot, defaultTimeoutMs }) {
+function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaultTimeoutMs }) {
+  validateFreezeHooks(freeze);
+  const expectedSourceRoot = path.join(path.resolve(repoRoot), ...safeRel(freeze.source.liveRelativePath).split('/'));
+  if (!sameSourcePath(sourceRoot, expectedSourceRoot)) throw new EquivInfrastructureError('source-root-mismatch', '--source-root must identify the frozen live source directory', { provided: path.resolve(sourceRoot), expected: expectedSourceRoot });
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-equiv-case-'));
   try {
-    const sandboxSource = materializeFreeze(freeze, repoRoot, sandboxHome);
+    const sandboxSource = materializeFreeze(freeze, repoRoot, sandboxHome, axmemRepoRoot);
+    const preparedInput = prepareCaseInput(c && c.input ? c.input : {}, sandboxHome);
+    const runCaseDef = Object.assign({}, c, { input: preparedInput });
     const before = walkFiles(sandboxHome);
-    const env = isolatedEnv(sandboxHome);
+    const env = isolatedEnv(sandboxHome, preparedInput.session_id);
     const hookResults = [];
     const stdout = [], stderr = [];
     let exitCode = 0, executed = 0;
     const phases = hookEventsForGroup(group);
     for (const phase of phases) {
-      const toolName = TOOL_EVENTS.has(group.event) ? group.event : (c.input && c.input.tool_name);
+      const payload = casePayload(group, runCaseDef, phase, sandboxHome);
       for (const h of freeze.hooks || []) {
-        if (h.event !== phase || !matcherMatches(h.matcher, toolName)) continue;
+        if (h.event !== phase || !matcherMatches(phase, h.matcher, payload)) continue;
         const logicalId = logicalHookId(h, phase);
         const matcher = h.matcher === undefined ? null : h.matcher;
         if (!RUN_DISPOSITIONS.has(h.disposition)) {
-          const reason = typeof h.notes === 'string' ? h.notes.trim() : '';
-          if (!reason) throw new Error('skipped hook lacks explicit rationale: ' + logicalId + ' (' + h.disposition + ')');
-          const externalDependencies = Array.isArray(h.externalDependencies) ? h.externalDependencies.slice() : [];
-          if (h.disposition === 'external-prerequisite' && externalDependencies.length === 0) {
-            throw new Error('external-prerequisite hook lacks explicit dependency list: ' + logicalId);
-          }
-          hookResults.push({
-            logicalId, phase, matcher, disposition: h.disposition, status: 'skipped',
-            reason, externalDependencies,
-          });
+          hookResults.push({ logicalId, phase, matcher, disposition: h.disposition, status: 'skipped', reason: typeof h.notes === 'string' ? h.notes.trim() : '', externalDependencies: Array.isArray(h.externalDependencies) ? h.externalDependencies.slice() : [] });
           continue;
         }
         const command = rewriteSourceRoot(h.command, sourceRoot, sandboxSource);
-        const payload = casePayload(group, c, phase, sandboxHome);
         const timeoutMs = Number.isFinite(Number(h.timeout)) && Number(h.timeout) > 0 ? Number(h.timeout) * 1000 : defaultTimeoutMs;
         const contract = hookExitContract(h, logicalId);
-        const runtimeHealth = runRuntimeHealthProbe({
-          freeze, h, logicalId, phase, c, group, sourceRoot,
-          outerHome: sandboxHome, outerSource: sandboxSource, outerEnv: env, outerPayload: payload,
-          timeoutMs, contract,
-        });
+        const runtimeHealth = runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRoot, outerHome: sandboxHome, outerSource: sandboxSource, outerEnv: env, outerPayload: payload, timeoutMs, contract });
         const sourceSyntaxChecked = preflightHookSources(h, sandboxSource, env, logicalId, timeoutMs);
         const rr = runHook(command, payload, env, sandboxHome, timeoutMs, contract.businessExitCodes);
-        if (rr.infrastructureFailure) {
-          throw new EquivInfrastructureError(
-            'hook infrastructure failure for ' + logicalId + ': ' + rr.infrastructureReason,
-            { logicalId, phase, disposition: h.disposition, exitCode: rr.exitCode, reason: rr.infrastructureReason,
-              businessExitCodes: contract.businessExitCodes, runtimeHealth }
-          );
-        }
+        if (rr.infrastructureFailure) throw new EquivInfrastructureError('hook-infrastructure-failure', 'hook infrastructure failure for ' + logicalId + ': ' + rr.infrastructureReason, { logicalId, phase, disposition: h.disposition, exitCode: rr.exitCode, reason: rr.infrastructureReason, businessExitCodes: contract.businessExitCodes, runtimeHealth });
         executed++;
-        hookResults.push({
-          logicalId, phase, matcher, disposition: h.disposition, status: 'ran',
-          exitCode: rr.exitCode, outcome: rr.outcome,
-          businessExitCodes: contract.businessExitCodes,
-          runtimeHealth,
-          sourceSyntaxChecked,
-        });
+        hookResults.push({ logicalId, phase, matcher, disposition: h.disposition, status: 'ran', exitCode: rr.exitCode, outcome: rr.outcome, businessExitCodes: contract.businessExitCodes, runtimeHealth, sourceSyntaxChecked });
         if (rr.stdout) stdout.push('[' + logicalId + ']\n' + rr.stdout);
         if (rr.stderr) stderr.push('[' + logicalId + ']\n' + rr.stderr);
         if (exitCode === 0 && rr.exitCode !== 0) exitCode = rr.exitCode;
       }
     }
-    if (hookResults.length === 0) throw new Error('no matching hooks for fixture case ' + c.id + ' (' + group.event + ')');
+    if (hookResults.length === 0) throw new EquivInfrastructureError('fixture-no-matching-hooks', 'no matching hooks for fixture case ' + c.id + ' (' + group.event + ')', { caseId: c.id, event: group.event });
     const prefixes = [sandboxHome, sandboxSource, sourceRoot];
     const after = walkFiles(sandboxHome);
-    return {
-      id: c.id,
-      event: group.event,
-      exitCode,
-      stdout: normalizeRuntimeText(stdout.join(''), prefixes),
-      stderr: normalizeRuntimeText(stderr.join(''), prefixes),
-      stateTree: diffState(before, after, prefixes),
-      hookResults,
-      executedHooks: executed,
-    };
+    return { id: c.id, event: group.event, exitCode, stdout: normalizeRuntimeText(stdout.join(''), prefixes), stderr: normalizeRuntimeText(stderr.join(''), prefixes), stateTree: diffState(before, after, prefixes), hookResults, executedHooks: executed };
   } finally {
     try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch {}
   }
@@ -503,25 +784,17 @@ function runFreezeReport(opts) {
   const coverage = validateFixture(fixture);
   const repoRoot = path.resolve(opts.repoRoot);
   const sourceRoot = path.resolve(opts.sourceRoot);
+  const axmemRepoRoot = opts.axmemRepoRoot ? path.resolve(opts.axmemRepoRoot) : null;
+  validateFreezeHooks(freeze);
+  const expectedSourceRoot = path.join(repoRoot, ...safeRel(freeze.source.liveRelativePath).split('/'));
+  if (!sameSourcePath(sourceRoot, expectedSourceRoot)) throw new EquivInfrastructureError('source-root-mismatch', '--source-root must identify the frozen live source directory', { provided: sourceRoot, expected: expectedSourceRoot });
   const defaultTimeoutMs = Number.isFinite(Number(opts.defaultTimeoutMs)) && Number(opts.defaultTimeoutMs) > 0 ? Number(opts.defaultTimeoutMs) : 60000;
   const cases = [];
-  for (const group of fixture.events) {
-    for (const c of group.cases) {
-      cases.push(runCase({ freeze, group, c: Object.assign({}, c, { id: c.id.trim() }), repoRoot, sourceRoot, defaultTimeoutMs }));
-    }
-  }
+  for (const group of fixture.events) for (const c of group.cases) cases.push(runCase({ freeze, group, c: Object.assign({}, c, { id: c.id.trim() }), repoRoot, sourceRoot, axmemRepoRoot, defaultTimeoutMs }));
   const report = {
-    schema: 'axmem-equiv-report/v1',
-    generatedAt: new Date().toISOString(),
-    source: {
-      commit: freeze.source.commit,
-      treeOid: freeze.source.treeOid,
-      sourceFiles: (freeze.sourceFiles || []).map((f) => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path)),
-      sourceFilesSha256: hashObject((freeze.sourceFiles || []).map((f) => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path))),
-    },
-    normalization: { pathPrefixes: [sourceRoot] },
-    fixtureCoverage: coverage,
-    cases,
+    schema: 'axmem-equiv-report/v1', generatedAt: new Date().toISOString(),
+    source: { commit: freeze.source.commit, treeOid: freeze.source.treeOid, sourceFiles: (freeze.sourceFiles || []).map((f) => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path)), sourceFilesSha256: hashObject((freeze.sourceFiles || []).map((f) => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path))) },
+    normalization: { pathPrefixes: [sourceRoot] }, fixtureCoverage: coverage, cases,
   };
   if (opts.out) {
     const out = path.resolve(opts.out);
@@ -535,6 +808,7 @@ function runFreezeReport(opts) {
 
 module.exports = {
   EquivInfrastructureError, normalizeRuntimeText, matcherMatches, hookEventsForGroup,
-  materializeFreeze, rewriteSourceRoot, diffState, logicalHookId, hookExitContract, preflightHookSources,
+  materializeFreeze, rewriteSourceRoot, sourceRootResidual, sameSourcePath, prepareCaseInput, isolatedEnv, bindingEnv,
+  validateFreezeHooks, validateInventoryBinding, diffState, logicalHookId, hookExitContract, preflightHookSources,
   runHook, runRuntimeHealthProbe, validateFixture, runCase, runFreezeReport, stateDigest, hashObject, sourceBindingForHook,
 };

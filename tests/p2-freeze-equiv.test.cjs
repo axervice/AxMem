@@ -88,7 +88,7 @@ try {
     auditEvidence: ['fixture-audit'],
     allowedDifferences: [],
   };
-  const inv = path.join(T, 'inventory.json');
+  const inv = path.join(repo, 'inventory.json');
   fs.writeFileSync(inv, JSON.stringify(inventory, null, 2));
   git(repo, ['init', '-q']);
   git(repo, ['add', '.gitignore', '.claude']);
@@ -210,8 +210,8 @@ try {
   const savedPmmMemDir = process.env.PMM_MEM_DIR;
   process.env.PMM_MEM_DIR = inheritedEscape;
   const runGroup = runFixture.events[0];
-  const actualCase = runner.runCase({ freeze: m, group: runGroup, c: runGroup.cases[0], repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
-  const actualCase2 = runner.runCase({ freeze: m, group: runGroup, c: runGroup.cases[0], repoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  const actualCase = runner.runCase({ freeze: m, group: runGroup, c: runGroup.cases[0], repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  const actualCase2 = runner.runCase({ freeze: m, group: runGroup, c: runGroup.cases[0], repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
   if (savedPmmMemDir === undefined) delete process.env.PMM_MEM_DIR; else process.env.PMM_MEM_DIR = savedPmmMemDir;
   check('equiv runner executes frozen hook from materialized commit', actualCase.executedHooks === 1 && actualCase.stdout.includes('HOOK UserPromptSubmit') && Object.keys(actualCase.stateTree).some((k) => k.endsWith('.claude/.local/equiv-state.txt')));
   check('equiv runner skips external-prerequisite hook instead of executing it', actualCase.hookResults.some((h) => h.disposition === 'external-prerequisite' && h.status === 'skipped'));
@@ -230,6 +230,7 @@ try {
     '--freeze', freezeFile,
     '--fixtures', runFixtureFile,
     '--repo', repo,
+    '--axmem-repo', repo,
     '--source-root', live,
     '--out', cliReportFile,
   ], { encoding: 'utf8' });
@@ -269,14 +270,19 @@ try {
       probeExitCode: 0, probeOutcome: 'allow', sourceSyntaxChecked: ['synthetic.cjs'], probeNotes: 'synthetic structured evidence',
     };
   };
-  const cases = fixture.events.flatMap((e) => e.cases.map((c) => ({
-    id: c.id, event: e.event, exitCode: 0,
-    stdout: 'root=C:/tmp/frozen ' + '2026-09-29T00:00:00Z',
-    stderr: '',
-    stateTree: { ['C:/tmp/frozen/state/' + c.id + '.txt']: { sha256: 'abc', size: 3 } },
-    executedHooks: 1,
-    hookResults: [{ logicalId: 'synthetic:' + e.event, phase: e.event, matcher: null, disposition: 'port', status: 'ran', exitCode: 0, outcome: 'allow', businessExitCodes: [2], runtimeHealth: synthHealth(c.id, e.event) }],
-  })));
+  const cases = fixture.events.flatMap((e) => e.cases.map((c) => {
+    const inputCanonical = JSON.stringify(equiv.stable(c.input || {}));
+    return {
+      id: c.id, event: e.event, inputCanonical,
+      inputSha256: crypto.createHash('sha256').update(inputCanonical).digest('hex'),
+      exitCode: 0,
+      stdout: 'root=C:/tmp/frozen ' + '2026-09-29T00:00:00Z',
+      stderr: '',
+      stateTree: { ['C:/tmp/frozen/state/' + c.id + '.txt']: { sha256: 'abc', size: 3 } },
+      executedHooks: 1,
+      hookResults: [{ logicalId: 'synthetic:' + e.event, phase: e.event, matcher: null, disposition: 'port', status: 'ran', exitCode: 0, outcome: 'allow', businessExitCodes: [2], runtimeHealth: synthHealth(c.id, e.event) }],
+    };
+  }));
   const report = { schema: 'axmem-equiv-report/v1', source: synthSource, normalization: { pathPrefixes: ['C:/tmp/frozen'] }, cases };
   const same = equiv.compareReports(report, JSON.parse(JSON.stringify(report)), []);
   check('equiv frozen-vs-itself is exact green', same.equal && same.unexpected.length === 0 && same.cases === cases.length);
