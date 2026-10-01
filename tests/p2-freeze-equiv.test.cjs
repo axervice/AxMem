@@ -127,6 +127,7 @@ try {
 
   const bad = JSON.parse(JSON.stringify(inventory));
   bad.hooks[0].command = 'node wrong.cjs';
+  bad.hooks[0].runtimeHealthProbe.innerCommand = 'node wrong.cjs';
   fs.writeFileSync(inv, JSON.stringify(bad));
   let mismatch = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { mismatch = e.code; }
@@ -152,6 +153,40 @@ try {
   let missingHealthEvidenceCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { missingHealthEvidenceCode = e.code; }
   check('freeze requires structured runtime health probe contract', missingHealthEvidenceCode === 'bad-inventory', String(missingHealthEvidenceCode));
+
+  const r15bCandidate = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'docs', 'freeze', 'INVENTORY-V1-CANDIDATE-R12b.json'), 'utf8'));
+  const r15bHealthHooks = r15bCandidate.hooks.filter((h) => h.runtimeHealthProbe);
+  let r15bCandidateHealthErr = null;
+  try { for (const h of r15bHealthHooks) freeze.normalizeRuntimeHealthProbe(h, h.event + '/' + h.groupIndex + '/' + h.hookIndex); }
+  catch (e) { r15bCandidateHealthErr = e; }
+  check('R15b C1 all 19 candidate runtimeHealthProbe relations pass the mechanical gate including 7 reliable=false',
+    !r15bCandidateHealthErr && r15bHealthHooks.length === 19 && r15bHealthHooks.filter((h) => h.runtimeHealthProbe.reliable === false).length === 7,
+    String(r15bCandidateHealthErr && r15bCandidateHealthErr.message));
+
+  const c1Reject = (name, commandValue, innerValue) => {
+    let err = null;
+    try { freeze.normalizeRuntimeHealthProbe({ command: commandValue, runtimeHealthProbe: { version: 1, innerCommand: innerValue, reliable: true, notes: 'r15b c1 negative' } }, 'R15b-C1/' + name); }
+    catch (e) { err = e; }
+    check('R15b C1 rejects ' + name, err && err.code === 'bad-inventory' && err.detail && err.detail.field === 'runtimeHealthProbe.innerCommand', JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  };
+  c1Reject('unrelated inner=true', 'node hook.cjs', 'true');
+  c1Reject('unapproved outer x || true with stripped inner', 'node hook.cjs || true', 'node hook.cjs');
+  c1Reject('approved || exit 0 outer when inner still contains the mask', 'node hook.cjs || exit 0', 'node hook.cjs || exit 0');
+  c1Reject('more than one approved fail-open tail', 'node hook.cjs || exit 0 || exit 0', 'node hook.cjs || exit 0');
+  let c1WhitespaceErr = null;
+  try { freeze.normalizeRuntimeHealthProbe({ command: 'node   hook.cjs   ||   exit   0', runtimeHealthProbe: { version: 1, innerCommand: ' node hook.cjs ', reliable: true, notes: 'r15b c1 whitespace' } }, 'R15b-C1/whitespace'); } catch (e) { c1WhitespaceErr = e; }
+  check('R15b C1 compares outer and inner after whitespace normalization', !c1WhitespaceErr, String(c1WhitespaceErr && c1WhitespaceErr.message));
+
+  let c2UnsupportedMatcherErr = null;
+  try { freeze.flattenHooks({ hooks: { UserPromptSubmit: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo never' }] }] } }); }
+  catch (e) { c2UnsupportedMatcherErr = e; }
+  check('R15b C2 freeze rejects non-empty matcher on event without matcher support as bad-inventory',
+    c2UnsupportedMatcherErr && c2UnsupportedMatcherErr.code === 'bad-inventory' && c2UnsupportedMatcherErr.detail && c2UnsupportedMatcherErr.detail.matcherErrorCode === 'hook-matcher-not-supported' && c2UnsupportedMatcherErr.detail.event === 'UserPromptSubmit',
+    JSON.stringify({ code: c2UnsupportedMatcherErr && c2UnsupportedMatcherErr.code, detail: c2UnsupportedMatcherErr && c2UnsupportedMatcherErr.detail }));
+  let c2SupportedMatcherErr = null;
+  try { freeze.flattenHooks({ hooks: { PreToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'echo ok' }] }] } }); }
+  catch (e) { c2SupportedMatcherErr = e; }
+  check('R15b C2 freeze still accepts supported non-empty tool matcher', !c2SupportedMatcherErr, String(c2SupportedMatcherErr && c2SupportedMatcherErr.message));
 
   const missingManualDependencyList = JSON.parse(JSON.stringify(inventory));
   missingManualDependencyList.files.push({ path: 'guards/dynamic.sh', disposition: 'port', dependencies: [], unresolvedDependencies: [

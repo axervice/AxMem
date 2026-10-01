@@ -48,8 +48,13 @@ function safeRelativeFile(p) {
 
 function hookSemanticsOptions() {
   return {
-    unsupportedMatcher: 'ignore',
-    fail(code, message, detail) { throw new FreezeError(code, message, detail); },
+    unsupportedMatcher: 'reject',
+    fail(code, message, detail) {
+      if (/^hook-matcher-/.test(String(code || ''))) {
+        throw new FreezeError('bad-inventory', message, Object.assign({ matcherErrorCode: code }, detail || {}));
+      }
+      throw new FreezeError(code, message, detail);
+    },
   };
 }
 
@@ -704,6 +709,31 @@ function normalizeBusinessExitContract(h, label) {
   return { businessExitCodes: codes };
 }
 
+function normalizeCommandWhitespace(value) {
+  return String(value === undefined || value === null ? '' : value).trim().replace(/\s+/g, ' ');
+}
+
+function reviewedInnerCommandForOuter(command) {
+  const outer = normalizeCommandWhitespace(command);
+  let match = /^(.*\S)\s+\|\|\s+exit\s+0$/.exec(outer);
+  let kind = null;
+  let inner = outer;
+  if (match) {
+    kind = 'exit-0';
+    inner = match[1].trim();
+  } else {
+    match = /^(.*\S)\s+\|\|\s+\{\s*(.+;)\s*\}$/.exec(outer);
+    if (match) {
+      kind = 'brace-group';
+      inner = match[1].trim();
+    }
+  }
+  if (kind) {
+    const nested = reviewedInnerCommandForOuter(inner);
+    if (nested.kind) return { outer, inner, kind, multipleTails: true };
+  }
+  return { outer, inner, kind, multipleTails: false };
+}
 function normalizeRuntimeHealthProbe(h, label) {
   const p = h.runtimeHealthProbe;
   if (!p || typeof p !== 'object' || Array.isArray(p)) {
@@ -712,6 +742,14 @@ function normalizeRuntimeHealthProbe(h, label) {
   if (p.version !== 1) throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.version must be 1');
   if (typeof p.innerCommand !== 'string' || !p.innerCommand.trim()) {
     throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand must be a non-empty reviewed command');
+  }
+  const relation = reviewedInnerCommandForOuter(h.command);
+  const reviewedInner = normalizeCommandWhitespace(p.innerCommand);
+  if (!relation.outer || relation.multipleTails || reviewedInner !== relation.inner) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand must mechanically match the outer command after removing one approved fail-open tail', {
+      field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
+      actualInnerCommand: reviewedInner, failOpenTail: relation.kind, multipleFailOpenTails: relation.multipleTails,
+    });
   }
   if (typeof p.reliable !== 'boolean') {
     throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.reliable must be boolean');
