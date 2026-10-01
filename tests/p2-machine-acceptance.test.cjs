@@ -20,8 +20,10 @@ function check(name, ok, detail) {
   if (ok) { console.log('PASS ' + name); pass++; }
   else { console.log('FAIL ' + name + (detail ? ' :: ' + detail : '')); fail++; }
 }
-function git(cwd, args) {
-  return cp.execFileSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+function git(cwd, args, options = {}) {
+  const root = path.resolve(cwd);
+  const env = Object.assign({}, process.env, { GIT_CEILING_DIRECTORIES: path.dirname(root) });
+  return cp.execFileSync('git', ['-C', root].concat(args), { encoding: 'utf8', input: options.input, env, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 function sha256(b) { return crypto.createHash('sha256').update(b).digest('hex'); }
 function clone(x) { return JSON.parse(JSON.stringify(x)); }
@@ -43,6 +45,14 @@ function settingsForHooks(hooks) {
 
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-p20-machine-accept-'));
 try {
+  const gitNoRepo = path.join(T, 'git-no-repo');
+  fs.mkdirSync(gitNoRepo, { recursive: true });
+  let gitNoRepoErr = null;
+  try { git(gitNoRepo, ['rev-parse', '--show-toplevel']); } catch (e) { gitNoRepoErr = e; }
+  check('test git helper fails closed in a directory without .git instead of discovering an ancestor repository',
+    gitNoRepoErr && Number(gitNoRepoErr.status) !== 0 && /not a git repository/i.test(String(gitNoRepoErr.stderr || gitNoRepoErr.message || '')),
+    String(gitNoRepoErr && (gitNoRepoErr.stderr || gitNoRepoErr.message)));
+
   // ---- Equiv runner/comparator: temp git repo only, never real HOME hooks. ----
   const repo = path.join(T, 'repo');
   const live = path.join(repo, '.claude');
@@ -616,8 +626,7 @@ try {
   // R15b A6: materialization gate bound to the real candidate inventory hook identities/derived fields.
   const a6CandidateRoot = path.join(__dirname, '..');
   const a6InventoryRel = 'docs/freeze/INVENTORY-V1-CANDIDATE-R12b.json';
-  const a6CandidateCommit = git(a6CandidateRoot, ['rev-parse', 'HEAD']).trim();
-  const a6CandidateBytes = Buffer.from(git(a6CandidateRoot, ['show', a6CandidateCommit + ':' + a6InventoryRel]), 'utf8');
+  const a6CandidateBytes = fs.readFileSync(path.join(a6CandidateRoot, ...a6InventoryRel.split('/')));
   const a6Inventory = JSON.parse(a6CandidateBytes.toString('utf8'));
   a6Inventory.generatedArtifacts = [];
   const a6AxmemRoot = path.join(T, 'r15d-a6-inventory-repo');
@@ -1562,7 +1571,7 @@ try {
   fs.mkdirSync(path.join(syRepo, '.claude', 'guards'), { recursive: true });
   git(syRepo, ['init', '-q']);
   const syTarget = 'guards/real.sh\n';
-  const syOid = cp.execFileSync('git', ['-C', syRepo, 'hash-object', '-w', '--stdin'], { input: syTarget, encoding: 'utf8' }).trim();
+  const syOid = git(syRepo, ['hash-object', '-w', '--stdin'], { input: syTarget }).trim();
   git(syRepo, ['update-index', '--add', '--cacheinfo', '120000', syOid, '.claude/guards/link.sh']);
   git(syRepo, ['-c', 'user.name=G1', '-c', 'user.email=g1@example.invalid', 'commit', '-qm', 'symlink fixture']);
   const syCommit = git(syRepo, ['rev-parse', 'HEAD']).trim();

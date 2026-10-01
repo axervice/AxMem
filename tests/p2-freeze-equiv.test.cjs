@@ -22,10 +22,19 @@ function check(name, ok, detail) {
 }
 
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-p20-selftest-'));
-function git(cwd, args) {
-  return cp.execFileSync('git', ['-C', cwd].concat(args), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+function git(cwd, args, options = {}) {
+  const root = path.resolve(cwd);
+  const env = Object.assign({}, process.env, { GIT_CEILING_DIRECTORIES: path.dirname(root) });
+  return cp.execFileSync('git', ['-C', root].concat(args), { encoding: 'utf8', input: options.input, env, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 try {
+  const gitNoRepo = path.join(T, 'git-no-repo');
+  fs.mkdirSync(gitNoRepo, { recursive: true });
+  let gitNoRepoErr = null;
+  try { git(gitNoRepo, ['rev-parse', '--show-toplevel']); } catch (e) { gitNoRepoErr = e; }
+  check('test git helper fails closed in a directory without .git instead of discovering an ancestor repository',
+    gitNoRepoErr && Number(gitNoRepoErr.status) !== 0 && /not a git repository/i.test(String(gitNoRepoErr.stderr || gitNoRepoErr.message || '')),
+    String(gitNoRepoErr && (gitNoRepoErr.stderr || gitNoRepoErr.message)));
   const repo = path.join(T, 'repo');
   const live = path.join(repo, '.claude');
   fs.mkdirSync(path.join(live, 'guards'), { recursive: true });
