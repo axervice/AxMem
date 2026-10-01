@@ -18,6 +18,9 @@ const ADAPTER_ENTRY = path.join(ADAPTER_REL, 'adapter.cjs');
 const LOCK_REL = path.join(ADAPTER_REL, 'parser.lock.json');
 const FIXTURE = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'round1-real-shape.json');
 const GOLDEN = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'golden.json');
+const V1_RECORDED = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'v1-projection-recorded.json');
+const V1_RECORDED_SHA256 = '3c87126b6d349241279021a121a884e3a3b27f8f98c3514d6207b9672c81ccc5';
+const V1_LIVE_SAMPLE_IDS = Object.freeze(["00001","00053","00105","00157","00209","00261","00314","00366","00418","00470","00522","00574","00626","00678","00730","00782","00835","00887","00939","00991","01043","01095","01147","01199","01251","01303","01356","01408","01460","01512","01564","01616"]);
 const GO_V1_EXE = path.join(ROOT, 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'p2-v2-selftest-'));
 
@@ -335,24 +338,58 @@ try {
     sameJson(goldenNegativeActual, goldenNegativeExpected) === false,
     JSON.stringify({ corpusId: golden.entries[0].id }));
 
-  if (!fs.existsSync(GO_V1_EXE)) throw new Error('Go v1 helper fixture is required for round-2 parity');
+  const v1FixtureBytes = fs.readFileSync(V1_RECORDED);
+  const v1FixtureHash = sha256(v1FixtureBytes);
+  const v1Fixture = JSON.parse(v1FixtureBytes.toString('utf8'));
+  const v1FixtureById = new Map(v1Fixture.entries.map((entry) => [entry.id, entry]));
+  check('recorded Go v1 projection fixture is sha256-pinned and covers the 1616-entry golden',
+    v1FixtureHash === V1_RECORDED_SHA256 &&
+    v1Fixture.schema === 'axmem-p2-bash-ast-v1-projection-recorded/v1' &&
+    v1Fixture.sourceGolden.corpusSha256 === golden.corpusSha256 &&
+    v1Fixture.sourceGolden.entryCount === 1616 &&
+    v1Fixture.entries.length === 1616 &&
+    sameJson(v1Fixture.samplePolicy.ids, V1_LIVE_SAMPLE_IDS),
+    JSON.stringify({
+      fixtureHash: v1FixtureHash,
+      entryCount: v1Fixture.entries.length,
+      sampleIds: v1Fixture.samplePolicy.ids,
+    }));
+
   let v1Agree = 0;
   const v1Mismatches = [];
   let v1Negative = null;
   for (const entry of golden.entries) {
+    const recorded = v1FixtureById.get(entry.id);
     const jsV1 = adapter.projectV1Fields(entry.original);
-    const goV1 = runGoV1(entry.original);
-    if (sameJson(jsV1, goV1)) v1Agree++;
+    if (recorded &&
+        recorded.originalSha256 === entry.originalSha256 &&
+        sameJson(jsV1, recorded.projection)) v1Agree++;
     else if (v1Mismatches.length < 10) v1Mismatches.push(entry.id);
-    if (!v1Negative && jsV1.calls.length > 0) {
+    if (!v1Negative && recorded && jsV1.calls.length > 0) {
       const mutant = JSON.parse(JSON.stringify(jsV1));
       mutant.calls[0].commandValue = 'mutated-node';
-      v1Negative = { id: entry.id, detected: !sameJson(mutant, goV1) };
+      v1Negative = { id: entry.id, detected: !sameJson(mutant, recorded.projection) };
     }
   }
-  check('v1 field projection remains equal to Go v1 on all 1616 corpus entries',
+  check('v1 field projection remains equal to recorded Go v1 fixture on all 1616 corpus entries',
     v1Agree === 1616 && v1Mismatches.length === 0,
     JSON.stringify({ v1Agree, mismatches: v1Mismatches }));
+
+  if (!fs.existsSync(GO_V1_EXE)) throw new Error('Go v1 helper is required for the fixed 32-entry live parity sample');
+  const liveSample = [];
+  for (const id of V1_LIVE_SAMPLE_IDS) {
+    const goldenEntry = golden.entries.find((entry) => entry.id === id);
+    const recorded = v1FixtureById.get(id);
+    const live = goldenEntry ? runGoV1(goldenEntry.original) : null;
+    liveSample.push({
+      id,
+      ok: !!goldenEntry && !!recorded && sameJson(live, recorded.projection),
+    });
+  }
+  check('fixed 32-entry live Go v1 sample equals the recorded fixture',
+    liveSample.length === 32 && liveSample.every((row) => row.ok),
+    JSON.stringify(liveSample));
+
   evidence(
     'v1 parity negative control detects a mutated projected field',
     true,
@@ -658,6 +695,202 @@ try {
     unsupportedCases.every((row) => row.got && row.got.status === 'unresolved' &&
       row.got.code === adapter.ERROR_CODES.UNSUPPORTED),
     JSON.stringify(unsupportedCases));
+
+
+  const sourceDynamic = target(adapter.scanDependencyTargets('source "$X"'),
+    (x) => x.kind === 'shell-source');
+  check('R16a-fix source "$X" without a binding is unresolved',
+    !!sourceDynamic && sourceDynamic.status === 'unresolved' &&
+      sourceDynamic.expression === '"$X"' && /binding proof/.test(sourceDynamic.reason),
+    JSON.stringify(sourceDynamic));
+
+  const nodeLongEval = target(adapter.scanDependencyTargets(
+    'node --eval \'require("./long-eval.cjs")\''), (x) => x.kind === 'node-inline-require');
+  check('R16a-fix node --eval is inline code, not a script',
+    !!nodeLongEval && nodeLongEval.status === 'resolved' && nodeLongEval.target === './long-eval.cjs',
+    JSON.stringify(nodeLongEval));
+
+  const nodeLongPrint = target(adapter.scanDependencyTargets(
+    'node --print \'require("./long-print.cjs")\''), (x) => x.kind === 'node-inline-require');
+  check('R16a-fix node --print is inline code, not a script',
+    !!nodeLongPrint && nodeLongPrint.status === 'resolved' && nodeLongPrint.target === './long-print.cjs',
+    JSON.stringify(nodeLongPrint));
+
+  const nodeFusedEval = target(adapter.scanDependencyTargets(
+    'node -e\'require("./fused.cjs")\''), (x) => x.kind === 'node-inline-require');
+  check('R16a-fix fused node -eCODE is inline code',
+    !!nodeFusedEval && nodeFusedEval.status === 'resolved' && nodeFusedEval.target === './fused.cjs',
+    JSON.stringify(nodeFusedEval));
+
+  const nodeEqualsEval = target(adapter.scanDependencyTargets(
+    'node --eval=\'require("./equals-eval.cjs")\''), (x) => x.kind === 'node-inline-require');
+  check('R16a-fix node --eval=CODE is inline code',
+    !!nodeEqualsEval && nodeEqualsEval.status === 'resolved' && nodeEqualsEval.target === './equals-eval.cjs',
+    JSON.stringify(nodeEqualsEval));
+
+  const nodeLongRequireScan = adapter.scanDependencyTargets(
+    'node --require ./pre-long.cjs ./main-long.cjs');
+  const nodeLongRequire = target(nodeLongRequireScan, (x) => x.kind === 'node-require-option');
+  const nodeLongRequireScript = target(nodeLongRequireScan, (x) => x.kind === 'node-script');
+  check('R16a-fix node --require MODULE consumes MODULE before the script',
+    !!nodeLongRequire && nodeLongRequire.target === './pre-long.cjs' &&
+      !!nodeLongRequireScript && nodeLongRequireScript.target === './main-long.cjs',
+    JSON.stringify({ require: nodeLongRequire, script: nodeLongRequireScript }));
+
+  const nodeEqualsRequireScan = adapter.scanDependencyTargets(
+    'node --require=./pre-equals.cjs ./main-equals.cjs');
+  const nodeEqualsRequire = target(nodeEqualsRequireScan, (x) => x.kind === 'node-require-option');
+  const nodeEqualsRequireScript = target(nodeEqualsRequireScan, (x) => x.kind === 'node-script');
+  check('R16a-fix node --require=MODULE consumes MODULE before the script',
+    !!nodeEqualsRequire && nodeEqualsRequire.target === './pre-equals.cjs' &&
+      !!nodeEqualsRequireScript && nodeEqualsRequireScript.target === './main-equals.cjs',
+    JSON.stringify({ require: nodeEqualsRequire, script: nodeEqualsRequireScript }));
+
+  const argvZero = target(adapter.scanDependencyTargets(
+    "node -e 'require(process.argv[0])' -- ./x.cjs"),
+    (x) => x.kind === 'node-inline-require' && x.expression === 'process.argv[0]');
+  check('R16a-fix process.argv[0] is not bound to a dependency operand',
+    !!argvZero && argvZero.status === 'unresolved' &&
+      /Node executable/.test(argvZero.reason),
+    JSON.stringify(argvZero));
+
+  const argvWord = target(adapter.scanDependencyTargets(
+    "node -e 'require(process.argv[1])' \"$X\""),
+    (x) => x.kind === 'node-inline-require' && x.argvIndex === 1);
+  check('R16a-fix dynamic process.argv[1] binding preserves the bound word "$X"',
+    !!argvWord && argvWord.status === 'unresolved' && argvWord.expression === '"$X"',
+    JSON.stringify(argvWord));
+
+  const bashPlain = target(adapter.scanDependencyTargets(
+    'bash ./run.sh'), (x) => x.kind === 'shell-script');
+  check('R16a-fix plain bash SCRIPT resolves the script operand',
+    !!bashPlain && bashPlain.status === 'resolved' && bashPlain.target === './run.sh',
+    JSON.stringify(bashPlain));
+
+  const execDashDash = target(adapter.scanDependencyTargets(
+    'exec -- node ./x.cjs'), (x) => x.kind === 'node-script');
+  check('R16a-fix exec -- delegates to the following command',
+    !!execDashDash && execDashDash.status === 'resolved' && execDashDash.target === './x.cjs',
+    JSON.stringify(execDashDash));
+
+  const andTarget = target(adapter.scanDependencyTargets(
+    'node ./first.cjs && node ./and.cjs'), (x) => x.expression === './and.cjs');
+  check('R16a-fix && right operand is candidate',
+    !!andTarget && andTarget.status === 'candidate' && andTarget.reachability === 'candidate',
+    JSON.stringify(andTarget));
+
+  const orTarget = target(adapter.scanDependencyTargets(
+    'node ./first.cjs || node ./or.cjs'), (x) => x.expression === './or.cjs');
+  check('R16a-fix || right operand is candidate',
+    !!orTarget && orTarget.status === 'candidate' && orTarget.reachability === 'candidate',
+    JSON.stringify(orTarget));
+
+  const whileTarget = target(adapter.scanDependencyTargets(
+    'while test x; do node ./while.cjs; done'), (x) => x.expression === './while.cjs');
+  check('R16a-fix while body dependency is candidate',
+    !!whileTarget && whileTarget.status === 'candidate' && whileTarget.reachability === 'candidate',
+    JSON.stringify(whileTarget));
+
+  const forTarget = target(adapter.scanDependencyTargets(
+    'for x in a; do node ./for.cjs; done'), (x) => x.expression === './for.cjs');
+  check('R16a-fix for body dependency is candidate',
+    !!forTarget && forTarget.status === 'candidate' && forTarget.reachability === 'candidate',
+    JSON.stringify(forTarget));
+
+  const envelopeVersionMutant = JSON.parse(JSON.stringify(success));
+  envelopeVersionMutant.protocolVersion++;
+  expectCode(
+    'R16a-fix envelope protocolVersion mismatch is refused',
+    () => adapter.validateEnvelope(envelopeVersionMutant),
+    adapter.ERROR_CODES.SCHEMA,
+    'Without envelope-header validation a caller could accept a success document from a different protocol version.');
+
+  const envelopeSchemaMutant = JSON.parse(JSON.stringify(success));
+  envelopeSchemaMutant.schema = 'axmem-p2-bash-ast/not-v2';
+  expectCode(
+    'R16a-fix envelope schema mismatch is refused',
+    () => adapter.validateEnvelope(envelopeSchemaMutant),
+    adapter.ERROR_CODES.SCHEMA,
+    'Without envelope-header validation a caller could accept a document under the wrong schema identifier.');
+
+  const lockReadMutant = sandbox('lock-read-mutant');
+  fs.rmSync(path.join(lockReadMutant, LOCK_REL), { force: true });
+  expectCode(
+    'R16a-fix LOCK_READ has a behavioural missing-lock test',
+    () => loadAdapter(lockReadMutant),
+    adapter.ERROR_CODES.LOCK_READ,
+    'If a missing lock were ignored or defaulted, verification could be bypassed instead of failing closed.');
+
+  const lockSchemaMutant = sandbox('lock-schema-mutant');
+  fs.writeFileSync(path.join(lockSchemaMutant, LOCK_REL), '{not-json', 'utf8');
+  expectCode(
+    'R16a-fix LOCK_SCHEMA has a behavioural malformed-lock test',
+    () => loadAdapter(lockSchemaMutant),
+    adapter.ERROR_CODES.LOCK_SCHEMA,
+    'If malformed lock JSON were accepted, pinned-source metadata would not be mechanically defined.');
+
+  const savedReadFileSync = fs.readFileSync;
+  let sourceReadError = null;
+  try {
+    fs.readFileSync = function(file, ...args) {
+      const normalized = String(file).replace(/\\/g, '/');
+      if (normalized.endsWith('/guards/vendor/unbash/parser.js')) {
+        const error = new Error('synthetic pinned-source read failure');
+        error.code = 'EACCES';
+        throw error;
+      }
+      return savedReadFileSync.call(fs, file, ...args);
+    };
+    sourceReadError = caught(() => adapter.verifyPinnedSources({ repoRoot: ROOT }));
+  } finally {
+    fs.readFileSync = savedReadFileSync;
+  }
+  check('R16a-fix SOURCE_READ has a behavioural pinned-source read-failure test',
+    !!sourceReadError && sourceReadError.code === adapter.ERROR_CODES.SOURCE_READ,
+    JSON.stringify(sourceReadError && { code: sourceReadError.code, detail: sourceReadError.detail }));
+
+  expectCode(
+    'R16a-fix INPUT_TYPE has a behavioural non-string/non-buffer test',
+    () => adapter.parseShellV2({ not: 'bash source' }),
+    adapter.ERROR_CODES.INPUT_TYPE,
+    'If arbitrary input types were coerced, the byte/source binding contract could change before parsing.');
+
+  function repositoryPrivateEntryViolations(root, syntheticFiles) {
+    const files = syntheticFiles || [];
+    if (!syntheticFiles) {
+      (function walk(dir, relDir) {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (['.git', '.worktrees', 'node_modules'].includes(entry.name)) continue;
+          const rel = relDir ? relDir + '/' + entry.name : entry.name;
+          const abs = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(abs, rel);
+          else if (entry.isFile() && /\.(?:cjs|mjs|js)$/.test(entry.name)) {
+            files.push({ file: rel, text: fs.readFileSync(abs, 'utf8') });
+          }
+        }
+      })(root, '');
+    }
+    const violations = [];
+    const re = /require\s*\(\s*(['"])([^'"]*(?:projector|target-rules)\.cjs)\1\s*\)/g;
+    for (const item of files) {
+      if (item.file === 'scripts/private/p2-bash-ast-js/adapter.cjs' ||
+          item.file.startsWith('tests/')) continue;
+      let match;
+      while ((match = re.exec(item.text)) !== null) {
+        violations.push({ file: item.file, target: match[2] });
+      }
+    }
+    return violations;
+  }
+
+  const entryViolations = repositoryPrivateEntryViolations(ROOT);
+  const syntheticEntryViolations = repositoryPrivateEntryViolations(ROOT, [{
+    file: 'guards/synthetic-direct-private-entry.cjs',
+    text: "require('../scripts/private/p2-bash-ast-js/projector.cjs');",
+  }]);
+  check('R16a-fix repository check enforces adapter.cjs as the only non-test private entry',
+    entryViolations.length === 0 && syntheticEntryViolations.length === 1,
+    JSON.stringify({ entryViolations, syntheticEntryViolations }));
 
   const description = adapter.describeProtocol();
   check('protocol description exposes pinned parser and acorn entries',

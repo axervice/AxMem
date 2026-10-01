@@ -2,7 +2,21 @@
 
 const path = require('path');
 const acorn = require('../../../guards/vendor/acorn.js');
-const projector = require('./projector.cjs');
+let projector = null;
+
+function bindProjector(api) {
+  if (!api || typeof api.parseMaterialized !== 'function' ||
+      typeof api.projectWord !== 'function' ||
+      typeof api.hasUnquotedRuntimePattern !== 'function') {
+    throw new TypeError('target-rules requires the verified projector API');
+  }
+  projector = api;
+}
+
+function requireProjector() {
+  if (!projector) throw new TypeError('target-rules must be initialized through adapter.cjs');
+  return projector;
+}
 const { ERROR_CODES } = require('./protocol.cjs');
 
 const SCAN_SCHEMA = 'axmem-p2-bash-target-scan/v1';
@@ -19,7 +33,7 @@ function spanOf(node) {
 function asWord(node, source) {
   if (!node || typeof node !== 'object' || typeof node.text !== 'string' ||
       !Number.isSafeInteger(node.pos) || !Number.isSafeInteger(node.end)) return null;
-  return projector.projectWord(node, source);
+  return requireProjector().projectWord(node, source);
 }
 
 function shellWordValue(node, source, bindings) {
@@ -60,7 +74,7 @@ function shellWordValue(node, source, bindings) {
 
   const resolved = resolveParts(node.parts || []);
   if (resolved === null) return { resolved: false, value: null, projected };
-  if (projector.hasUnquotedRuntimePattern(node.text)) return { resolved: false, value: null, projected };
+  if (requireProjector().hasUnquotedRuntimePattern(node.text)) return { resolved: false, value: null, projected };
   return { resolved: true, value: resolved, projected };
 }
 
@@ -127,7 +141,7 @@ function targetFromWord(word, source, bindings) {
 }
 
 function createScanner(source, options = {}) {
-  const ast = projector.parseMaterialized(source);
+  const ast = requireProjector().parseMaterialized(source);
   const fromPath = typeof options.fromPath === 'string' ? options.fromPath.replace(/\\/g, '/') : '';
   const initialBindings = cloneBindings(options.bindings);
   const functions = new Map();
@@ -992,5 +1006,6 @@ function scanDependencyTargets(input, options = {}) {
 
 module.exports = {
   SCAN_SCHEMA,
+  bindProjector,
   scanDependencyTargets,
 };

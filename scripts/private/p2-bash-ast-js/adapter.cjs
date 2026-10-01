@@ -171,6 +171,7 @@ function verifyPinnedSources(options = {}) {
 const PIN_VERIFICATION = verifyPinnedSources();
 const projector = require('./projector.cjs');
 const targetRules = require('./target-rules.cjs');
+targetRules.bindProjector(projector);
 
 function parseShellV2(source) { return projector.parseShellV2(source); }
 function projectV1Fields(source) { return projector.projectV1Fields(source); }
