@@ -2,3 +2,4 @@ node_modules/
 *.log
 .axmem-local/
 .codex-reviews/
+/scripts/private/p2-bash-ast/bin/

@@ -1,0 +1,19 @@
+{
+    "schema":  "axmem-p2-bash-ast-lock/v1",
+    "protocol":  "axmem-p2-bash-ast/v1",
+    "parser":  "mvdan.cc/sh/v3@v3.13.1",
+    "goToolchain":  "go1.26.1 windows/amd64",
+    "executable":  "bin/p2-bash-ast.exe",
+    "executableSha256":  "4352c942f438a6a1183f05c64821157d54e46bdc835d3efb03881bee43bac6d7",
+    "sourceSha256":  "a09adb570ef97a46cb14488d496818951967997a42fa88a29a2fb2f3dc11afdc",
+    "goModSha256":  "f1491f323bb58aee1a88eabb74b1e90db331ae1108f98984025be3bef16f84ee",
+    "goSumSha256":  "c6cfc2b595a285388027e0b1626224a068adb37518bab024f7946e1bc6130987",
+    "build":  [
+                  "-trimpath",
+                  "-buildvcs=false",
+                  "CGO_ENABLED=0",
+                  "GOTOOLCHAIN=local",
+                  "GOOS=windows",
+                  "GOARCH=amd64"
+              ]
+}
