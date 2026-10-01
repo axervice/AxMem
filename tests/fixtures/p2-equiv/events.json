@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "event": "Bash",
+      "hookEvents": ["PreToolUse", "PostToolUse"],
+      "cases": [
+        {
+          "id": "bash-1",
+          "input": {
+            "tool_name": "Bash",
+            "tool_input": {
+              "command": "printf alpha"
+            }
+          }
+        },
+        {
+          "id": "bash-2",
+          "input": {
+            "tool_name": "Bash",
+            "tool_input": {
+              "command": "printf x | tail -1"
+            }
+          }
+        },
+        {
+          "id": "bash-3",
+          "input": {
+            "tool_name": "Bash",
+            "tool_input": {
+              "command": "false || true"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": "Edit",
+      "hookEvents": ["PreToolUse", "PostToolUse"],
+      "cases": [
+        {
+          "id": "edit-1",
+          "input": {
+            "tool_name": "Edit",
+            "tool_input": {
+              "file_path": "<TMP>/lessons.md",
+              "old_string": "A",
+              "new_string": "B"
+            }
+          }
+        },
+        {
+          "id": "edit-2",
+          "input": {
+            "tool_name": "Edit",
+            "tool_input": {
+              "file_path": "<TMP>/decisions.md",
+              "old_string": "X",
+              "new_string": "Y"
+            }
+          }
+        },
+        {
+          "id": "edit-3",
+          "input": {
+            "tool_name": "Edit",
+            "tool_input": {
+              "file_path": "<TMP>/progress.md",
+              "old_string": "P",
+              "new_string": "Q"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": "Write",
+      "hookEvents": ["PreToolUse", "PostToolUse"],
+      "cases": [
+        {
+          "id": "write-1",
+          "input": {
+            "tool_name": "Write",
+            "tool_input": {
+              "file_path": "<TMP>/lessons.md",
+              "content": "lesson"
+            }
+          }
+        },
+        {
+          "id": "write-2",
+          "input": {
+            "tool_name": "Write",
+            "tool_input": {
+              "file_path": "<TMP>/decisions.md",
+              "content": "decision"
+            }
+          }
+        },
+        {
+          "id": "write-3",
+          "input": {
+            "tool_name": "Write",
+            "tool_input": {
+              "file_path": "<TMP>/progress.md",
+              "content": "progress"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": "SessionStart",
+      "hookEvents": ["SessionStart"],
+      "cases": [
+        {
+          "id": "session-start-1",
+          "input": {
+            "session_id": "test:s1",
+            "source": "startup"
+          }
+        },
+        {
+          "id": "session-start-2",
+          "input": {
+            "session_id": "test:s2",
+            "source": "resume"
+          }
+        },
+        {
+          "id": "session-start-3",
+          "input": {
+            "session_id": "test:s3",
+            "source": "compact"
+          }
+        }
+      ]
+    },
+    {
+      "event": "SessionEnd",
+      "hookEvents": ["SessionEnd"],
+      "cases": [
+        {
+          "id": "session-end-1",
+          "input": {
+            "session_id": "test:e1",
+            "reason": "complete"
+          }
+        },
+        {
+          "id": "session-end-2",
+          "input": {
+            "session_id": "test:e2",
+            "reason": "user_exit"
+          }
+        },
+        {
+          "id": "session-end-3",
+          "input": {
+            "session_id": "test:e3",
+            "reason": "error"
+          }
+        }
+      ]
+    },
+    {
+      "event": "UserPromptSubmit",
+      "hookEvents": ["UserPromptSubmit"],
+      "cases": [
+        {
+          "id": "prompt-1",
+          "input": {
+            "session_id": "test:p1",
+            "prompt": "remember alpha"
+          }
+        },
+        {
+          "id": "prompt-2",
+          "input": {
+            "session_id": "test:p2",
+            "prompt": "search memory"
+          }
+        },
+        {
+          "id": "prompt-3",
+          "input": {
+            "session_id": "test:p3",
+            "prompt": "ordinary prompt"
+          }
+        }
+      ]
+    },
+    {
+      "event": "PreCompact",
+      "hookEvents": ["PreCompact"],
+      "cases": [
+        {
+          "id": "compact-1",
+          "input": {
+            "session_id": "test:c1",
+            "trigger": "manual"
+          }
+        },
+        {
+          "id": "compact-2",
+          "input": {
+            "session_id": "test:c2",
+            "trigger": "auto"
+          }
+        },
+        {
+          "id": "compact-3",
+          "input": {
+            "session_id": "test:c3",
+            "trigger": "threshold"
+          }
+        }
+      ]
+    }
+  ]
+}
