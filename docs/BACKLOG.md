@@ -46,3 +46,4 @@ with the extraction ledger. Order = priority.
   + supersedes chains carry the relations that matter).
 
 - [ ] **常驻规则横幅产品评测（Jax 裁决 2026-09-30）**：「横幅可做产品规则,前提是先证明有效;有效性由受控评测给出(BE-1:每提示横幅 / 仅会话起始 / 无横幅三臂,确定性评分,预登记通过线);未证明前不入产品规则」。P2.0 对 pmm-banner 的量尺排除不作为产品删除依据。
+- **2026-09-30 R14 — Codex raw prompt capture撤除**：Jax裁定不再永久保存原始提示词明文；AxMem记忆只保留简洁、精准的意思。已安装hook由一次性uninstall清理，真实Codex主目录与本机原文库由主审执行迁移。
