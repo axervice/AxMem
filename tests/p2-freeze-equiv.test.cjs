@@ -126,8 +126,8 @@ try {
   git(repo, ['checkout', '--', '.claude/guards/gate.cjs']);
 
   const bad = JSON.parse(JSON.stringify(inventory));
-  bad.hooks[0].command = 'node wrong.cjs';
-  bad.hooks[0].runtimeHealthProbe.innerCommand = 'node wrong.cjs';
+  bad.hooks[0].command = 'node "wrong.cjs"';
+  bad.hooks[0].runtimeHealthProbe.innerCommand = 'node "wrong.cjs"';
   fs.writeFileSync(inv, JSON.stringify(bad));
   let mismatch = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { mismatch = e.code; }
@@ -155,27 +155,63 @@ try {
   check('freeze requires structured runtime health probe contract', missingHealthEvidenceCode === 'bad-inventory', String(missingHealthEvidenceCode));
 
   const r15bCandidate = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'docs', 'freeze', 'INVENTORY-V1-CANDIDATE-R12b.json'), 'utf8'));
-  const r15bHealthHooks = r15bCandidate.hooks.filter((h) => h.runtimeHealthProbe);
+  const r15bHealthHooks = r15bCandidate.hooks.filter((h) => (h.disposition === 'port' || h.disposition === 'replace') && h.runtimeHealthProbe);
   let r15bCandidateHealthErr = null;
   try { for (const h of r15bHealthHooks) freeze.normalizeRuntimeHealthProbe(h, h.event + '/' + h.groupIndex + '/' + h.hookIndex); }
   catch (e) { r15bCandidateHealthErr = e; }
-  check('R15b C1 all 19 candidate runtimeHealthProbe relations pass the mechanical gate including 7 reliable=false',
+  check('R15d-B C1 all 19 real port|replace outer/inner pairs still pass the simple-command mechanical gate',
     !r15bCandidateHealthErr && r15bHealthHooks.length === 19 && r15bHealthHooks.filter((h) => h.runtimeHealthProbe.reliable === false).length === 7,
-    String(r15bCandidateHealthErr && r15bCandidateHealthErr.message));
+    JSON.stringify({ count: r15bHealthHooks.length, reliableFalse: r15bHealthHooks.filter((h) => h.runtimeHealthProbe.reliable === false).length, error: r15bCandidateHealthErr && { code: r15bCandidateHealthErr.code, detail: r15bCandidateHealthErr.detail } }));
 
-  const c1Reject = (name, commandValue, innerValue) => {
+  const c1Reject = (name, commandValue, innerValue, expectedReason, requireToken = false) => {
     let err = null;
-    try { freeze.normalizeRuntimeHealthProbe({ command: commandValue, runtimeHealthProbe: { version: 1, innerCommand: innerValue, reliable: true, notes: 'r15b c1 negative' } }, 'R15b-C1/' + name); }
+    try { freeze.normalizeRuntimeHealthProbe({ command: commandValue, runtimeHealthProbe: { version: 1, innerCommand: innerValue, reliable: true, notes: 'r15d-b c1 negative' } }, 'R15d-B-C1/' + name); }
     catch (e) { err = e; }
-    check('R15b C1 rejects ' + name, err && err.code === 'bad-inventory' && err.detail && err.detail.field === 'runtimeHealthProbe.innerCommand', JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+    const tokenDetailOk = !requireToken || (Number.isInteger(err && err.detail && err.detail.tokenIndex)
+      && typeof err.detail.token === 'string' && err.detail.token.length > 0);
+    check('R15d-B C1 rejects ' + name,
+      err && err.code === 'bad-inventory' && err.detail && err.detail.field === 'runtimeHealthProbe.innerCommand'
+        && err.detail.reason === expectedReason && tokenDetailOk,
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
   };
-  c1Reject('unrelated inner=true', 'node hook.cjs', 'true');
-  c1Reject('unapproved outer x || true with stripped inner', 'node hook.cjs || true', 'node hook.cjs');
-  c1Reject('approved || exit 0 outer when inner still contains the mask', 'node hook.cjs || exit 0', 'node hook.cjs || exit 0');
-  c1Reject('more than one approved fail-open tail', 'node hook.cjs || exit 0 || exit 0', 'node hook.cjs || exit 0');
+  const c1Real = r15bHealthHooks.find((h) => h.event === 'PostToolUse' && h.groupIndex === 6 && h.hookIndex === 0);
+  const c1X = c1Real && c1Real.runtimeHealthProbe.innerCommand;
+  check('R15d-B C1 rejection matrix fixture is read from the candidate inventory, not hand-copied',
+    typeof c1X === 'string' && c1Real.command.startsWith(c1X),
+    JSON.stringify({ command: c1Real && c1Real.command, inner: c1X }));
+
+  c1Reject('unrelated inner=true', c1X, 'true', 'interpreter-must-be-bash-or-node', true);
+  c1Reject('unapproved outer x || true with stripped inner', c1X + ' || true', c1X, 'inner-command-does-not-match-outer');
+  c1Reject('approved || exit 0 outer when inner still contains the mask', c1X + ' || exit 0', c1X + ' || exit 0', 'shell-control-syntax-not-allowed', true);
+  c1Reject('more than one approved fail-open tail', c1X + ' || exit 0 || exit 0', c1X + ' || exit 0', 'multiple-approved-fail-open-tails');
+
+  const c1ShellMaskMatrix = [
+    ['x || true || exit 0 / inner x || true', c1X + ' || true || exit 0', c1X + ' || true'],
+    ['x||exit 0', c1X + '||exit 0', c1X + '||exit 0'],
+    ['x || exit 0;', c1X + ' || exit 0;', c1X + ' || exit 0;'],
+    ['x || exit 0 # c', c1X + ' || exit 0 # c', c1X + ' || exit 0 # c'],
+    ['x || exit 00', c1X + ' || exit 00', c1X + ' || exit 00'],
+    ['x || (exit 0)', c1X + ' || (exit 0)', c1X + ' || (exit 0)'],
+    ['x || :', c1X + ' || :', c1X + ' || :'],
+    ['x; exit 0', c1X + '; exit 0', c1X + '; exit 0'],
+    ['x; true', c1X + '; true', c1X + '; true'],
+    ['x | cat', c1X + ' | cat', c1X + ' | cat'],
+    ['x &', c1X + ' &', c1X + ' &'],
+    ['! x', '! ' + c1X, '! ' + c1X],
+    ['$(x)', '$(' + c1X + ')', '$(' + c1X + ')'],
+    ['backticks around x', String.fromCharCode(96) + c1X + String.fromCharCode(96), String.fromCharCode(96) + c1X + String.fromCharCode(96)],
+    ['{ x; }', '{ ' + c1X + '; }', '{ ' + c1X + '; }'],
+    ['(x)', '(' + c1X + ')', '(' + c1X + ')'],
+    ['x && true', c1X + ' && true', c1X + ' && true'],
+  ];
+  for (const [name, outerValue, innerValue] of c1ShellMaskMatrix) {
+    c1Reject('simple-command whitelist: ' + name, outerValue, innerValue, 'shell-control-syntax-not-allowed', true);
+  }
+
   let c1WhitespaceErr = null;
-  try { freeze.normalizeRuntimeHealthProbe({ command: 'node   hook.cjs   ||   exit   0', runtimeHealthProbe: { version: 1, innerCommand: ' node hook.cjs ', reliable: true, notes: 'r15b c1 whitespace' } }, 'R15b-C1/whitespace'); } catch (e) { c1WhitespaceErr = e; }
-  check('R15b C1 compares outer and inner after whitespace normalization', !c1WhitespaceErr, String(c1WhitespaceErr && c1WhitespaceErr.message));
+  const c1WhitespaceOuter = c1X.replace('bash ', 'bash   ') + '   ||   exit   0';
+  try { freeze.normalizeRuntimeHealthProbe({ command: c1WhitespaceOuter, runtimeHealthProbe: { version: 1, innerCommand: ' ' + c1X + ' ', reliable: true, notes: 'r15d-b c1 whitespace' } }, 'R15d-B-C1/whitespace'); } catch (e) { c1WhitespaceErr = e; }
+  check('R15d-B C1 compares outer and inner after whitespace normalization', !c1WhitespaceErr, JSON.stringify(c1WhitespaceErr && { code: c1WhitespaceErr.code, detail: c1WhitespaceErr.detail }));
 
   let c2UnsupportedMatcherErr = null;
   try { freeze.flattenHooks({ hooks: { UserPromptSubmit: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo never' }] }] } }); }
