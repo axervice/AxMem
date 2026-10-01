@@ -1,0 +1,56 @@
+{
+  "evidenceSource": "R16a-p CORPUS.json",
+  "corpusId": "00061",
+  "sourceFile": "C:/Users/jax-x/.claude/guards/bash-pipe-exitcode-watch.sh",
+  "line": 24,
+  "original": "exec node \"$G/bash-pipe-exitcode-watch.cjs\"",
+  "originalSha256": "f58ce172800f9520342b57d57e15ff96a47eacd3380496e52fc8494b6014932e",
+  "protocolSample": {
+    "sourceBytes": 43,
+    "sourceSha256": "f58ce172800f9520342b57d57e15ff96a47eacd3380496e52fc8494b6014932e",
+    "commands": [
+      {
+        "span": {
+          "start": 0,
+          "end": 43
+        },
+        "words": [
+          {
+            "span": {
+              "start": 0,
+              "end": 4
+            },
+            "source": "exec",
+            "dynamic": false,
+            "expansionKinds": [],
+            "resolvedLiteral": "exec"
+          },
+          {
+            "span": {
+              "start": 5,
+              "end": 9
+            },
+            "source": "node",
+            "dynamic": false,
+            "expansionKinds": [],
+            "resolvedLiteral": "node"
+          },
+          {
+            "span": {
+              "start": 10,
+              "end": 43
+            },
+            "source": "\"$G/bash-pipe-exitcode-watch.cjs\"",
+            "dynamic": true,
+            "expansionKinds": [
+              "SimpleExpansion"
+            ],
+            "resolvedLiteral": null
+          }
+        ],
+        "assignments": [],
+        "redirections": []
+      }
+    ]
+  }
+}
