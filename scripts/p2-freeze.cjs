@@ -747,6 +747,102 @@ function normalizeCommandWhitespace(value) {
   return String(value === undefined || value === null ? '' : value).trim().replace(/\s+/g, ' ');
 }
 
+const REVIEWED_INNER_REDIRS = new Set(['>/dev/null', '2>/dev/null', '2>&1', '>&2']);
+const REVIEWED_INNER_ARG_RE = /^(?:--?)?[A-Za-z0-9][A-Za-z0-9._/=-]*$/;
+const REVIEWED_INNER_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REVIEWED_INNER_ENV_WORD_RE = /^[A-Za-z0-9._/:-]+$/;
+const REVIEWED_INNER_QUOTED_RE = /^"[^"$\x60\\]*"$/;
+const REVIEWED_INNER_SHELL_SYNTAX_RE = /(?:\|\||&&|[;|&(){}!\x60#<]|\$\()/;
+
+function reviewedInnerTokens(command) {
+  const input = normalizeCommandWhitespace(command);
+  const tokens = [];
+  let token = '';
+  let quoted = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '"') {
+      quoted = !quoted;
+      token += ch;
+      continue;
+    }
+    if (ch === ' ' && !quoted) {
+      if (token) {
+        tokens.push(token);
+        token = '';
+      }
+      continue;
+    }
+    token += ch;
+  }
+  if (quoted) {
+    return { input, tokens, error: { tokenIndex: tokens.length, token: token || '<eof>', reason: 'unterminated-double-quote' } };
+  }
+  if (token) tokens.push(token);
+  return { input, tokens, error: null };
+}
+
+function reviewedInnerSyntaxError(label, input, tokenIndex, token, reason) {
+  throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand must be one reviewed simple command', {
+    field: 'runtimeHealthProbe.innerCommand',
+    label,
+    actualInnerCommand: input,
+    tokenIndex,
+    token,
+    reason,
+  });
+}
+
+function validateReviewedInnerSimpleCommand(command, label) {
+  const parsed = reviewedInnerTokens(command);
+  const tokens = parsed.tokens;
+  if (parsed.error) {
+    reviewedInnerSyntaxError(label, parsed.input, parsed.error.tokenIndex, parsed.error.token, parsed.error.reason);
+  }
+  let i = 0;
+  while (i < tokens.length) {
+    const eq = tokens[i].indexOf('=');
+    if (eq <= 0) break;
+    const name = tokens[i].slice(0, eq);
+    const value = tokens[i].slice(eq + 1);
+    if (!REVIEWED_INNER_ENV_NAME_RE.test(name)
+        || !(REVIEWED_INNER_QUOTED_RE.test(value) || REVIEWED_INNER_ENV_WORD_RE.test(value))) {
+      reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], 'invalid-env-assignment');
+    }
+    i++;
+  }
+  if (i >= tokens.length) reviewedInnerSyntaxError(label, parsed.input, i, '<eof>', 'missing-interpreter');
+  if (REVIEWED_INNER_SHELL_SYNTAX_RE.test(tokens[i])) {
+    reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], 'shell-control-syntax-not-allowed');
+  }
+  if (tokens[i] !== 'bash' && tokens[i] !== 'node') {
+    reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], 'interpreter-must-be-bash-or-node');
+  }
+  i++;
+  if (i >= tokens.length) reviewedInnerSyntaxError(label, parsed.input, i, '<eof>', 'missing-path');
+  if (!REVIEWED_INNER_QUOTED_RE.test(tokens[i])) {
+    const reason = REVIEWED_INNER_SHELL_SYNTAX_RE.test(tokens[i])
+      ? 'shell-control-syntax-not-allowed'
+      : 'path-must-be-double-quoted-literal';
+    reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], reason);
+  }
+  i++;
+  let redirections = false;
+  for (; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (REVIEWED_INNER_REDIRS.has(t)) {
+      redirections = true;
+      continue;
+    }
+    if (REVIEWED_INNER_SHELL_SYNTAX_RE.test(t)) {
+      reviewedInnerSyntaxError(label, parsed.input, i, t, 'shell-control-syntax-not-allowed');
+    }
+    if (redirections) reviewedInnerSyntaxError(label, parsed.input, i, t, 'argument-after-redirection');
+    if (!REVIEWED_INNER_ARG_RE.test(t)) reviewedInnerSyntaxError(label, parsed.input, i, t, 'invalid-argument');
+  }
+  return parsed.input;
+}
+
 function reviewedInnerCommandForOuter(command) {
   const outer = normalizeCommandWhitespace(command);
   let match = /^(.*\S)\s+\|\|\s+exit\s+0$/.exec(outer);
@@ -779,10 +875,26 @@ function normalizeRuntimeHealthProbe(h, label) {
   }
   const relation = reviewedInnerCommandForOuter(h.command);
   const reviewedInner = normalizeCommandWhitespace(p.innerCommand);
-  if (!relation.outer || relation.multipleTails || reviewedInner !== relation.inner) {
+  if (!relation.outer) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand requires a non-empty outer command', {
+      field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
+      actualInnerCommand: reviewedInner, failOpenTail: relation.kind, multipleFailOpenTails: relation.multipleTails,
+      reason: 'empty-outer-command',
+    });
+  }
+  if (relation.multipleTails) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand cannot rely on multiple approved fail-open tails', {
+      field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
+      actualInnerCommand: reviewedInner, failOpenTail: relation.kind, multipleFailOpenTails: true,
+      reason: 'multiple-approved-fail-open-tails',
+    });
+  }
+  validateReviewedInnerSimpleCommand(reviewedInner, label);
+  if (reviewedInner !== relation.inner) {
     throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand must mechanically match the outer command after removing one approved fail-open tail', {
       field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
       actualInnerCommand: reviewedInner, failOpenTail: relation.kind, multipleFailOpenTails: relation.multipleTails,
+      reason: 'inner-command-does-not-match-outer',
     });
   }
   if (typeof p.reliable !== 'boolean') {
