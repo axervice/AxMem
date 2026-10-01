@@ -169,6 +169,64 @@ try {
   const same = equiv.compareReports(reportA, reportB, []);
   check('full baseline compares green', same.equal === true && same.unexpected.length === 0);
 
+  // R15b B1: bind each report case to the original fixture input, not a hook payload.
+  const fixtureInputs = new Map();
+  for (const eventGroup of fixture.events) for (const fixtureCase of eventGroup.cases) fixtureInputs.set(fixtureCase.id, fixtureCase.input || {});
+  const b1AllBound = reportA.cases.every((c) => {
+    const canonical = JSON.stringify(equiv.stable(fixtureInputs.get(c.id) || {}));
+    return c.inputCanonical === canonical && c.inputSha256 === sha256(Buffer.from(canonical, 'utf8'));
+  });
+  check('R15b B1 report cases bind canonical original fixture input with SHA-256', b1AllBound);
+
+  const b1Different = clone(reportA);
+  const b1Target = b1Different.cases.find((c) => c.event === 'UserPromptSubmit') || b1Different.cases[0];
+  b1Target.inputCanonical = JSON.stringify(equiv.stable({ prompt: 'r15b-b1-different-prompt' }));
+  b1Target.inputSha256 = sha256(Buffer.from(b1Target.inputCanonical, 'utf8'));
+  const b1Compare = equiv.compareReports(reportA, b1Different, []);
+  check('R15b B1 same case id with different fixture input cannot compare green',
+    b1Compare.equal === false && b1Compare.unexpected.some((d) => d.caseId === b1Target.id && d.field === 'inputSha256'),
+    JSON.stringify(b1Compare.unexpected));
+
+  let b1MissingHashErr = null;
+  try {
+    const l = clone(reportA), r = clone(reportA);
+    delete l.cases[0].inputSha256; delete r.cases[0].inputSha256;
+    equiv.compareReports(l, r, []);
+  } catch (e) { b1MissingHashErr = e; }
+  check('R15b B1 deleting inputSha256 on both sides is rejected',
+    b1MissingHashErr && b1MissingHashErr.code === 'report-case-input-binding' && b1MissingHashErr.detail && b1MissingHashErr.detail.field === 'inputSha256',
+    String(b1MissingHashErr && b1MissingHashErr.message));
+
+  let b1TamperErr = null;
+  try {
+    const l = clone(reportA), r = clone(reportA);
+    l.cases[0].inputCanonical = '{"tampered":true}';
+    r.cases[0].inputCanonical = '{"tampered":true}';
+    equiv.compareReports(l, r, []);
+  } catch (e) { b1TamperErr = e; }
+  check('R15b B1 canonical input tamper without matching hash is rejected',
+    b1TamperErr && b1TamperErr.code === 'report-case-input-binding' && b1TamperErr.detail && b1TamperErr.detail.field === 'inputSha256',
+    String(b1TamperErr && b1TamperErr.message));
+
+  // R15b B2: raw types are validated before normalizeCase can coerce them.
+  const b2Reject = (label, mutate, expectedCode, expectedField) => {
+    const l = clone(reportA), r = clone(reportA);
+    mutate(l.cases[0]); mutate(r.cases[0]);
+    let err = null;
+    try { equiv.compareReports(l, r, []); } catch (e) { err = e; }
+    check('R15b B2 rejects ' + label,
+      err && err.code === expectedCode && err.detail && err.detail.field === expectedField,
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  };
+  for (const [name, value] of [['null', null], ['empty-string', ''], ['false', false], ['array', []], ['string-zero', '0']]) {
+    b2Reject('case.exitCode=' + name, (c) => { c.exitCode = value; }, 'report-case-field-type', 'exitCode');
+    b2Reject('executedHooks=' + name, (c) => { c.executedHooks = value; }, 'report-case-field-type', 'executedHooks');
+    b2Reject('hook.exitCode=' + name, (c) => { c.hookResults.find((h) => h.status === 'ran').exitCode = value; }, 'report-hook-field-type', 'exitCode');
+  }
+  b2Reject('missing stdout field', (c) => { delete c.stdout; }, 'report-case-field-type', 'stdout');
+  b2Reject('renamed stderr field', (c) => { c.stderrRenamed = c.stderr; delete c.stderr; }, 'report-case-field-type', 'stderr');
+  b2Reject('case exit inconsistent with first nonzero hook', (c) => { c.exitCode = 2; }, 'report-case-exit-mismatch', 'exitCode');
+
   let emptyReportErr = '';
   try { equiv.compareReports({ schema: 'axmem-equiv-report/v1', cases: [] }, { schema: 'axmem-equiv-report/v1', cases: [] }, []); }
   catch (e) { emptyReportErr = e.message; }

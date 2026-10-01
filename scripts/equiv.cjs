@@ -35,6 +35,20 @@ function hashObject(value) {
   return sha256Text(JSON.stringify(stable(value)));
 }
 
+function reportError(code, message, detail) {
+  throw new runner.EquivInfrastructureError(code, message, detail);
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function isByteInteger(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 255;
+}
+
 function normalizeStateTree(tree, prefixes) {
   const out = {};
   for (const key of Object.keys(tree || {}).sort()) {
@@ -55,8 +69,8 @@ function normalizeHookResult(h) {
     matcher: h && Object.prototype.hasOwnProperty.call(h, 'matcher') ? h.matcher : null,
     disposition: String((h && h.disposition) || ''),
     status: String((h && h.status) || ''),
-    exitCode: h && h.status === 'ran' ? Number(h.exitCode) : null,
-    outcome: h && h.status === 'ran' ? String(h.outcome || (Number(h.exitCode) === 0 ? 'allow' : 'deny')) : null,
+    exitCode: h && h.status === 'ran' ? h.exitCode : null,
+    outcome: h && h.status === 'ran' ? String(h.outcome || (h.exitCode === 0 ? 'allow' : 'deny')) : null,
     businessExitCodes: h && h.status === 'ran' && Array.isArray(h.businessExitCodes) ? h.businessExitCodes.map(Number).sort((a, b) => a - b) : [],
     runtimeHealth: h && h.status === 'ran' && h.runtimeHealth && typeof h.runtimeHealth === 'object' ? stable(h.runtimeHealth) : null,
     reason: h && h.status === 'skipped' ? String(h.reason || '').trim() : '',
@@ -68,11 +82,13 @@ function normalizeCase(c, prefixes) {
   return {
     id: c.id,
     event: c.event,
-    exitCode: Number(c.exitCode),
+    inputCanonical: c.inputCanonical,
+    inputSha256: c.inputSha256,
+    exitCode: c.exitCode,
     stdout: normalizeText(c.stdout, prefixes),
     stderr: normalizeText(c.stderr, prefixes),
-    stateTree: normalizeStateTree(c.stateTree || {}, prefixes),
-    executedHooks: Number(c.executedHooks),
+    stateTree: normalizeStateTree(c.stateTree, prefixes),
+    executedHooks: c.executedHooks,
     hookResults: (c.hookResults || []).map(normalizeHookResult),
   };
 }
@@ -183,8 +199,35 @@ function validateReport(report, side, prefixes) {
     const id = raw.id.trim();
     if (out.has(id)) throw new Error(side + ' report has duplicate case id: ' + id);
     if (typeof raw.event !== 'string' || !raw.event.trim()) throw new Error(side + ' report case ' + id + ' has no event');
+    if (typeof raw.inputCanonical !== 'string' || !raw.inputCanonical || typeof raw.inputSha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(raw.inputSha256)) {
+      reportError('report-case-input-binding', side + ' report case ' + id + ' has invalid input binding fields', { side, caseId: id, field: typeof raw.inputCanonical !== 'string' || !raw.inputCanonical ? 'inputCanonical' : 'inputSha256' });
+    }
+    let parsedInput;
+    try { parsedInput = JSON.parse(raw.inputCanonical); }
+    catch (e) { reportError('report-case-input-binding', side + ' report case ' + id + ' inputCanonical is not valid JSON', { side, caseId: id, field: 'inputCanonical', cause: String(e && e.message || e) }); }
+    const canonicalInput = JSON.stringify(stable(parsedInput));
+    if (canonicalInput !== raw.inputCanonical || sha256Text(raw.inputCanonical) !== raw.inputSha256.toLowerCase()) {
+      reportError('report-case-input-binding', side + ' report case ' + id + ' input binding hash/canonical mismatch', { side, caseId: id, field: canonicalInput !== raw.inputCanonical ? 'inputCanonical' : 'inputSha256' });
+    }
+    for (const field of ['exitCode', 'executedHooks']) {
+      if (!isByteInteger(raw[field])) reportError('report-case-field-type', side + ' report case ' + id + ' has invalid ' + field, { side, caseId: id, field, valueType: Array.isArray(raw[field]) ? 'array' : typeof raw[field] });
+    }
+    for (const field of ['stdout', 'stderr']) {
+      if (typeof raw[field] !== 'string') reportError('report-case-field-type', side + ' report case ' + id + ' has invalid ' + field, { side, caseId: id, field, valueType: Array.isArray(raw[field]) ? 'array' : typeof raw[field] });
+    }
+    if (!isPlainObject(raw.stateTree)) reportError('report-case-field-type', side + ' report case ' + id + ' has invalid stateTree', { side, caseId: id, field: 'stateTree', valueType: Array.isArray(raw.stateTree) ? 'array' : typeof raw.stateTree });
     if (counts.has(raw.event)) counts.set(raw.event, counts.get(raw.event) + 1);
     if (!Array.isArray(raw.hookResults) || raw.hookResults.length === 0) throw new Error(side + ' report case ' + id + ' has no hook trace');
+    let expectedCaseExit = 0;
+    for (let i = 0; i < raw.hookResults.length; i++) {
+      const rawHook = raw.hookResults[i];
+      if (!rawHook || typeof rawHook !== 'object' || Array.isArray(rawHook)) reportError('report-hook-field-type', side + ' report case ' + id + ' has invalid hook record', { side, caseId: id, hookIndex: i, field: 'hook' });
+      if (rawHook.status === 'ran') {
+        if (!isByteInteger(rawHook.exitCode)) reportError('report-hook-field-type', side + ' report case ' + id + ' has invalid hook exitCode', { side, caseId: id, hookIndex: i, field: 'exitCode', valueType: Array.isArray(rawHook.exitCode) ? 'array' : typeof rawHook.exitCode });
+        if (expectedCaseExit === 0 && rawHook.exitCode !== 0) expectedCaseExit = rawHook.exitCode;
+      }
+    }
+    if (raw.exitCode !== expectedCaseExit) reportError('report-case-exit-mismatch', side + ' report case ' + id + ' exitCode does not equal first nonzero hook exit', { side, caseId: id, field: 'exitCode', actual: raw.exitCode, expected: expectedCaseExit });
     const c = normalizeCase(Object.assign({}, raw, { id }), prefixes);
     const hookIds = new Set();
     let ran = 0;
@@ -290,7 +333,7 @@ function compareReports(left, right, allowedRows) {
   const mappings = hookMappingList(allowance.hookMappings);
   const unexpected = [], allowed = [], hookMappingsApplied = [];
   const ids = [...new Set([...lm.keys(), ...rm.keys()])].sort();
-  const fields = ['event', 'exitCode', 'stdout', 'stderr', 'stateTree'];
+  const fields = ['event', 'inputSha256', 'exitCode', 'stdout', 'stderr', 'stateTree'];
   for (const id of ids) {
     if (!lm.has(id) || !rm.has(id)) {
       const d = { caseId: id, field: 'case', left: lm.has(id), right: rm.has(id) };

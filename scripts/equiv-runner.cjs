@@ -399,6 +399,12 @@ function hashObject(value) {
   return sha256(Buffer.from(JSON.stringify(stableObject(value)), 'utf8'));
 }
 
+function fixtureInputBinding(c) {
+  const raw = c && Object.prototype.hasOwnProperty.call(c, 'input') && c.input !== undefined ? c.input : {};
+  const inputCanonical = JSON.stringify(stableObject(raw));
+  return { inputCanonical, inputSha256: sha256(Buffer.from(inputCanonical, 'utf8')) };
+}
+
 function stateDigest(root) {
   const files = walkFiles(root);
   const h = crypto.createHash('sha256');
@@ -732,6 +738,7 @@ function validateFixture(fixture) {
 
 function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaultTimeoutMs }) {
   validateFreezeHooks(freeze);
+  const inputBinding = fixtureInputBinding(c);
   const expectedSourceRoot = path.join(path.resolve(repoRoot), ...safeRel(freeze.source.liveRelativePath).split('/'));
   if (!sameSourcePath(sourceRoot, expectedSourceRoot)) throw new EquivInfrastructureError('source-root-mismatch', '--source-root must identify the frozen live source directory', { provided: path.resolve(sourceRoot), expected: expectedSourceRoot });
   const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-equiv-case-'));
@@ -772,7 +779,7 @@ function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaul
     if (hookResults.length === 0) throw new EquivInfrastructureError('fixture-no-matching-hooks', 'no matching hooks for fixture case ' + c.id + ' (' + group.event + ')', { caseId: c.id, event: group.event });
     const prefixes = [sandboxHome, sandboxSource, sourceRoot];
     const after = walkFiles(sandboxHome);
-    return { id: c.id, event: group.event, exitCode, stdout: normalizeRuntimeText(stdout.join(''), prefixes), stderr: normalizeRuntimeText(stderr.join(''), prefixes), stateTree: diffState(before, after, prefixes), hookResults, executedHooks: executed };
+    return { id: c.id, event: group.event, inputCanonical: inputBinding.inputCanonical, inputSha256: inputBinding.inputSha256, exitCode, stdout: normalizeRuntimeText(stdout.join(''), prefixes), stderr: normalizeRuntimeText(stderr.join(''), prefixes), stateTree: diffState(before, after, prefixes), hookResults, executedHooks: executed };
   } finally {
     try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch {}
   }
