@@ -595,6 +595,70 @@ try {
     isolatedHomeTarget,
     'If process.argv binding ignored the preceding script-directory and ledger-argument proof, the real call would stay unresolved or be guessed; scanning the real assignment chain resolves it while the isolated call remains unresolved.');
 
+
+  const parseErrA = caught(() => adapter.scanDependencyTargets('echo "unterminated'));
+  const parseErrB = caught(() => adapter.scanDependencyTargets('node ./a.cjs; ( echo'));
+  check('R16a-fix parser errors are PARSE failures, never partial target success',
+    !!parseErrA && parseErrA.code === adapter.ERROR_CODES.PARSE &&
+    !!parseErrB && parseErrB.code === adapter.ERROR_CODES.PARSE,
+    JSON.stringify({
+      first: parseErrA && { code: parseErrA.code, detail: parseErrA.detail || parseErrA.message },
+      second: parseErrB && { code: parseErrB.code, detail: parseErrB.detail || parseErrB.message },
+    }));
+
+  const subshellTarget = target(adapter.scanDependencyTargets('( node ./x.cjs )'),
+    (x) => x.kind === 'node-script');
+  const braceTarget = target(adapter.scanDependencyTargets('{ node ./x.cjs; }'),
+    (x) => x.kind === 'node-script');
+  check('R16a-fix grouping constructs recurse into subshell and brace-group commands',
+    !!subshellTarget && subshellTarget.status === 'resolved' && subshellTarget.target === './x.cjs' &&
+    !!braceTarget && braceTarget.status === 'resolved' && braceTarget.target === './x.cjs',
+    JSON.stringify({ subshellTarget, braceTarget }));
+
+  const wrapperCases = [
+    ['env -i A=1 node ./x.cjs', 'node-script', './x.cjs'],
+    ['command node ./x.cjs', 'node-script', './x.cjs'],
+    ['builtin source ./x.sh', 'shell-source', './x.sh'],
+    ['exec -- node ./x.cjs', 'node-script', './x.cjs'],
+    ['nohup node ./x.cjs', 'node-script', './x.cjs'],
+    ['time node ./x.cjs', 'node-script', './x.cjs'],
+    ['nice -n 5 node ./x.cjs', 'node-script', './x.cjs'],
+    ['timeout 5 node ./x.cjs', 'node-script', './x.cjs'],
+    ['stdbuf -oL node ./x.cjs', 'node-script', './x.cjs'],
+  ];
+  const wrapperActual = wrapperCases.map(([sourceText, kind, expectedTarget]) => {
+    const got = target(adapter.scanDependencyTargets(sourceText), (x) => x.kind === kind);
+    return { source: sourceText, expectedTarget, got };
+  });
+  check('R16a-fix wrapper commands delegate after consuming their own syntax',
+    wrapperActual.every((row) => row.got && row.got.status === 'resolved' && row.got.target === row.expectedTarget),
+    JSON.stringify(wrapperActual));
+
+  const evalLiteral = target(adapter.scanDependencyTargets("eval 'node ./x.cjs'"),
+    (x) => x.kind === 'node-script');
+  const evalDynamic = target(adapter.scanDependencyTargets('eval "$X"'),
+    (x) => x.kind === 'unsupported-construct' && x.construct === 'eval');
+  check('R16a-fix eval scans resolved literal code and marks dynamic code UNSUPPORTED',
+    !!evalLiteral && evalLiteral.status === 'resolved' && evalLiteral.target === './x.cjs' &&
+    !!evalDynamic && evalDynamic.status === 'unresolved' &&
+      evalDynamic.code === adapter.ERROR_CODES.UNSUPPORTED,
+    JSON.stringify({ evalLiteral, evalDynamic }));
+
+  const unsupportedCases = [
+    ['xargs node', 'xargs'],
+    ['select x in a; do node ./x.cjs; done', 'select'],
+    ['coproc node ./x.cjs', 'coproc'],
+  ].map(([sourceText, construct]) => ({
+    source: sourceText,
+    construct,
+    got: target(adapter.scanDependencyTargets(sourceText),
+      (x) => x.kind === 'unsupported-construct' && x.construct === construct),
+  }));
+  check('R16a-fix unmodeled command-bearing constructs emit UNSUPPORTED unresolved records',
+    unsupportedCases.every((row) => row.got && row.got.status === 'unresolved' &&
+      row.got.code === adapter.ERROR_CODES.UNSUPPORTED),
+    JSON.stringify(unsupportedCases));
+
   const description = adapter.describeProtocol();
   check('protocol description exposes pinned parser and acorn entries',
     description.protocolVersion === adapter.PROTOCOL_VERSION &&

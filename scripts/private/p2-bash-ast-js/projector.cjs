@@ -234,11 +234,20 @@ function projectCompoundStatementRedirections(statement, source) {
 }
 
 function parseMaterialized(source) {
+  let ast;
   try {
-    return materialize(PARSER.parse(source));
+    ast = materialize(PARSER.parse(source));
   } catch (error) {
     hard(ERROR_CODES.PARSE, String(error && error.message || error));
   }
+  if (Array.isArray(ast.errors) && ast.errors.length > 0) {
+    const errors = ast.errors.map((entry) => ({
+      message: entry && typeof entry.message === 'string' ? entry.message : 'parse error',
+      pos: entry && Number.isSafeInteger(entry.pos) ? entry.pos : null,
+    }));
+    hard(ERROR_CODES.PARSE, 'unbash reported parse errors: ' + JSON.stringify(errors));
+  }
+  return ast;
 }
 
 function projectCommands(ast, source) {

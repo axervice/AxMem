@@ -3,6 +3,7 @@
 const path = require('path');
 const acorn = require('../../../guards/vendor/acorn.js');
 const projector = require('./projector.cjs');
+const { ERROR_CODES } = require('./protocol.cjs');
 
 const SCAN_SCHEMA = 'axmem-p2-bash-target-scan/v1';
 
@@ -177,6 +178,17 @@ function createScanner(source, options = {}) {
 
   function addUnresolved(kind, command, expression, reason, reachability, node, extra = {}) {
     addTarget(kind, command, expression, null, false, reason, reachability, node, extra);
+  }
+
+  function addUnsupported(construct, expression, reason, reachability, node, extra = {}) {
+    addUnresolved(
+      'unsupported-construct',
+      construct,
+      expression || construct,
+      reason || ('unmodeled command-bearing construct: ' + construct),
+      reachability,
+      node,
+      { code: ERROR_CODES.UNSUPPORTED, construct, ...extra });
   }
 
   function resolveSourceLike(command, word, reachability, bindings, node) {
@@ -483,6 +495,224 @@ function createScanner(source, options = {}) {
     processWords(words.slice(i), reachability, bindings, node, 'exec');
   }
 
+  function scanEnv(words, reachability, bindings, node) {
+    let i = 1;
+    let endOptions = false;
+    while (i < words.length) {
+      const w = targetFromWord(words[i], source, bindings);
+      const raw = w.expression || '';
+      if (!endOptions && w.resolved && w.value === '--') {
+        endOptions = true;
+        i++;
+        continue;
+      }
+      if (!endOptions && w.resolved && ['-i', '--ignore-environment', '-0', '--null'].includes(w.value)) {
+        i++;
+        continue;
+      }
+      if (!endOptions && w.resolved && ['-u', '--unset', '-C', '--chdir'].includes(w.value)) {
+        if (!words[i + 1]) {
+          addUnsupported('env', raw, 'env option requires an operand', reachability, words[i], { wrapper: 'env' });
+          return;
+        }
+        i += 2;
+        continue;
+      }
+      if (!endOptions && w.resolved && /^--(?:unset|chdir)=/.test(w.value)) {
+        i++;
+        continue;
+      }
+      if (!endOptions && (w.resolved ? w.value.startsWith('-') : raw.startsWith('-'))) {
+        addUnsupported('env', raw, 'unrecognized or dynamic env option sequence', reachability, words[i], { wrapper: 'env' });
+        return;
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(raw)) {
+        i++;
+        continue;
+      }
+      break;
+    }
+    if (i < words.length) processWords(words.slice(i), reachability, bindings, node, 'env');
+  }
+
+  function scanCommandWrapper(words, reachability, bindings, node) {
+    let i = 1;
+    while (i < words.length) {
+      const w = targetFromWord(words[i], source, bindings);
+      if (w.resolved && w.value === '--') {
+        i++;
+        break;
+      }
+      if (w.resolved && w.value === '-p') {
+        i++;
+        continue;
+      }
+      if (w.resolved && (w.value === '-v' || w.value === '-V')) {
+        return;
+      }
+      if ((w.resolved && w.value.startsWith('-')) || (!w.resolved && w.expression.startsWith('-'))) {
+        addUnsupported('command', w.expression, 'unrecognized or dynamic command wrapper option', reachability, words[i], { wrapper: 'command' });
+        return;
+      }
+      break;
+    }
+    if (i < words.length) processWords(words.slice(i), reachability, bindings, node, 'command');
+  }
+
+  function scanBuiltinWrapper(words, reachability, bindings, node) {
+    let i = 1;
+    if (words[i]) {
+      const w = targetFromWord(words[i], source, bindings);
+      if (w.resolved && w.value === '--') i++;
+      else if ((w.resolved && w.value.startsWith('-')) || (!w.resolved && w.expression.startsWith('-'))) {
+        addUnsupported('builtin', w.expression, 'unrecognized or dynamic builtin option', reachability, words[i], { wrapper: 'builtin' });
+        return;
+      }
+    }
+    if (i < words.length) processWords(words.slice(i), reachability, bindings, node, 'builtin');
+  }
+
+  function scanNohup(words, reachability, bindings, node) {
+    let i = 1;
+    if (words[i]) {
+      const w = targetFromWord(words[i], source, bindings);
+      if (w.resolved && w.value === '--') i++;
+      else if (w.resolved && (w.value === '--help' || w.value === '--version')) return;
+      else if ((w.resolved && w.value.startsWith('-')) || (!w.resolved && w.expression.startsWith('-'))) {
+        addUnsupported('nohup', w.expression, 'unrecognized or dynamic nohup option', reachability, words[i], { wrapper: 'nohup' });
+        return;
+      }
+    }
+    if (i < words.length) processWords(words.slice(i), reachability, bindings, node, 'nohup');
+  }
+
+  function scanNice(words, reachability, bindings, node) {
+    let i = 1;
+    while (i < words.length) {
+      const w = targetFromWord(words[i], source, bindings);
+      if (w.resolved && w.value === '--') {
+        i++;
+        break;
+      }
+      if (w.resolved && (w.value === '-n' || w.value === '--adjustment')) {
+        if (!words[i + 1]) {
+          addUnsupported('nice', w.expression, 'nice adjustment option requires an operand', reachability, words[i], { wrapper: 'nice' });
+          return;
+        }
+        i += 2;
+        continue;
+      }
+      if (w.resolved && (/^--adjustment=/.test(w.value) || /^-[0-9]+$/.test(w.value))) {
+        i++;
+        continue;
+      }
+      if ((w.resolved && w.value.startsWith('-')) || (!w.resolved && w.expression.startsWith('-'))) {
+        addUnsupported('nice', w.expression, 'unrecognized or dynamic nice option sequence', reachability, words[i], { wrapper: 'nice' });
+        return;
+      }
+      break;
+    }
+    if (i < words.length) processWords(words.slice(i), reachability, bindings, node, 'nice');
+  }
+
+  function scanTimeout(words, reachability, bindings, node) {
+    let i = 1;
+    while (i < words.length) {
+      const w = targetFromWord(words[i], source, bindings);
+      if (w.resolved && w.value === '--') {
+        i++;
+        break;
+      }
+      if (w.resolved && ['-k', '--kill-after', '-s', '--signal'].includes(w.value)) {
+        if (!words[i + 1]) {
+          addUnsupported('timeout', w.expression, 'timeout option requires an operand', reachability, words[i], { wrapper: 'timeout' });
+          return;
+        }
+        i += 2;
+        continue;
+      }
+      if (w.resolved && (/^--(?:kill-after|signal)=/.test(w.value) ||
+          ['--foreground', '--preserve-status', '--verbose'].includes(w.value))) {
+        i++;
+        continue;
+      }
+      if (w.resolved && (w.value === '--help' || w.value === '--version')) return;
+      if ((w.resolved && w.value.startsWith('-')) || (!w.resolved && w.expression.startsWith('-'))) {
+        addUnsupported('timeout', w.expression, 'unrecognized or dynamic timeout option sequence', reachability, words[i], { wrapper: 'timeout' });
+        return;
+      }
+      break;
+    }
+    if (!words[i]) return;
+    i++; // DURATION
+    if (i < words.length) processWords(words.slice(i), reachability, bindings, node, 'timeout');
+  }
+
+  function scanStdbuf(words, reachability, bindings, node) {
+    let i = 1;
+    while (i < words.length) {
+      const w = targetFromWord(words[i], source, bindings);
+      if (w.resolved && w.value === '--') {
+        i++;
+        break;
+      }
+      if (w.resolved && /^-[ioe].+/.test(w.value)) {
+        i++;
+        continue;
+      }
+      if (w.resolved && ['-i', '-o', '-e'].includes(w.value)) {
+        if (!words[i + 1]) {
+          addUnsupported('stdbuf', w.expression, 'stdbuf option requires a mode operand', reachability, words[i], { wrapper: 'stdbuf' });
+          return;
+        }
+        i += 2;
+        continue;
+      }
+      if (w.resolved && /^--(?:input|output|error)=/.test(w.value)) {
+        i++;
+        continue;
+      }
+      if (w.resolved && (w.value === '--help' || w.value === '--version')) return;
+      if ((w.resolved && w.value.startsWith('-')) || (!w.resolved && w.expression.startsWith('-'))) {
+        addUnsupported('stdbuf', w.expression, 'unrecognized or dynamic stdbuf option sequence', reachability, words[i], { wrapper: 'stdbuf' });
+        return;
+      }
+      break;
+    }
+    if (i < words.length) processWords(words.slice(i), reachability, bindings, node, 'stdbuf');
+  }
+
+  function scanEval(words, reachability, bindings, node) {
+    if (words.length <= 1) return;
+    const pieces = [];
+    for (let i = 1; i < words.length; i++) {
+      const w = targetFromWord(words[i], source, bindings);
+      if (!w.resolved) {
+        addUnsupported('eval', w.expression, 'dynamic eval code cannot be recursively scanned', reachability, words[i],
+          { wrapper: 'eval', phase: 'code-text' });
+        return;
+      }
+      pieces.push(w.value);
+    }
+    const code = pieces.join(' ');
+    const nested = scanDependencyTargets(code, {
+      bindings: Object.fromEntries(bindings),
+      sourceSearchProof: options.sourceSearchProof || {},
+      inlineParent: 'eval',
+    });
+    for (const rec of nested.targets) {
+      const nestedReach = reachability === 'production' ? rec.reachability : 'candidate';
+      addRecord({
+        ...rec,
+        reachability: nestedReach,
+        status: nestedReach === 'production' ? rec.status : 'candidate',
+        reason: nestedReach === 'production' ? rec.reason :
+          (rec.reason || 'parent eval command is not proven reachable'),
+        origin: 'eval',
+      });
+    }
+  }
+
   function processWords(words, reachability, bindings, node, origin) {
     if (!words.length) return;
     const commandWord = targetFromWord(words[0], source, bindings);
@@ -514,6 +744,45 @@ function createScanner(source, options = {}) {
     }
     if (command === 'exec') {
       scanExec(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'env') {
+      scanEnv(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'command') {
+      scanCommandWrapper(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'builtin') {
+      scanBuiltinWrapper(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'nohup') {
+      scanNohup(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'nice') {
+      scanNice(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'timeout') {
+      scanTimeout(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'stdbuf') {
+      scanStdbuf(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'eval') {
+      scanEval(words, reachability, bindings, node);
+      return;
+    }
+    if (command === 'xargs') {
+      addUnsupported('xargs', commandWord.expression,
+        'xargs command execution semantics are not modeled', reachability, words[0],
+        { wrapper: 'xargs' });
+      return;
     }
   }
 
@@ -602,6 +871,22 @@ function createScanner(source, options = {}) {
     }
   }
 
+  function containsCommandBearingDescendant(value, seen = new Set()) {
+    if (!value || typeof value !== 'object' || seen.has(value)) return false;
+    seen.add(value);
+    if (value.type === 'Command' || value.type === 'Statement' || value.type === 'CompoundList' ||
+        value.type === 'Pipeline' || value.type === 'AndOr' || value.type === 'Subshell' ||
+        value.type === 'BraceGroup' || value.type === 'Function' || value.type === 'If' ||
+        value.type === 'Case' || value.type === 'While' || value.type === 'For' ||
+        value.type === 'Select' || value.type === 'Coproc') return true;
+    if (Array.isArray(value)) return value.some((item) => containsCommandBearingDescendant(item, seen));
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'body' && value.operator && value.target) continue;
+      if (containsCommandBearingDescendant(child, seen)) return true;
+    }
+    return false;
+  }
+
   function scanNode(node, reachability, bindings) {
     if (!node || typeof node !== 'object') return;
     switch (node.type) {
@@ -624,6 +909,17 @@ function createScanner(source, options = {}) {
         return;
       case 'BraceGroup':
         scanNode(node.body, reachability, bindings);
+        return;
+      case 'Subshell':
+        scanNode(node.body, reachability, cloneBindings(bindings));
+        return;
+      case 'Select':
+        addUnsupported('select', 'select', 'select command execution semantics are not modeled',
+          reachability, node);
+        return;
+      case 'Coproc':
+        addUnsupported('coproc', 'coproc', 'coproc command execution semantics are not modeled',
+          reachability, node);
         return;
       case 'Pipeline':
         for (const child of node.commands || []) scanNode(child, reachability, cloneBindings(bindings));
@@ -653,6 +949,12 @@ function createScanner(source, options = {}) {
       case 'ArithmeticCommandExpansion':
         return;
       default:
+        if (containsCommandBearingDescendant(node)) {
+          const construct = typeof node.type === 'string' ? node.type : 'unknown';
+          addUnsupported(construct, construct,
+            'unmodeled command-bearing AST construct: ' + construct,
+            reachability, node);
+        }
         return;
     }
   }
