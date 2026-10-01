@@ -62,6 +62,8 @@ try {
   fs.writeFileSync(missingDepAbs, "require('axmem_definitely_missing_review_dependency');\n");
   const badSyntaxAbs = path.join(live, 'guards', 'bad-syntax.cjs');
   fs.writeFileSync(badSyntaxAbs, "const = ;\n");
+  const badSyntaxShAbs = path.join(live, 'guards', 'bad-syntax.sh');
+  fs.writeFileSync(badSyntaxShAbs, '#!/usr/bin/env bash\nif then\n');
   git(repo, ['init', '-q']);
   git(repo, ['add', '.claude']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'fixture']);
@@ -85,26 +87,36 @@ try {
     const mirrorBytes = Buffer.from(JSON.stringify(settings, null, 2) + '\n');
     fs.mkdirSync(path.dirname(mirrorAbs), { recursive: true });
     fs.writeFileSync(mirrorAbs, mirrorBytes);
-    git(repo, ['add', '--', '.claude/' + mirrorRel]);
-    git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'bind freeze ' + label + ' ' + seq]);
-    out.source.commit = git(repo, ['rev-parse', 'HEAD']).trim();
-    out.source.treeOid = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
     out.sourceFiles = (out.sourceFiles || []).filter((x) => x.path !== mirrorRel).map((x) => {
       const abs = path.join(live, ...x.path.split('/'));
       return fs.existsSync(abs) ? Object.assign({}, x, { sha256: sha256(fs.readFileSync(abs)) }) : x;
     });
     out.sourceFiles.push({ path: mirrorRel, sha256: sha256(mirrorBytes), disposition: 'private-exclude', dependencies: [], unresolvedDependencies: [], notes: 'synthetic tracked settings mirror' });
-    const inventory = { version: 1, hooks: (out.hooks || []).map((h) => ({
-      event: h.event, groupIndex: h.groupIndex, hookIndex: h.hookIndex,
-      matcher: h.matcher === undefined ? null : h.matcher, command: h.command,
-      timeout: h.timeout === undefined ? null : h.timeout,
-      disposition: h.disposition, files: clone(h.files || []), implementation: h.implementation || null,
-      notes: h.notes || '', externalDependencies: clone(h.externalDependencies || []),
-      businessExitCodes: clone(h.businessExitCodes || []), runtimeHealthProbe: h.runtimeHealthProbe ? clone(h.runtimeHealthProbe) : null,
-    })) };
+    const externalIds = [...new Set((out.hooks || []).flatMap((h) => Array.isArray(h.externalDependencies) ? h.externalDependencies : []))];
+    const inventory = {
+      version: 1,
+      hooks: (out.hooks || []).map((h) => ({
+        event: h.event, groupIndex: h.groupIndex, hookIndex: h.hookIndex,
+        matcher: h.matcher === undefined ? null : h.matcher, command: h.command,
+        timeout: h.timeout === undefined ? null : h.timeout,
+        disposition: h.disposition, files: clone(h.files || []), implementation: h.implementation || null,
+        notes: h.notes || '', externalDependencies: clone(h.externalDependencies || []),
+        businessExitCodes: clone(h.businessExitCodes || []), runtimeHealthProbe: h.runtimeHealthProbe ? clone(h.runtimeHealthProbe) : null,
+      })),
+      files: (out.sourceFiles || []).map((f) => ({ path: f.path, disposition: f.disposition || 'port', dependencies: clone(f.dependencies || []), unresolvedDependencies: clone(f.unresolvedDependencies || []), notes: f.notes || 'synthetic source file' })),
+      externalDependencies: externalIds.map((id) => ({ id, kind: 'command', command: 'synthetic-external-' + id, notes: 'machine-acceptance external prerequisite fixture' })),
+      generatedArtifacts: [],
+      allowedDifferences: [],
+      auditEvidence: ['machine-acceptance synthetic inventory'],
+    };
     const inventoryRel = 'r15b-inventory-' + String(seq).padStart(3, '0') + '-' + label + '.json';
     const inventoryBytes = Buffer.from(JSON.stringify(inventory, null, 2) + '\n');
     fs.writeFileSync(path.join(repo, inventoryRel), inventoryBytes);
+    git(repo, ['add', '--', '.claude/' + mirrorRel, inventoryRel]);
+    git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'bind freeze ' + label + ' ' + seq]);
+    out.source.commit = git(repo, ['rev-parse', 'HEAD']).trim();
+    out.source.treeOid = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
+    out.inventoryCommit = out.source.commit;
     out.inventoryPath = inventoryRel;
     out.inventorySha256 = sha256(inventoryBytes);
     out.settingsEvidence = {
@@ -537,6 +549,13 @@ try {
   let tmpMutatedErr = null;
   try { runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine.replace('异常路径', '异常路经') + '\n'); } catch (e) { tmpMutatedErr = e; }
   check('R15d S2b literal /tmp exception fails closed when approved line changes', tmpMutatedErr && tmpMutatedErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpMutatedErr && tmpMutatedErr.detail));
+  let tmpShebangErr = null, tmpUnknownExecErr = null;
+  try { runner.scanLiteralTmpSource('guards/r15d-noext-shell', '#!/usr/bin/env bash\necho x > /tmp/r15d-shebang-probe\n', { executableHint: true }); } catch (e) { tmpShebangErr = e; }
+  check('R15d S2c literal /tmp preflight classifies extensionless executable by shell shebang', tmpShebangErr && tmpShebangErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpShebangErr && tmpShebangErr.detail));
+  const tmpJsonData = runner.scanLiteralTmpSource('memory/_local-config/settings.json', '{"path":"/tmp/data-only"}\n', { executableHint: true });
+  check('R15d S2c literal /tmp preflight marks pure JSON data not-applicable', tmpJsonData.checked === false && tmpJsonData.notApplicable === true && tmpJsonData.reason === 'pure-data-json', JSON.stringify(tmpJsonData));
+  try { runner.scanLiteralTmpSource('guards/r15d-unknown-exec', '#!/usr/bin/env python3\nprint("/tmp/r15d")\n', { executableHint: true }); } catch (e) { tmpUnknownExecErr = e; }
+  check('R15d S2c literal /tmp preflight rejects executable files with unsupported shebang type', tmpUnknownExecErr && tmpUnknownExecErr.code === 'sandbox-source-type-unknown', JSON.stringify(tmpUnknownExecErr && tmpUnknownExecErr.detail));
   const tmpEnvHome = fs.mkdtempSync(path.join(T, 'r15d-tmpdir-env-'));
   const tmpEnv = runner.isolatedEnv(tmpEnvHome, null);
   const tmpMissing = Object.assign({}, tmpEnv); delete tmpMissing.TMPDIR;
@@ -592,11 +611,21 @@ try {
     JSON.stringify(r15dBomCompare.unexpected));
 
   // R15b A6: materialization gate bound to the real candidate inventory hook identities/derived fields.
-  const a6AxmemRoot = path.join(__dirname, '..');
+  const a6CandidateRoot = path.join(__dirname, '..');
   const a6InventoryRel = 'docs/freeze/INVENTORY-V1-CANDIDATE-R12b.json';
+  const a6CandidateCommit = git(a6CandidateRoot, ['rev-parse', 'HEAD']).trim();
+  const a6CandidateBytes = Buffer.from(git(a6CandidateRoot, ['show', a6CandidateCommit + ':' + a6InventoryRel]), 'utf8');
+  const a6Inventory = JSON.parse(a6CandidateBytes.toString('utf8'));
+  a6Inventory.generatedArtifacts = [];
+  const a6AxmemRoot = path.join(T, 'r15d-a6-inventory-repo');
   const a6InventoryAbs = path.join(a6AxmemRoot, ...a6InventoryRel.split('/'));
-  const a6InventoryBytes = fs.readFileSync(a6InventoryAbs);
-  const a6Inventory = JSON.parse(a6InventoryBytes.toString('utf8'));
+  fs.mkdirSync(path.dirname(a6InventoryAbs), { recursive: true });
+  const a6InventoryBytes = Buffer.from(JSON.stringify(a6Inventory, null, 2) + '\n');
+  fs.writeFileSync(a6InventoryAbs, a6InventoryBytes);
+  git(a6AxmemRoot, ['init', '-q']);
+  git(a6AxmemRoot, ['add', '--', a6InventoryRel]);
+  git(a6AxmemRoot, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'r15d a6 pinned real-candidate inventory shape']);
+  const a6InventoryCommit = git(a6AxmemRoot, ['rev-parse', 'HEAD']).trim();
   const a6Hooks = a6Inventory.hooks.map((h) => {
     const runnable = h.disposition === 'port' || h.disposition === 'replace';
     return {
@@ -612,17 +641,27 @@ try {
   const a6Repo = path.join(T, 'r15b-a6-real-inventory-repo');
   const a6Live = path.join(a6Repo, '.claude');
   const a6MirrorRel = a6Inventory.settingsMirror;
-  const a6MirrorAbs = path.join(a6Live, ...a6MirrorRel.split('/'));
-  const a6Settings = settingsForHooks(a6Hooks);
-  const a6MirrorBytes = Buffer.from(JSON.stringify(a6Settings, null, 2) + '\n');
-  fs.mkdirSync(path.dirname(a6MirrorAbs), { recursive: true });
-  fs.writeFileSync(a6MirrorAbs, a6MirrorBytes);
+  const a6MirrorBytes = Buffer.from(JSON.stringify(settingsForHooks(a6Hooks), null, 2) + '\n');
+  const a6SourceFiles = [];
+  for (const f of a6Inventory.files) {
+    const abs = path.join(a6Live, ...f.path.split('/'));
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    let bytes;
+    if (f.path === a6MirrorRel) bytes = a6MirrorBytes;
+    else if (/\.(?:c?js|mjs)$/i.test(f.path)) bytes = Buffer.from("'use strict';\n", 'utf8');
+    else if (/\.(?:sh|bash)$/i.test(f.path)) bytes = Buffer.from('#!/usr/bin/env bash\ntrue\n', 'utf8');
+    else if (/\.json$/i.test(f.path)) bytes = Buffer.from('{}\n', 'utf8');
+    else bytes = Buffer.from('', 'utf8');
+    fs.writeFileSync(abs, bytes);
+    a6SourceFiles.push({ path: f.path, sha256: sha256(bytes), disposition: f.disposition, dependencies: clone(f.dependencies || []), unresolvedDependencies: clone(f.unresolvedDependencies || []), notes: f.notes || 'real candidate inventory-shape fixture' });
+  }
   git(a6Repo, ['init', '-q']);
-  git(a6Repo, ['add', '--', '.claude/' + a6MirrorRel]);
-  git(a6Repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'r15b a6 real inventory shape']);
+  git(a6Repo, ['add', '--', '.claude']);
+  git(a6Repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'r15b a6 full real inventory shape']);
   const a6Freeze = {
     schema: 'axmem-p2-freeze/v1',
     source: { commit: git(a6Repo, ['rev-parse', 'HEAD']).trim(), liveRelativePath: '.claude', treeOid: git(a6Repo, ['rev-parse', 'HEAD:.claude']).trim(), clean: true, uncommittedPatch: { empty: true, sha256: null } },
+    inventoryCommit: a6InventoryCommit,
     inventoryPath: a6InventoryRel,
     inventorySha256: sha256(a6InventoryBytes),
     settingsEvidence: {
@@ -631,12 +670,13 @@ try {
       hookIdentitySha256: sha256(Buffer.from(a6Hooks.map(localHookIdentity).join('\n'), 'utf8')),
     },
     hooks: a6Hooks,
-    sourceFiles: [{ path: a6MirrorRel, sha256: sha256(a6MirrorBytes), disposition: 'private-exclude', dependencies: [], unresolvedDependencies: [], notes: 'real candidate hook settings mirror' }],
+    sourceFiles: a6SourceFiles,
   };
   const a6GoodHome = fs.mkdtempSync(path.join(T, 'r15b-a6-good-'));
   let a6GoodDir = null, a6GoodErr = null;
   try { a6GoodDir = runner.materializeFreeze(a6Freeze, a6Repo, a6GoodHome, a6AxmemRoot); } catch (e) { a6GoodErr = e; }
   check('R15b A6 real candidate inventory shape passes materialization provenance gate', !a6GoodErr && a6GoodDir && fs.existsSync(path.join(a6GoodDir, ...a6MirrorRel.split('/'))), String(a6GoodErr && a6GoodErr.message));
+  check('R15d S2c real-candidate-shape fixture freezes every inventory file, not only settings mirror', a6Freeze.sourceFiles.length === a6Inventory.files.length && a6Inventory.files.every((f) => a6Freeze.sourceFiles.some((x) => x.path === f.path)), JSON.stringify({ sourceFiles: a6Freeze.sourceFiles.length, inventoryFiles: a6Inventory.files.length }));
   fs.rmSync(a6GoodHome, { recursive: true, force: true });
   const a6RejectBeforeExecution = (label, mutate, expectedCode, expectedField) => {
     const bad = clone(a6Freeze);
@@ -656,12 +696,72 @@ try {
   };
   a6RejectBeforeExecution('missing sourceFile sha256', (x) => { delete x.sourceFiles[0].sha256; }, 'freeze-source-hash-missing');
   a6RejectBeforeExecution('missing inventorySha256', (x) => { delete x.inventorySha256; }, 'freeze-inventory-binding-missing');
+  a6RejectBeforeExecution('missing inventoryCommit', (x) => { delete x.inventoryCommit; }, 'freeze-inventory-binding-missing');
+  a6RejectBeforeExecution('nonexistent inventory commit', (x) => { x.inventoryCommit = 'f'.repeat(40); }, 'freeze-inventory-blob-read-failed');
+  a6RejectBeforeExecution('nonexistent inventory path at pinned commit', (x) => { x.inventoryPath = 'docs/freeze/DOES-NOT-EXIST.json'; }, 'freeze-inventory-blob-read-failed');
+  a6RejectBeforeExecution('deleted sourceFiles dependency declaration', (x) => { const row = x.sourceFiles.find((v) => Array.isArray(v.dependencies) && v.dependencies.length > 0); row.dependencies = row.dependencies.slice(1); }, 'freeze-source-dependencies-mismatch');
   a6RejectBeforeExecution('missing settingsEvidence', (x) => { delete x.settingsEvidence; }, 'freeze-settings-evidence-missing');
   a6RejectBeforeExecution('tampered source treeOid', (x) => { x.source.treeOid = '0'.repeat(40); }, 'freeze-tree-oid-mismatch');
   a6RejectBeforeExecution('deleted hook', (x) => { x.hooks.splice(1, 1); }, 'freeze-settings-hook-mismatch');
   a6RejectBeforeExecution('swapped hook order', (x) => { [x.hooks[0], x.hooks[1]] = [x.hooks[1], x.hooks[0]]; }, 'freeze-settings-hook-mismatch');
   a6RejectBeforeExecution('mutated disposition', (x) => { const h = x.hooks.find((v) => v.disposition === 'port'); h.disposition = 'private-exclude'; }, 'freeze-inventory-derived-mismatch', 'disposition');
   a6RejectBeforeExecution('mutated runtimeHealthProbe.innerCommand', (x) => { const h = x.hooks.find((v) => v.runtimeHealthProbe); h.runtimeHealthProbe.innerCommand += ' --tampered'; }, 'freeze-inventory-derived-mismatch', 'runtimeHealthProbe');
+
+  const s2cPinOriginalBytes = fs.readFileSync(path.join(repo, freeze.inventoryPath));
+  const s2cPinInventory = JSON.parse(s2cPinOriginalBytes.toString('utf8'));
+  const s2cPinTamperedInventory = clone(s2cPinInventory);
+  const s2cPinTarget = s2cPinTamperedInventory.hooks.find((h) => h.disposition === 'port');
+  s2cPinTarget.disposition = 'private-exclude';
+  const s2cPinTamperedBytes = Buffer.from(JSON.stringify(s2cPinTamperedInventory, null, 2) + '\n');
+  const s2cPinTamperedFreeze = clone(freeze);
+  s2cPinTamperedFreeze.hooks.find((h) => h.event === s2cPinTarget.event && h.groupIndex === s2cPinTarget.groupIndex && h.hookIndex === s2cPinTarget.hookIndex).disposition = 'private-exclude';
+  s2cPinTamperedFreeze.inventorySha256 = sha256(s2cPinTamperedBytes);
+  let s2cPinTamperErr = null;
+  try {
+    fs.writeFileSync(path.join(repo, freeze.inventoryPath), s2cPinTamperedBytes);
+    const home = fs.mkdtempSync(path.join(T, 'r15d-s2c-pin-tamper-'));
+    try { runner.materializeFreeze(s2cPinTamperedFreeze, repo, home, repo); } catch (e) { s2cPinTamperErr = e; }
+    finally { fs.rmSync(home, { recursive: true, force: true }); }
+  } finally { fs.writeFileSync(path.join(repo, freeze.inventoryPath), s2cPinOriginalBytes); }
+  check('R15d S2c workspace inventory plus FREEZE hash tamper cannot override pinned inventory commit', s2cPinTamperErr && s2cPinTamperErr.code === 'freeze-inventory-hash-mismatch', JSON.stringify({ code: s2cPinTamperErr && s2cPinTamperErr.code, detail: s2cPinTamperErr && s2cPinTamperErr.detail }));
+
+  try { fs.rmSync(a3Marker, { force: true }); } catch {}
+  const s2cOriginalValidateInventory = freezeTool.validateInventory;
+  let s2cN4Err = null;
+  try {
+    freezeTool.validateInventory = () => { throw new freezeTool.FreezeError('r15d-n4-sentinel', 'forced validateInventory sentinel'); };
+    runner.runCase({ freeze: a3Freeze, group: focusedGroup, c: { id: 'r15d-s2c-n4', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  } catch (e) { s2cN4Err = e; }
+  finally { freezeTool.validateInventory = s2cOriginalValidateInventory; }
+  check('R15d S2c runner calls exported p2-freeze validateInventory before any hook executes', s2cN4Err && s2cN4Err.code === 'freeze-inventory-validation-failed' && s2cN4Err.detail && s2cN4Err.detail.freezeCode === 'r15d-n4-sentinel' && !fs.existsSync(a3Marker), JSON.stringify({ code: s2cN4Err && s2cN4Err.code, detail: s2cN4Err && s2cN4Err.detail }));
+
+  const s2cGenRepo = path.join(T, 'r15d-s2c-generate-repo');
+  const s2cGenLive = path.join(s2cGenRepo, '.claude');
+  fs.mkdirSync(s2cGenLive, { recursive: true });
+  const s2cGenSettings = { hooks: {} };
+  const s2cGenSettingsText = JSON.stringify(s2cGenSettings, null, 2) + '\n';
+  fs.writeFileSync(path.join(s2cGenLive, 'settings.json'), s2cGenSettingsText);
+  fs.writeFileSync(path.join(s2cGenLive, 'settings-mirror.json'), s2cGenSettingsText);
+  const s2cGenInventory = {
+    version: 1, settingsJson: 'settings.json', settingsMirror: 'settings-mirror.json', hooks: [],
+    files: [{ path: 'settings-mirror.json', disposition: 'private-exclude', dependencies: [], unresolvedDependencies: [], notes: 'formal generator fixture mirror' }],
+    externalDependencies: [], generatedArtifacts: [], allowedDifferences: [], auditEvidence: ['formal inventory commit binding fixture'],
+  };
+  const s2cGenInventoryPath = path.join(s2cGenRepo, 'inventory.json');
+  const s2cGenInventoryText = JSON.stringify(s2cGenInventory, null, 2) + '\n';
+  fs.writeFileSync(s2cGenInventoryPath, s2cGenInventoryText);
+  git(s2cGenRepo, ['init', '-q']);
+  git(s2cGenRepo, ['add', '--', '.claude', 'inventory.json']);
+  git(s2cGenRepo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'formal inventory binding fixture']);
+  const s2cGenHead = git(s2cGenRepo, ['rev-parse', 'HEAD']).trim();
+  const s2cGenOut = path.join(T, 'r15d-s2c-generated-freeze.json');
+  const s2cGenerated = freezeTool.generate({ liveDir: s2cGenLive, inventoryPath: s2cGenInventoryPath, out: s2cGenOut, generatedAt: '2026-10-01T00:00:00.000Z' });
+  check('R15d S2c formal FREEZE records inventory commit/path and committed blob hash', s2cGenerated.inventoryCommit === s2cGenHead && s2cGenerated.inventoryPath === 'inventory.json' && s2cGenerated.inventorySha256 === sha256(Buffer.from(s2cGenInventoryText)), JSON.stringify({ inventoryCommit: s2cGenerated.inventoryCommit, inventoryPath: s2cGenerated.inventoryPath, inventorySha256: s2cGenerated.inventorySha256 }));
+  const s2cGenDirty = clone(s2cGenInventory); s2cGenDirty.auditEvidence.push('uncommitted inventory mutation');
+  fs.writeFileSync(s2cGenInventoryPath, JSON.stringify(s2cGenDirty, null, 2) + '\n');
+  let s2cGenDirtyErr = null;
+  try { freezeTool.generate({ liveDir: s2cGenLive, inventoryPath: s2cGenInventoryPath, out: path.join(T, 'r15d-s2c-should-not-write.json') }); } catch (e) { s2cGenDirtyErr = e; }
+  check('R15d S2c formal FREEZE generation rejects uncommitted inventory bytes', s2cGenDirtyErr && s2cGenDirtyErr.code === 'inventory-commit-binding', String(s2cGenDirtyErr && s2cGenDirtyErr.message));
 
   const a7CrlfCommand = 'node "' + a7Abs.replace(/\\/g, '/') + '" crlf';
   const a7LfCommand = 'node "' + a7Abs.replace(/\\/g, '/') + '" lf';
@@ -743,19 +843,19 @@ try {
   const braceOuter = branchInner + ' || { echo masked >&2; exit 0; }';
   const silentOuter = branchInner + ' >/dev/null 2>&1 || exit 0';
 
-  for (const [name, outer, prompt, expect] of [
+  for (const [name, outer, prompt, expect, inner = branchInner] of [
     ['simple wrapper case-only missing module', simpleOuter, 'missing-module', 'unexpected-exit:1'],
     ['brace wrapper undeclared exit1', braceOuter, 'exit1', 'unexpected-exit:1'],
-    ['silent redirect case-only missing module', silentOuter, 'missing-module', 'unexpected-exit:1'],
+    ['silent redirect case-only missing module', silentOuter, 'missing-module', 'unexpected-exit:1', branchInner + ' >/dev/null 2>&1'],
   ]) {
     let err = null;
-    try { runBranch(outer, prompt); } catch (e) { err = e; }
+    try { runBranch(outer, prompt, inner); } catch (e) { err = e; }
     check('runtime health blocks ' + name, err && err.code === 'equiv-infrastructure' && new RegExp(expect).test(err.message), String(err && err.message));
   }
 
   const missingEntry = 'node "' + path.join(live, 'guards', 'never-there.cjs').replace(/\\/g, '/') + '"';
   let missingEntryErr = null;
-  try { runBranch(missingEntry + ' >/dev/null 2>&1 || exit 0', 'allow', missingEntry); } catch (e) { missingEntryErr = e; }
+  try { runBranch(missingEntry + ' >/dev/null 2>&1 || exit 0', 'allow', missingEntry + ' >/dev/null 2>&1'); } catch (e) { missingEntryErr = e; }
   check('runtime health blocks fully silent missing inner entry despite outer exit0',
     missingEntryErr && missingEntryErr.code === 'equiv-infrastructure' && /unexpected-exit:1/.test(missingEntryErr.message), String(missingEntryErr && missingEntryErr.message));
 
@@ -776,14 +876,14 @@ try {
   check('runtime health explicitly blocks reviewed inner modes that cannot reliably expose internal failures',
     unreliableErr && /explicitly unprovable/.test(unreliableErr.message), String(unreliableErr && unreliableErr.message));
 
-  const syntaxRel = 'guards/runtime-health-bad-syntax.cjs';
+  const syntaxRel = 'guards/runtime-health-bad-syntax.sh';
   const syntaxAbs = path.join(live, ...syntaxRel.split('/'));
-  fs.writeFileSync(syntaxAbs, 'const = ;\n');
-  git(repo, ['add', '.claude/guards/runtime-health-bad-syntax.cjs']);
+  fs.writeFileSync(syntaxAbs, '#!/usr/bin/env bash\nif then\n');
+  git(repo, ['add', '.claude/guards/runtime-health-bad-syntax.sh']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'runtime health syntax fixture']);
   const syntaxCommit = git(repo, ['rev-parse', 'HEAD']).trim();
   const syntaxTree = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
-  const syntaxCmd = 'node "' + syntaxAbs.replace(/\\/g, '/') + '"';
+  const syntaxCmd = 'bash "' + syntaxAbs.replace(/\\/g, '/') + '"';
   const syntaxFreeze = bindFreeze({
     schema: 'axmem-p2-freeze/v1',
     source: { commit: syntaxCommit, liveRelativePath: '.claude', treeOid: syntaxTree, clean: true, uncommittedPatch: { empty: true, sha256: null } },
@@ -791,7 +891,7 @@ try {
     hooks: [{ logicalId: 'rh-syntax', event: 'UserPromptSubmit', groupIndex: 0, hookIndex: 0, matcher: null,
       command: syntaxCmd + ' >/dev/null 2>&1 || exit 0', timeout: 5, disposition: 'port', files: [syntaxRel],
       implementation: null, notes: 'syntax fixture', externalDependencies: [], businessExitCodes: [2],
-      runtimeHealthProbe: { version: 1, innerCommand: syntaxCmd, reliable: true, notes: 'exact reviewed inner' } }],
+      runtimeHealthProbe: { version: 1, innerCommand: syntaxCmd + ' >/dev/null 2>&1', reliable: true, notes: 'exact reviewed inner including stderr redirection' } }],
   }, 'syntax');
   let syntaxHealthErr = null;
   try { runner.runCase({ freeze: syntaxFreeze, group: focusedGroup, c: { id: 'rh-syntax', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { syntaxHealthErr = e; }
@@ -917,10 +1017,10 @@ try {
 
   let badSyntaxErr = null;
   try {
-    const badRel = 'guards/bad-syntax.cjs';
+    const badRel = 'guards/bad-syntax.sh';
     const raw = clone(freeze);
-    raw.sourceFiles.push({ path: badRel, sha256: sha256(fs.readFileSync(badSyntaxAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R2 syntax fixture' });
-    const badSyntaxCommand = 'node "' + badSyntaxAbs.replace(/\\/g, '/') + '" 2>/dev/null';
+    raw.sourceFiles.push({ path: badRel, sha256: sha256(fs.readFileSync(badSyntaxShAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R2 shell syntax fixture so dependency closure can bind before bash -n rejects it' });
+    const badSyntaxCommand = 'bash "' + badSyntaxShAbs.replace(/\\/g, '/') + '" 2>/dev/null';
     raw.hooks = [Object.assign({}, raw.hooks[4], {
       logicalId: 'bad-syntax', command: badSyntaxCommand, files: [badRel],
       runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: badSyntaxCommand }),
