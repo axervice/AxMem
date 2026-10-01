@@ -305,10 +305,13 @@ try {
   const a7Abs = path.join(live, ...a7Rel.split('/'));
   const a3Marker = path.join(T, 'r15b-a3-hook-executed.marker');
   fs.writeFileSync(a1Abs, "'use strict';const fs=require('fs'),path=require('path');fs.writeFileSync(path.join(__dirname,'r15b-a1.marker'),'sandbox-only');\n");
+  // A2 intent is unchanged by the R15d merge fixture migration: inherited env/path inputs must be scrubbed,
+  // runner-managed sandbox variables must survive, git parent discovery must be blocked, and an inherited fake PATH command must not resolve.
   fs.writeFileSync(a2Abs, [
     "'use strict';",
     "const cp=require('child_process');",
-    "const run=(args)=>{const r=cp.spawnSync('git',args,{encoding:'utf8'});return {status:r.status,stdout:String(r.stdout||'').trim(),stderr:String(r.stderr||'').trim()};};",
+    "const runGit=(args)=>{const r=cp.spawnSync('git',args,{encoding:'utf8'});return {status:r.status,stdout:String(r.stdout||'').trim(),stderr:String(r.stderr||'').trim()};};",
+    "const runBash=(command)=>{const r=cp.spawnSync('bash',['--noprofile','--norc','-lc',command],{encoding:'utf8',env:process.env});return {status:r.status,stdout:String(r.stdout||'').trim(),stderr:String(r.stderr||'').trim()};};",
     "const env=process.env;",
     "console.log(JSON.stringify({",
     "  HOME:env.HOME,USERPROFILE:env.USERPROFILE,HOMEDRIVE:env.HOMEDRIVE,HOMEPATH:env.HOMEPATH,",
@@ -317,8 +320,8 @@ try {
     "  CLAUDE_CONFIG_DIR:env.CLAUDE_CONFIG_DIR,CLAUDE_SESSION_ID:env.CLAUDE_SESSION_ID,CLAUDE_CODE_SESSION_ID:env.CLAUDE_CODE_SESSION_ID,",
     "  BASH_ENV:Object.keys(env).find(k=>k.toLowerCase()==='bash_env')||null,NODE_OPTIONS:env.NODE_OPTIONS||null,NODE_PATH:env.NODE_PATH||null,",
     "  inherited:Object.fromEntries(['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDE_CONFIG_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH'].map(n=>{const k=Object.keys(env).find(x=>x.toLowerCase()===n.toLowerCase());return [n,k?env[k]:null];})),",
-    "  gitVersion:run(['--version']),hooksPath:run(['config','core.hooksPath']),gitTop:run(['rev-parse','--show-toplevel']),",
-    "  pathKeys:Object.keys(env).filter(k=>k.toLowerCase()==='path'),PATH:env.PATH||''",
+    "  gitVersion:runGit(['--version']),hooksPath:runGit(['config','core.hooksPath']),gitTop:runGit(['rev-parse','--show-toplevel']),",
+    "  fakeCommand:runBash('command -v r15d-fakecmd'),pathKeys:Object.keys(env).filter(k=>k.toLowerCase()==='path'),PATH:env.PATH||''",
     "}));",
     '',
   ].join('\n'));
@@ -438,7 +441,7 @@ try {
   process.env.PATH = r15dFakeBin + ';' + String(parentEnvBefore.PATH || '');
   process.env.TEMP = a2LureRepo;
   process.env.TMP = a2LureRepo;
-  const a2Command = 'command -v r15d-fakecmd || true; node "' + a2Abs.replace(/\\/g, '/') + '"';
+  const a2Command = 'node "' + a2Abs.replace(/\\/g, '/') + '"';
   const a2Freeze = bindSingle(4, 'a2-env', a2Command, [a2Rel]);
   let a2Run;
   try {
@@ -463,8 +466,8 @@ try {
     r15dInjectedAbsent && r15dManagedSafe,
     JSON.stringify({ inherited: a2Observed.inherited, HOME: a2Observed.HOME, USERPROFILE: a2Observed.USERPROFILE, TEMP: a2Observed.TEMP, TMP: a2Observed.TMP, TMPDIR: a2Observed.TMPDIR }));
   check('R15d S2a N3 PATH removes live-source entries so inherited fake command is not resolvable',
-    !a2Run.stdout.split(/\r?\n/).some((line) => /r15d-fakecmd/.test(line)) && !String(a2Observed.PATH || '').toLowerCase().includes(r15dFakeBin.replace(/\\/g, '/').toLowerCase()),
-    JSON.stringify({ stdout: a2Run.stdout, PATH: a2Observed.PATH }));
+    a2Observed.fakeCommand && a2Observed.fakeCommand.status !== 0 && a2Observed.fakeCommand.stdout === '' && !String(a2Observed.PATH || '').toLowerCase().includes(r15dFakeBin.replace(/\\/g, '/').toLowerCase()),
+    JSON.stringify({ fakeCommand: a2Observed.fakeCommand, PATH: a2Observed.PATH }));
   const r15dExpectedScrubbed = ['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH'];
   check('R15d S2a N3 reports scrubbed inherited key names without values',
     Array.isArray(a2Run.environmentScrubbedKeys) && r15dExpectedScrubbed.every((k) => a2Run.environmentScrubbedKeys.some((x) => x.toLowerCase() === k.toLowerCase())) && a2Run.environmentScrubbedKeys.every((x) => typeof x === 'string' && !/[\\/=:]/.test(x)),
