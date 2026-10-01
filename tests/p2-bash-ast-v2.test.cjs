@@ -35,6 +35,13 @@ function check(name, ok, detail) {
 function evidence(assertion, expected, actual, falsePassGuard) {
   console.log('EVIDENCE ' + JSON.stringify({ assertion, expected, actual, falsePassGuard }));
 }
+function ruleCase(name, positiveOk, positiveActual, negativeOk, negativeActual, falsePassGuard) {
+  evidence(name, { positive: true, negative: true }, { positive: positiveActual, negative: negativeActual }, falsePassGuard);
+  check(name, positiveOk && negativeOk, JSON.stringify({ positive: positiveActual, negative: negativeActual }));
+}
+function target(scan, predicate) {
+  return scan.targets.find(predicate) || null;
+}
 function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
@@ -106,6 +113,7 @@ function copyPinnedTree(dst) {
     path.join(dst, 'guards', 'vendor', 'acorn.js'));
   fs.mkdirSync(path.join(dst, 'scripts', 'private'), { recursive: true });
   fs.cpSync(path.join(ROOT, ADAPTER_REL), path.join(dst, ADAPTER_REL), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(dst, 'package.json'));
   return dst;
 }
 function sandbox(name) {
@@ -353,6 +361,239 @@ try {
   check('v1 parity negative control detects a mutated projected field',
     v1Negative && v1Negative.detected === true,
     JSON.stringify(v1Negative));
+
+
+  const sourceResolvedScan = adapter.scanDependencyTargets('source ./a.sh');
+  const sourceResolvedTarget = target(sourceResolvedScan, (x) => x.kind === 'shell-source');
+  const sourceNoSlashScan = adapter.scanDependencyTargets('source lib.sh');
+  const sourceNoSlashTarget = target(sourceNoSlashScan, (x) => x.kind === 'shell-source');
+  ruleCase(
+    'source uses argv[1] and requires slash or search proof',
+    !!sourceResolvedTarget && sourceResolvedTarget.status === 'resolved' && sourceResolvedTarget.target === './a.sh',
+    sourceResolvedTarget,
+    !!sourceNoSlashTarget && sourceNoSlashTarget.status === 'unresolved' && /no slash/.test(sourceNoSlashTarget.reason),
+    sourceNoSlashTarget,
+    'If source targets were accepted without slash/PATH proof, source lib.sh would falsely look closed; the unresolved status excludes that false pass.');
+
+  const dotProofScan = adapter.scanDependencyTargets('. lib.sh', { sourceSearchProof: { 'lib.sh': './proof/lib.sh' } });
+  const dotProofTarget = target(dotProofScan, (x) => x.command === '.');
+  const dotNoProofTarget = target(adapter.scanDependencyTargets('. lib.sh'), (x) => x.command === '.');
+  ruleCase(
+    'dot command uses the same source-search proof rule',
+    !!dotProofTarget && dotProofTarget.status === 'resolved' && dotProofTarget.target === './proof/lib.sh',
+    dotProofTarget,
+    !!dotNoProofTarget && dotNoProofTarget.status === 'unresolved',
+    dotNoProofTarget,
+    'If dot bypassed source-search proof, the no-proof control would resolve anyway; the shared shell-source rule excludes that false pass.');
+
+  const bashLiteral = adapter.scanDependencyTargets('bash -c "source ./inner.sh"');
+  const bashNested = target(bashLiteral, (x) => x.kind === 'shell-source' && x.origin === 'bash-c');
+  const bashDynamic = target(adapter.scanDependencyTargets('bash -c "$X"'), (x) => x.kind === 'shell-inline-code');
+  ruleCase(
+    'bash -c recursively scans literal code but refuses dynamic code',
+    !!bashNested && bashNested.status === 'resolved' && bashNested.target === './inner.sh',
+    bashNested,
+    !!bashDynamic && bashDynamic.status === 'unresolved' && /dynamic -c code/.test(bashDynamic.reason),
+    bashDynamic,
+    'If bash -c code were not distinguished from a script target, literal nested source edges would be missed and dynamic code could be guessed; recursive scan plus shell-inline-code unresolved excludes both false passes.');
+
+  const shDashDash = target(adapter.scanDependencyTargets('sh -- ./run.sh'), (x) => x.kind === 'shell-script');
+  const shUnknown = target(adapter.scanDependencyTargets('sh --mystery ./run.sh'), (x) => x.kind === 'shell-option-sequence');
+  ruleCase(
+    'sh consumes -- and rejects unknown option consumption',
+    !!shDashDash && shDashDash.status === 'resolved' && shDashDash.target === './run.sh',
+    shDashDash,
+    !!shUnknown && shUnknown.status === 'unresolved',
+    shUnknown,
+    'If shell option consumption were guessed, an unknown option could shift the script operand unnoticed; explicit option parsing and unresolved unknowns exclude that false pass.');
+
+  const nodeInlineScan = adapter.scanDependencyTargets(
+    'node -e \'require("./a.cjs"); import("./b.mjs")\'');
+  const nodeInlineRequire = target(nodeInlineScan, (x) => x.kind === 'node-inline-require');
+  const nodeInlineImport = target(nodeInlineScan, (x) => x.kind === 'node-inline-import');
+  const nodeInvalidCode = target(adapter.scanDependencyTargets("node -e 'require('"), (x) => x.kind === 'node-inline-code');
+  ruleCase(
+    'node -e uses pinned Acorn for literal require and import targets',
+    !!nodeInlineRequire && nodeInlineRequire.target === './a.cjs' &&
+      !!nodeInlineImport && nodeInlineImport.target === './b.mjs' &&
+      !nodeInlineScan.targets.some((x) => x.kind === 'node-script'),
+    { require: nodeInlineRequire, import: nodeInlineImport, scriptTargets: nodeInlineScan.targets.filter((x) => x.kind === 'node-script') },
+    !!nodeInvalidCode && nodeInvalidCode.status === 'unresolved' && /Acorn/.test(nodeInvalidCode.reason),
+    nodeInvalidCode,
+    'If node -e were treated as a script path or inline JavaScript were regex-guessed, code text could be misclassified; Acorn parsing plus node-inline-code unresolved excludes that false pass.');
+
+  const nodePrint = target(adapter.scanDependencyTargets(
+    'node -p \'require("./print.cjs")\''), (x) => x.kind === 'node-inline-require');
+  const nodePrintDynamic = target(adapter.scanDependencyTargets(
+    'node -p "$X"'), (x) => x.kind === 'node-inline-code');
+  ruleCase(
+    'node -p follows the same literal-code rule as node -e',
+    !!nodePrint && nodePrint.status === 'resolved' && nodePrint.target === './print.cjs',
+    nodePrint,
+    !!nodePrintDynamic && nodePrintDynamic.status === 'unresolved',
+    nodePrintDynamic,
+    'If -p were omitted from inline-code handling, it could be misread as a script operand; shared inline parsing and dynamic-code refusal exclude that false pass.');
+
+  const argvDashDash = target(adapter.scanDependencyTargets(
+    "node -e 'require(process.argv[1])' -- ./x.cjs"),
+    (x) => x.kind === 'node-inline-require' && x.argvIndex === 1);
+  const argvDynamic = target(adapter.scanDependencyTargets(
+    "node -e 'require(process.argv[1])' \"$X\""),
+    (x) => x.kind === 'node-inline-require' && x.argvIndex === 1);
+  ruleCase(
+    'process.argv binds after Node option consumption and --',
+    !!argvDashDash && argvDashDash.status === 'resolved' && argvDashDash.target === './x.cjs' && argvDashDash.expression === './x.cjs',
+    argvDashDash,
+    !!argvDynamic && argvDynamic.status === 'unresolved' && /binding remains dynamic/.test(argvDynamic.reason),
+    argvDynamic,
+    'If effective argv included Node options or --, process.argv[1] would bind to the wrong token; consuming Node options and then binding the surviving argv word excludes that false pass.');
+
+  const argvSecond = target(adapter.scanDependencyTargets(
+    "node -e 'require(process.argv[2])' -- ./one.cjs ./two.cjs"),
+    (x) => x.kind === 'node-inline-require' && x.argvIndex === 2);
+  const argvMissing = target(adapter.scanDependencyTargets(
+    "node -e 'require(process.argv[2])' -- ./one.cjs"),
+    (x) => x.kind === 'node-inline-require' && x.argvIndex === 2);
+  ruleCase(
+    'process.argv index selects the effective argv entry by index',
+    !!argvSecond && argvSecond.status === 'resolved' && argvSecond.target === './two.cjs',
+    argvSecond,
+    !!argvMissing && argvMissing.status === 'unresolved' && /no bound effective argv/.test(argvMissing.reason),
+    argvMissing,
+    'If argv indexes were collapsed to the first operand, process.argv[2] would falsely bind to ./one.cjs; indexed effective-argv lookup excludes that false pass.');
+
+  const nodeKnownOption = target(adapter.scanDependencyTargets(
+    'node --no-warnings ./main.cjs'), (x) => x.kind === 'node-script');
+  const nodeUnknownOption = target(adapter.scanDependencyTargets(
+    'node --mystery ./main.cjs'), (x) => x.kind === 'node-option-sequence');
+  ruleCase(
+    'Node option consumption is allow-listed and unknown sequences are unresolved',
+    !!nodeKnownOption && nodeKnownOption.status === 'resolved' && nodeKnownOption.target === './main.cjs',
+    nodeKnownOption,
+    !!nodeUnknownOption && nodeUnknownOption.status === 'unresolved',
+    nodeUnknownOption,
+    'If unknown Node options were skipped optimistically, an option operand could be mistaken for the script; the node-option-sequence unresolved record excludes that false pass.');
+
+  const nodeRequireScan = adapter.scanDependencyTargets('node -r ./preload.cjs ./main.cjs');
+  const nodeRequireOption = target(nodeRequireScan, (x) => x.kind === 'node-require-option');
+  const nodeRequireScript = target(nodeRequireScan, (x) => x.kind === 'node-script');
+  const nodeRequireMissing = target(adapter.scanDependencyTargets('node -r'), (x) => x.kind === 'node-require-option');
+  ruleCase(
+    'node -r target is separate from the main script target',
+    !!nodeRequireOption && nodeRequireOption.target === './preload.cjs' &&
+      !!nodeRequireScript && nodeRequireScript.target === './main.cjs',
+    { require: nodeRequireOption, script: nodeRequireScript },
+    !!nodeRequireMissing && nodeRequireMissing.status === 'unresolved',
+    nodeRequireMissing,
+    'If -r consumption were ignored, the preload could be mistaken for the main script; separate require-option handling and a missing-operand unresolved record exclude that false pass.');
+
+  const execBound = target(adapter.scanDependencyTargets(
+    'exec -a label -cl node "$G/x.cjs"', { bindings: { G: 'guards' } }),
+    (x) => x.kind === 'node-script');
+  const execUnknown = target(adapter.scanDependencyTargets(
+    'exec -z node ./x.cjs'), (x) => x.kind === 'exec-option-sequence');
+  ruleCase(
+    'exec consumes its own options then delegates to the nested command rule',
+    !!execBound && execBound.status === 'resolved' && execBound.target === 'guards/x.cjs' && execBound.command === 'node',
+    execBound,
+    !!execUnknown && execUnknown.status === 'unresolved',
+    execUnknown,
+    'If exec itself were treated as the path target or its options were not consumed, node delegation would be lost; recursive delegated-command classification plus unresolved unknown exec options exclude that false pass.');
+
+  const functionUncalledScan = adapter.scanDependencyTargets(
+    'f(){ node ./inside.cjs; }; echo ok');
+  const functionUncalled = target(functionUncalledScan, (x) => x.kind === 'node-script' && x.expression === './inside.cjs');
+  const functionCalled = target(adapter.scanDependencyTargets(
+    'f(){ node ./inside.cjs; }; f'), (x) => x.kind === 'node-script' && x.expression === './inside.cjs');
+  ruleCase(
+    'uncalled function body stays candidate while a proven call makes it production',
+    !!functionUncalled && functionUncalled.status === 'candidate' && functionUncalled.reachability === 'candidate' &&
+      !functionUncalledScan.targets.some((x) => x.expression === './inside.cjs' && x.reachability === 'production'),
+    functionUncalled,
+    !!functionCalled && functionCalled.status === 'resolved' && functionCalled.reachability === 'production',
+    functionCalled,
+    'If syntactic presence alone implied reachability, the uncalled body would create a false production edge; candidate reachability until a call is observed excludes that false pass.');
+
+  const caseScan = adapter.scanDependencyTargets(
+    'case "$X" in a) node ./case.cjs;; b) source ./case.sh;; esac');
+  const caseNode = target(caseScan, (x) => x.expression === './case.cjs');
+  const caseSource = target(caseScan, (x) => x.expression === './case.sh');
+  const topLevelNode = target(adapter.scanDependencyTargets(
+    'node ./case.cjs'), (x) => x.expression === './case.cjs');
+  ruleCase(
+    'unproven case arms are candidate rather than production',
+    !!caseNode && caseNode.status === 'candidate' && !!caseSource && caseSource.status === 'candidate',
+    { node: caseNode, source: caseSource },
+    !!topLevelNode && topLevelNode.status === 'resolved' && topLevelNode.reachability === 'production',
+    topLevelNode,
+    'If case arms were treated as unconditionally reachable, both mutually exclusive arms would become false production edges; candidate arm reachability excludes that false pass.');
+
+  const ifScan = adapter.scanDependencyTargets(
+    'if test -n "$X"; then node ./yes.cjs; else node ./no.cjs; fi');
+  const ifYes = target(ifScan, (x) => x.expression === './yes.cjs');
+  const ifNo = target(ifScan, (x) => x.expression === './no.cjs');
+  const topLevelYes = target(adapter.scanDependencyTargets(
+    'node ./yes.cjs'), (x) => x.expression === './yes.cjs');
+  ruleCase(
+    'unproven conditional branches are candidate rather than production',
+    !!ifYes && ifYes.status === 'candidate' && !!ifNo && ifNo.status === 'candidate',
+    { then: ifYes, else: ifNo },
+    !!topLevelYes && topLevelYes.status === 'resolved' && topLevelYes.reachability === 'production',
+    topLevelYes,
+    'If conditional branches were assumed to run, mutually exclusive branch dependencies would both become production edges; candidate branch reachability excludes that false pass.');
+
+  const heredocData = adapter.scanDependencyTargets(
+    "cat <<'EOF'\nnode ./fake.cjs\nsource ./fake.sh\nEOF\n");
+  const heredocExecutable = adapter.scanDependencyTargets('node ./fake.cjs; source ./fake.sh');
+  ruleCase(
+    'heredoc data is not scanned as shell execution',
+    heredocData.targets.length === 0,
+    heredocData.targets,
+    heredocExecutable.targets.length === 2 &&
+      heredocExecutable.targets.every((x) => x.reachability === 'production'),
+    heredocExecutable.targets,
+    'If raw heredoc text were recursively parsed as commands, data lines would create fake dependencies; excluding heredoc content while the same text outside a heredoc produces edges excludes that false pass.');
+
+  const tildeTarget = target(adapter.scanDependencyTargets(
+    'node ~/secret.cjs'), (x) => x.kind === 'node-script');
+  const tildeQuotedTarget = target(adapter.scanDependencyTargets(
+    'node "~/secret.cjs"'), (x) => x.kind === 'node-script');
+  ruleCase(
+    'unquoted tilde target is unresolved but quoted tilde is literal',
+    !!tildeTarget && tildeTarget.status === 'unresolved',
+    tildeTarget,
+    !!tildeQuotedTarget && tildeQuotedTarget.status === 'resolved' && tildeQuotedTarget.target === '~/secret.cjs',
+    tildeQuotedTarget,
+    'If target rules ignored the projector dynamic flag, an unquoted tilde would be accepted as its lexical spelling; dynamic target refusal excludes that false pass.');
+
+  const globTarget = target(adapter.scanDependencyTargets(
+    'node /outside/*.cjs'), (x) => x.kind === 'node-script');
+  const globQuotedTarget = target(adapter.scanDependencyTargets(
+    'node "/outside/*.cjs"'), (x) => x.kind === 'node-script');
+  ruleCase(
+    'unquoted glob target is unresolved but quoted glob is literal',
+    !!globTarget && globTarget.status === 'unresolved',
+    globTarget,
+    !!globQuotedTarget && globQuotedTarget.status === 'resolved' && globQuotedTarget.target === '/outside/*.cjs',
+    globQuotedTarget,
+    'If target rules trusted lexical value despite pathname expansion, an unquoted glob would be falsely resolved; projector dynamic propagation excludes that false pass.');
+
+  const homeHelperPath = path.join(ROOT, 'guards', 'pmm-home.sh');
+  const homeHelperSource = fs.readFileSync(homeHelperPath, 'utf8');
+  const homeHelperScan = adapter.scanDependencyTargets(homeHelperSource, { fromPath: 'guards/pmm-home.sh' });
+  const homeHelperTarget = target(homeHelperScan,
+    (x) => x.kind === 'node-inline-require' && x.target === 'guards/pmm-recall-ledger.cjs');
+  const homeLines = homeHelperSource.split(/\r?\n/);
+  const isolatedNodeLine = homeLines[58] || '';
+  const isolatedHomeScan = adapter.scanDependencyTargets(isolatedNodeLine, { fromPath: 'guards/pmm-home.sh' });
+  const isolatedHomeTarget = target(isolatedHomeScan, (x) => x.kind === 'node-inline-require');
+  ruleCase(
+    'real home helper argv binding finds the ledger dependency',
+    !!homeHelperTarget && homeHelperTarget.status === 'resolved' && homeHelperTarget.argvIndex === 1,
+    homeHelperTarget,
+    !!isolatedHomeTarget && isolatedHomeTarget.status === 'unresolved',
+    isolatedHomeTarget,
+    'If process.argv binding ignored the preceding script-directory and ledger-argument proof, the real call would stay unresolved or be guessed; scanning the real assignment chain resolves it while the isolated call remains unresolved.');
 
   const description = adapter.describeProtocol();
   check('protocol description exposes pinned parser and acorn entries',

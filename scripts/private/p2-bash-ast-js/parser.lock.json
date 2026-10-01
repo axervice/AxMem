@@ -63,20 +63,26 @@
     {
       "path": "scripts/private/p2-bash-ast-js/adapter.cjs",
       "role": "adapter",
-      "bytes": 6536,
-      "sha256": "90972d96790eac02df066ff88c9fb92c92718733a2b3d35d4876b7d9dc1f3bc4"
+      "bytes": 6723,
+      "sha256": "30e73e31210a4c45022a564db07c0fade0ea074991e339c2109fd075e46a236f"
     },
     {
       "path": "scripts/private/p2-bash-ast-js/projector.cjs",
       "role": "adapter",
-      "bytes": 12404,
-      "sha256": "8822b9d6075c511d52dd9d18561806a6a0f06d5e8c61ff7c504e6d8d8385bf98"
+      "bytes": 12440,
+      "sha256": "5b329e88480fc217189e9b0240c2b3e884d489f46f95240d2506f7e8b348a028"
     },
     {
       "path": "scripts/private/p2-bash-ast-js/protocol.cjs",
       "role": "adapter",
       "bytes": 6455,
       "sha256": "0bfdd948a495380a7e870cbaaf8d7b339127a3e6847c9f6de812bc4b3798aeab"
+    },
+    {
+      "path": "scripts/private/p2-bash-ast-js/target-rules.cjs",
+      "role": "adapter",
+      "bytes": 27219,
+      "sha256": "390c415fefb5f502b33b2aeae045cc5b3e02485edf80d84f01d747a6b0abba57"
     }
   ]
 }

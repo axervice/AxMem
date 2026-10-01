@@ -375,6 +375,8 @@ function projectV1Fields(input) {
 module.exports = {
   hasUnquotedRuntimePattern,
   expansionKinds,
+  parseMaterialized,
+  projectWord,
   parseShellV2,
   projectV1Fields,
 };
