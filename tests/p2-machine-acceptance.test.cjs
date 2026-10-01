@@ -74,6 +74,9 @@ try {
   fs.writeFileSync(badSyntaxAbs, "const = ;\n");
   const badSyntaxShAbs = path.join(live, 'guards', 'bad-syntax.sh');
   fs.writeFileSync(badSyntaxShAbs, '#!/usr/bin/env bash\nif then\n');
+  const timeoutRel = 'guards/r15d-timeout-fixture.cjs';
+  const timeoutAbs = path.join(live, ...timeoutRel.split('/'));
+  fs.writeFileSync(timeoutAbs, "'use strict';\nsetTimeout(() => {}, 1000);\n");
   git(repo, ['init', '-q']);
   git(repo, ['add', '.claude']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'fixture']);
@@ -964,7 +967,9 @@ try {
   let missingErr = null;
   try {
     const raw = clone(freeze);
-    const missingCommand = '"' + path.join(live, 'guards', 'command_that_does_not_exist_axmem_p2').replace(/\\/g, '/') + '"';
+    // Merge migration: this case tests missing-command infrastructure classification, not arbitrary shell syntax.
+    // Keep the expected command-start:127 assertion unchanged while expressing the hook as one C1-reviewed bash command.
+    const missingCommand = 'bash "' + path.join(live, 'guards', 'command_that_does_not_exist_axmem_p2.sh').replace(/\\/g, '/') + '"';
     raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'missing', command: missingCommand,
       runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: missingCommand }) })];
     const bad = bindFreeze(raw, 'missing-command');
@@ -975,8 +980,11 @@ try {
   let timeoutErr = null;
   try {
     const raw = clone(freeze);
-    const timeoutCommand = 'cd "' + live.replace(/\\/g, '/') + '" && sleep 1';
-    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'timeout', command: timeoutCommand, timeout: 0.01,
+    // Merge migration: this case tests timeout infrastructure classification, not compound-command grammar.
+    // A tracked Node fixture blocks for ~1s; the hook remains one C1-reviewed command and timeout stays 0.01s.
+    const timeoutCommand = 'node "' + timeoutAbs.replace(/\\/g, '/') + '"';
+    raw.sourceFiles.push({ path: timeoutRel, sha256: sha256(fs.readFileSync(timeoutAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'C1-compatible timeout classification fixture' });
+    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'timeout', command: timeoutCommand, timeout: 0.01, files: [timeoutRel],
       runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: timeoutCommand }) })];
     const bad = bindFreeze(raw, 'timeout-command');
     runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'timeout', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
