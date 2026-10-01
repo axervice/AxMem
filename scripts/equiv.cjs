@@ -97,6 +97,43 @@ function normalizeStateTree(tree, prefixes) {
 
 const REQUIRED_EVENTS = ['Bash', 'Edit', 'Write', 'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreCompact'];
 
+const REPORT_DISPOSITIONS = new Set(['port', 'replace', 'external-prerequisite', 'private-exclude']);
+const RAN_DISPOSITIONS = new Set(['port', 'replace']);
+const SKIPPED_DISPOSITIONS = new Set(['external-prerequisite', 'private-exclude']);
+const INPUT_IDENTITY_FIELDS = new Set(['inputCanonical', 'inputSha256']);
+
+function validateStateTreeEntries(tree, side, caseId) {
+  for (const [entryPath, entry] of Object.entries(tree)) {
+    const detail = { side, caseId, path: entryPath };
+    if (!isPlainObject(entry)) {
+      reportError('report-bad-state-entry', side + ' report case ' + caseId + ' has invalid stateTree entry for ' + entryPath,
+        Object.assign(detail, { reason: 'entry-must-be-object', valueType: Array.isArray(entry) ? 'array' : typeof entry }));
+    }
+    const keys = Object.keys(entry).sort();
+    if (Object.prototype.hasOwnProperty.call(entry, 'deleted')) {
+      if (entry.deleted !== true || keys.length !== 1 || keys[0] !== 'deleted') {
+        reportError('report-bad-state-entry', side + ' report case ' + caseId + ' has invalid deleted stateTree entry for ' + entryPath,
+          Object.assign(detail, { reason: 'invalid-deleted-entry', keys, deleted: entry.deleted }));
+      }
+      continue;
+    }
+    const expectedKeys = ['binary', 'sha256', 'size'];
+    if (JSON.stringify(keys) !== JSON.stringify(expectedKeys)
+        || typeof entry.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(entry.sha256)
+        || !Number.isInteger(entry.size) || entry.size < 0
+        || typeof entry.binary !== 'boolean') {
+      reportError('report-bad-state-entry', side + ' report case ' + caseId + ' has invalid file stateTree entry for ' + entryPath,
+        Object.assign(detail, {
+          reason: 'invalid-file-entry',
+          keys,
+          sha256Type: typeof entry.sha256,
+          sizeType: typeof entry.size,
+          binaryType: typeof entry.binary,
+        }));
+    }
+  }
+}
+
 function normalizeHookResult(h) {
   const logicalId = String((h && (h.logicalId || h.id)) || '').trim();
   return {
@@ -144,6 +181,10 @@ function allowedSet(rows) {
   for (const r of rows || []) {
     if (!r || typeof r.caseId !== 'string' || typeof r.field !== 'string' || typeof r.reason !== 'string' || !r.reason.trim()) {
       throw new Error('allowed difference requires caseId, field and non-empty reason');
+    }
+    if (INPUT_IDENTITY_FIELDS.has(r.field)) {
+      reportError('allowance-forbidden-field', 'allowed difference cannot target input identity field ' + r.field,
+        { caseId: r.caseId, field: r.field, reason: r.reason.trim() });
     }
     const key = r.caseId + '\u0000' + r.field;
     if (m.has(key)) throw new Error('duplicate allowed difference: ' + r.caseId + '/' + r.field);
@@ -253,12 +294,25 @@ function validateReport(report, side) {
       if (typeof raw[field] !== 'string') reportError('report-case-field-type', side + ' report case ' + id + ' has invalid ' + field, { side, caseId: id, field, valueType: Array.isArray(raw[field]) ? 'array' : typeof raw[field] });
     }
     if (!isPlainObject(raw.stateTree)) reportError('report-case-field-type', side + ' report case ' + id + ' has invalid stateTree', { side, caseId: id, field: 'stateTree', valueType: Array.isArray(raw.stateTree) ? 'array' : typeof raw.stateTree });
+    validateStateTreeEntries(raw.stateTree, side, id);
     if (counts.has(raw.event)) counts.set(raw.event, counts.get(raw.event) + 1);
     if (!Array.isArray(raw.hookResults) || raw.hookResults.length === 0) throw new Error(side + ' report case ' + id + ' has no hook trace');
     let expectedCaseExit = 0;
     for (let i = 0; i < raw.hookResults.length; i++) {
       const rawHook = raw.hookResults[i];
       if (!rawHook || typeof rawHook !== 'object' || Array.isArray(rawHook)) reportError('report-hook-field-type', side + ' report case ' + id + ' has invalid hook record', { side, caseId: id, hookIndex: i, field: 'hook' });
+      if (!REPORT_DISPOSITIONS.has(rawHook.disposition)) {
+        reportError('report-bad-disposition', side + ' report case ' + id + ' has invalid hook disposition',
+          { side, caseId: id, hookIndex: i, status: rawHook.status, disposition: rawHook.disposition, reason: 'unknown-disposition' });
+      }
+      if (rawHook.status === 'ran' && !RAN_DISPOSITIONS.has(rawHook.disposition)) {
+        reportError('report-bad-disposition', side + ' report case ' + id + ' ran hook has non-runnable disposition',
+          { side, caseId: id, hookIndex: i, status: rawHook.status, disposition: rawHook.disposition, reason: 'ran-disposition-mismatch' });
+      }
+      if (rawHook.status === 'skipped' && !SKIPPED_DISPOSITIONS.has(rawHook.disposition)) {
+        reportError('report-bad-disposition', side + ' report case ' + id + ' skipped hook has runnable disposition',
+          { side, caseId: id, hookIndex: i, status: rawHook.status, disposition: rawHook.disposition, reason: 'skipped-disposition-mismatch' });
+      }
       if (rawHook.status === 'ran') {
         if (!isByteInteger(rawHook.exitCode)) reportError('report-hook-field-type', side + ' report case ' + id + ' has invalid hook exitCode', { side, caseId: id, hookIndex: i, field: 'exitCode', valueType: Array.isArray(rawHook.exitCode) ? 'array' : typeof rawHook.exitCode });
         if (expectedCaseExit === 0 && rawHook.exitCode !== 0) expectedCaseExit = rawHook.exitCode;
