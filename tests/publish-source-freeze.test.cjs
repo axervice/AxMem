@@ -277,6 +277,18 @@ console.log('== resolveSourceOid: pinned via env override, never a live re-resol
 }
 
 // ---------------------------------------------------------------------------------------------
+console.log('== P2 private parser fixtures: exporter keep-list excludes private implementation and fixtures ==');
+{
+  const headOid = gitCwd(['rev-parse', 'HEAD']).trim();
+  const manifestAtHead = pp.readManifest(headOid);
+  const keepAtHead = pp.computeKeepList(headOid, manifestAtHead);
+  check('HEAD keep-list excludes P2 bash-AST fixtures and all scripts/private paths',
+    !keepAtHead.some((p) => p.startsWith('tests/fixtures/p2-bash-ast/')) &&
+    !keepAtHead.some((p) => p.startsWith('scripts/private/')),
+    keepAtHead.filter((p) => p.startsWith('tests/fixtures/p2-bash-ast/') || p.startsWith('scripts/private/')).join(', '));
+}
+
+// ---------------------------------------------------------------------------------------------
 console.log('== updateOverlayBaseline: per-target ack, surgical one-line manifest edit ==');
 {
   const sourceOid = pp.resolveSourceOid('main');
