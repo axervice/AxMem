@@ -223,24 +223,117 @@ function pathInsideSandbox(value, sandboxHome) {
   return target === root || target.startsWith(root + '/');
 }
 
+const SANDBOX_LITERAL_TMP_RE = /(^|[^A-Za-z0-9_.~:])\/tmp(?:[\\/]|(?=$)|(?=[\s"'`;|&()<>{}\[\]]))/i;
+const LITERAL_TMP_DEFAULT_EXPANSIONS = ['${TMPDIR:-/tmp}', '${TMPDIR-/tmp}'];
+const LITERAL_TMP_EXCEPTIONS = Object.freeze({
+  'guards/pmm-shell-memory-watch.sh': Object.freeze({
+    lineSha256: 'c0787a56bb619e4e55e565c79431d1d8f5e23c8634560c1ec7dbc1c609ec5618',
+    reason: 'case 模式匹配,不写文件;仅 --self-test 分支',
+  }),
+});
+
+function scanLiteralTmpSource(relPath, text) {
+  const rel = safeRel(relPath);
+  const ext = path.extname(rel).toLowerCase();
+  const shell = ext === '.sh' || ext === '.bash';
+  const js = ext === '.js' || ext === '.cjs' || ext === '.mjs';
+  if (!shell && !js) return { path: rel, checked: false, exceptionsUsed: [] };
+  let inBlockComment = false;
+  const exceptionsUsed = [];
+  const lines = String(text).split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    if (shell && /^#(?!\!)/.test(trimmed)) continue;
+    if (js) {
+      if (inBlockComment) {
+        const close = line.indexOf('*/');
+        if (close < 0) continue;
+        inBlockComment = false;
+        if (!line.slice(close + 2).trim()) continue;
+      } else {
+        if (/^\/\//.test(trimmed)) continue;
+        if (/^\/\*/.test(trimmed)) {
+          const close = trimmed.indexOf('*/', 2);
+          if (close < 0) { inBlockComment = true; continue; }
+          if (!trimmed.slice(close + 2).trim()) continue;
+        }
+      }
+    }
+    let candidate = line;
+    for (const exact of LITERAL_TMP_DEFAULT_EXPANSIONS) candidate = candidate.split(exact).join('<TMPDIR_DEFAULT>');
+    SANDBOX_LITERAL_TMP_RE.lastIndex = 0;
+    if (!SANDBOX_LITERAL_TMP_RE.test(candidate)) continue;
+    const normalizedLine = line.replace(/[ \t]+$/, '');
+    const lineSha256 = sha256(Buffer.from(normalizedLine, 'utf8'));
+    const approved = LITERAL_TMP_EXCEPTIONS[rel];
+    if (approved && approved.lineSha256 === lineSha256) {
+      exceptionsUsed.push({ path: rel, line: i + 1, lineSha256, reason: approved.reason });
+      continue;
+    }
+    throw new EquivInfrastructureError('sandbox-literal-tmp', 'hook source contains an unapproved literal /tmp path', {
+      path: rel, line: i + 1, lineSha256, text: normalizedLine,
+    });
+  }
+  return { path: rel, checked: true, exceptionsUsed };
+}
+
+function assertSandboxTmpdir(env, sandboxHome) {
+  const key = Object.keys(env || {}).find((k) => k.toLowerCase() === 'tmpdir');
+  const value = key ? env[key] : null;
+  if (typeof value !== 'string' || !value || !isAbsolutePortable(value) || !pathInsideSandbox(value, sandboxHome)) {
+    throw new EquivInfrastructureError('sandbox-tmpdir-invalid', 'TMPDIR must be set to an absolute path inside the case sandbox', {
+      tmpdir: value, sandboxHome: posix(path.resolve(sandboxHome)),
+    });
+  }
+  return value;
+}
+
 function prepareCaseInput(rawInput, sandboxHome) {
   const input = JSON.parse(JSON.stringify(rawInput || {}));
-  const targets = [[input, 'cwd', '$.cwd'], [input, 'transcript_path', '$.transcript_path']];
+  const expandTmp = (value) => {
+    let out = String(value);
+    if (out === '<TMP>') out = posix(sandboxHome);
+    else if (out.startsWith('<TMP>/') || out.startsWith('<TMP>\\')) out = posix(sandboxHome) + '/' + out.slice(6).replace(/^[\\/]+/, '');
+    return out;
+  };
+  if (Object.prototype.hasOwnProperty.call(input, 'cwd') && typeof input.cwd === 'string') {
+    input.cwd = expandTmp(input.cwd);
+    if (!isAbsolutePortable(input.cwd) || isDevicePath(input.cwd)) {
+      throw new EquivInfrastructureError('payload-path-not-absolute', 'payload cwd must be absolute', { field: '$.cwd', value: input.cwd });
+    }
+    if (!pathInsideSandbox(input.cwd, sandboxHome)) {
+      throw new EquivInfrastructureError('payload-path-outside-sandbox', 'payload path escapes the case sandbox: $.cwd', { field: '$.cwd', value: input.cwd, sandboxHome: posix(sandboxHome) });
+    }
+  } else if (!input.cwd) input.cwd = posix(sandboxHome);
+
+  const targets = [[input, 'transcript_path', '$.transcript_path', true]];
   if (input.tool_input && typeof input.tool_input === 'object' && !Array.isArray(input.tool_input)) {
-    for (const key of ['file_path', 'path', 'notebook_path']) targets.push([input.tool_input, key, '$.tool_input.' + key]);
+    for (const key of ['file_path', 'path', 'notebook_path']) targets.push([input.tool_input, key, '$.tool_input.' + key, false]);
+    if (Array.isArray(input.tool_input.edits)) {
+      for (let i = 0; i < input.tool_input.edits.length; i++) {
+        const edit = input.tool_input.edits[i];
+        if (edit && typeof edit === 'object' && !Array.isArray(edit)) targets.push([edit, 'file_path', '$.tool_input.edits[' + i + '].file_path', false]);
+      }
+    }
   }
-  for (const [obj, key, label] of targets) {
+  for (const [obj, key, label, mustBeAbsolute] of targets) {
     if (!Object.prototype.hasOwnProperty.call(obj, key) || typeof obj[key] !== 'string') continue;
-    let value = obj[key];
-    if (value === '<TMP>') value = posix(sandboxHome);
-    else if (value.startsWith('<TMP>/') || value.startsWith('<TMP>\\')) value = posix(sandboxHome) + '/' + value.slice(6).replace(/^[\\/]+/, '');
+    let value = expandTmp(obj[key]);
+    if (isDevicePath(value)) {
+      if (mustBeAbsolute) throw new EquivInfrastructureError('payload-path-not-absolute', 'payload path must be absolute: ' + label, { field: label, value });
+      obj[key] = value;
+      continue;
+    }
+    if (!isAbsolutePortable(value)) {
+      if (mustBeAbsolute) throw new EquivInfrastructureError('payload-path-not-absolute', 'payload path must be absolute: ' + label, { field: label, value });
+      value = posix(path.resolve(portableAbsoluteToNative(input.cwd), value));
+    }
     obj[key] = value;
-    if (isDevicePath(value) || !isAbsolutePortable(value)) continue;
     if (!pathInsideSandbox(value, sandboxHome)) {
       throw new EquivInfrastructureError('payload-path-outside-sandbox', 'payload path escapes the case sandbox: ' + label, { field: label, value, sandboxHome: posix(sandboxHome) });
     }
   }
-  if (!input.cwd) input.cwd = posix(sandboxHome);
   return input;
 }
 
@@ -669,24 +762,26 @@ function hookExitContract(h, logicalId) {
   } };
 }
 
-function preflightHookSources(h, sandboxSource, env, logicalId, timeoutMs) {
+function preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutMs) {
   if (!Array.isArray(h.files) || h.files.length === 0) {
     throw new EquivInfrastructureError('hook source contract missing for ' + logicalId + ': runnable hook needs files[]');
   }
   const checked = [];
-  for (const raw of h.files) {
+  const closure = sourceBindingForHook(freeze, h).files.map((f) => f.path);
+  for (const raw of closure) {
     const rel = safeRel(raw);
     const abs = path.join(sandboxSource, ...rel.split('/'));
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
       throw new EquivInfrastructureError('hook source missing for ' + logicalId + ': ' + rel);
     }
+    scanLiteralTmpSource(rel, fs.readFileSync(abs, 'utf8'));
     const ext = path.extname(rel).toLowerCase();
     let rr = null;
     if (ext === '.js' || ext === '.cjs' || ext === '.mjs') {
       rr = spawnSyncSandboxed(process.execPath, ['--check', abs], {
         cwd: sandboxSource, env, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,
       });
-    } else if (ext === '.sh') {
+    } else if (ext === '.sh' || ext === '.bash') {
       rr = spawnSyncSandboxed(findBash(), ['--noprofile', '--norc', '-n', abs], {
         cwd: sandboxSource, env, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024,
       });
@@ -705,6 +800,7 @@ function preflightHookSources(h, sandboxSource, env, logicalId, timeoutMs) {
 }
 
 function runHook(command, payload, env, cwd, timeoutMs, businessExitCodes = []) {
+  assertSandboxTmpdir(env, cwd);
   const bash = findBash();
   const r = spawnSyncSandboxed(bash, ['--noprofile', '--norc', '-c', command], {
     cwd, env, input: JSON.stringify(payload) + '\n', encoding: 'utf8',
@@ -752,7 +848,7 @@ function runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRo
     const outerCommand = String(h.command || '');
     const innerCommand = String(contract.runtimeHealthProbe.innerCommand || '');
     const rewrittenInner = rewriteSourceRoot(innerCommand, sourceRoot, probeSource);
-    const sourceSyntaxChecked = preflightHookSources(h, probeSource, probeEnv, logicalId, timeoutMs);
+    const sourceSyntaxChecked = preflightHookSources(freeze, h, probeSource, probeEnv, logicalId, timeoutMs);
     const rr = runHook(rewrittenInner, probePayload, probeEnv, probeHome, timeoutMs, contract.businessExitCodes);
     if (rr.infrastructureFailure) {
       throw new EquivInfrastructureError('hook runtime health probe failed for ' + logicalId + ': ' + rr.infrastructureReason,
@@ -844,7 +940,7 @@ function runCase({ freeze, group, c, repoRoot, sourceRoot, axmemRepoRoot, defaul
         const timeoutMs = Number.isFinite(Number(h.timeout)) && Number(h.timeout) > 0 ? Number(h.timeout) * 1000 : defaultTimeoutMs;
         const contract = hookExitContract(h, logicalId);
         const runtimeHealth = runRuntimeHealthProbe({ freeze, h, logicalId, phase, c, group, sourceRoot, axmemRepoRoot, outerHome: sandboxHome, outerSource: sandboxSource, outerEnv: env, outerPayload: payload, timeoutMs, contract });
-        const sourceSyntaxChecked = preflightHookSources(h, sandboxSource, env, logicalId, timeoutMs);
+        const sourceSyntaxChecked = preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutMs);
         const rr = runHook(command, payload, env, sandboxHome, timeoutMs, contract.businessExitCodes);
         if (rr.infrastructureFailure) throw new EquivInfrastructureError('hook-infrastructure-failure', 'hook infrastructure failure for ' + logicalId + ': ' + rr.infrastructureReason, { logicalId, phase, disposition: h.disposition, exitCode: rr.exitCode, reason: rr.infrastructureReason, businessExitCodes: contract.businessExitCodes, runtimeHealth });
         executed++;
@@ -899,6 +995,6 @@ function runFreezeReport(opts) {
 module.exports = {
   EquivInfrastructureError, normalizeRuntimeText, matcherMatches, hookEventsForGroup,
   materializeFreeze, rewriteSourceRoot, sourceRootResidual, sameSourcePath, prepareCaseInput, isolatedEnv, bindingEnv,
-  validateFreezeHooks, validateInventoryBinding, diffState, logicalHookId, hookExitContract, preflightHookSources,
+  scanLiteralTmpSource, assertSandboxTmpdir, validateFreezeHooks, validateInventoryBinding, diffState, logicalHookId, hookExitContract, preflightHookSources,
   runHook, runRuntimeHealthProbe, validateFixture, runCase, runFreezeReport, stateDigest, hashObject, sourceBindingForHook,
 };

@@ -442,7 +442,7 @@ try {
     a2Observed.CLAUDE_SESSION_ID === 'r15b-session' && a2Observed.CLAUDE_CODE_SESSION_ID === 'r15b-session', JSON.stringify(a2Observed));
   check('R15b A2 preserves executable PATH, dedupes Path/PATH case-insensitively, and scrubs inherited Git config',
     a2Observed.gitVersion.status === 0 && /^git version /.test(a2Observed.gitVersion.stdout) && a2Observed.hooksPath.stdout === '' && Array.isArray(a2Observed.pathKeys) && a2Observed.pathKeys.length === 1, JSON.stringify(a2Observed));
-  check('R15b A2 GIT_CEILING blocks discovery of the parent lure repository', a2Observed.gitTop.status !== 0 && a2Observed.gitTop.stdout === '', JSON.stringify(a2Observed.gitTop));
+  check('R15b A2 GIT_CEILING blocks discovery of the parent lure repository', a2Observed.gitTop.status !== 0 && a2Observed.gitTop.stdout === '' && /not a git repository/i.test(a2Observed.gitTop.stderr), JSON.stringify(a2Observed.gitTop));
   const r15dInjectedAbsent = ['CLAUDE_HOME','CLAUDE_PROJECT_DIR','CLAUDECODE','OneDrive','HERMES_CONFIG_PATH','GIT_TRACE2_EVENT','NODE_V8_COVERAGE','NODE_COMPILE_CACHE','NODE_PATH']
     .every((k) => a2Observed.inherited[k] === null);
   const r15dManagedSafe = typeof a2Observed.inherited.CLAUDE_CONFIG_DIR === 'string' && a2Observed.inherited.CLAUDE_CONFIG_DIR.includes('<ROOT>')
@@ -457,6 +457,33 @@ try {
   check('R15d S2a N3 reports scrubbed inherited key names without values',
     Array.isArray(a2Run.environmentScrubbedKeys) && r15dExpectedScrubbed.every((k) => a2Run.environmentScrubbedKeys.some((x) => x.toLowerCase() === k.toLowerCase())) && a2Run.environmentScrubbedKeys.every((x) => typeof x === 'string' && !/[\\/=:]/.test(x)),
     JSON.stringify(a2Run.environmentScrubbedKeys));
+
+  const r15dNodeRestoreKey = 'NODE_V8_COVERAGE';
+  const r15dNodeRestoreBefore = process.env[r15dNodeRestoreKey];
+  const r15dNodeRestoreSentinel = 'C:/r15d-parent-node-v8-coverage-sentinel';
+  const r15dNodeRestoreHome = fs.mkdtempSync(path.join(T, 'r15d-node-restore-'));
+  let r15dNodeNormal = null, r15dNodeThrow = null;
+  try {
+    process.env[r15dNodeRestoreKey] = r15dNodeRestoreSentinel;
+    const env = runner.isolatedEnv(r15dNodeRestoreHome, null);
+    const rr = runner.runHook('printf ok', {}, env, r15dNodeRestoreHome, 5000, []);
+    r15dNodeNormal = { exitCode: rr.exitCode, stdout: rr.stdout, parentAfter: process.env[r15dNodeRestoreKey] };
+    const originalSpawnSync = cp.spawnSync;
+    try {
+      cp.spawnSync = () => { throw new Error('r15d-forced-spawn-throw'); };
+      try { runner.runHook('printf never', {}, env, r15dNodeRestoreHome, 5000, []); }
+      catch (e) { r15dNodeThrow = { message: String(e && e.message || e), parentAfter: process.env[r15dNodeRestoreKey] }; }
+    } finally { cp.spawnSync = originalSpawnSync; }
+  } finally {
+    if (r15dNodeRestoreBefore === undefined) delete process.env[r15dNodeRestoreKey]; else process.env[r15dNodeRestoreKey] = r15dNodeRestoreBefore;
+    fs.rmSync(r15dNodeRestoreHome, { recursive: true, force: true });
+  }
+  check('R15d S2b sandbox spawn restores parent NODE_V8_COVERAGE after normal return',
+    r15dNodeNormal && r15dNodeNormal.exitCode === 0 && r15dNodeNormal.stdout === 'ok' && r15dNodeNormal.parentAfter === r15dNodeRestoreSentinel,
+    JSON.stringify(r15dNodeNormal));
+  check('R15d S2b sandbox spawn restores parent NODE_V8_COVERAGE when spawnSync throws',
+    r15dNodeThrow && r15dNodeThrow.message === 'r15d-forced-spawn-throw' && r15dNodeThrow.parentAfter === r15dNodeRestoreSentinel,
+    JSON.stringify(r15dNodeThrow));
 
   const a3Command = 'node "' + a3Abs.replace(/\\/g, '/') + '"';
   const a3Freeze = bindSingle(4, 'a3-path-guard', a3Command, [a3Rel]);
@@ -479,6 +506,47 @@ try {
     check('R15b A3 rejects ' + kind + ' absolute payload path before any hook executes', err && err.code === 'payload-path-outside-sandbox' && err.detail && err.detail.field === '$.transcript_path' && !fs.existsSync(a3Marker), String(err && err.message));
     try { fs.rmSync(a3Marker, { force: true }); } catch {}
   }
+
+  const n2Sandbox = fs.mkdtempSync(path.join(T, 'r15d-n2-sandbox-'));
+  const n2Cwd = path.join(n2Sandbox, 'work', 'deep');
+  fs.mkdirSync(n2Cwd, { recursive: true });
+  const n2Reject = (label, input, code, field) => {
+    let err = null;
+    try { runner.prepareCaseInput(input, n2Sandbox); } catch (e) { err = e; }
+    check('R15d S2b N2 rejects ' + label, err && err.code === code && err.detail && err.detail.field === field, JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  };
+  n2Reject('relative cwd ../../../..', { cwd: '../../../..' }, 'payload-path-not-absolute', '$.cwd');
+  n2Reject('relative transcript_path', { transcript_path: '../transcript.json' }, 'payload-path-not-absolute', '$.transcript_path');
+  n2Reject('relative tool_input.file_path escaping cwd', { cwd: n2Cwd, tool_input: { file_path: '../../../../.claude/memory/decisions.md' } }, 'payload-path-outside-sandbox', '$.tool_input.file_path');
+  n2Reject('nested edits[].file_path escaping cwd', { cwd: n2Cwd, tool_input: { edits: [{ file_path: '../../../../outside.txt' }] } }, 'payload-path-outside-sandbox', '$.tool_input.edits[0].file_path');
+  const n2Inside = runner.prepareCaseInput({ cwd: n2Cwd, tool_input: { file_path: '../ok.txt', edits: [{ file_path: './also-ok.txt' }] } }, n2Sandbox);
+  check('R15d S2b N2 resolves relative tool paths against case cwd before sandbox check',
+    path.isAbsolute(n2Inside.tool_input.file_path) && runner.prepareCaseInput(n2Inside, n2Sandbox).tool_input.file_path === n2Inside.tool_input.file_path && /\/work\/ok\.txt$/.test(n2Inside.tool_input.file_path.replace(/\\/g, '/')),
+    JSON.stringify(n2Inside.tool_input));
+  fs.rmSync(n2Sandbox, { recursive: true, force: true });
+
+  let tmpDangerErr = null;
+  try { runner.scanLiteralTmpSource('guards/r15d-tmp-fixture.sh', 'if false; then echo x > /tmp/r15d-probe; fi\n'); } catch (e) { tmpDangerErr = e; }
+  check('R15d S2b literal /tmp preflight rejects executable source use', tmpDangerErr && tmpDangerErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpDangerErr && tmpDangerErr.detail));
+  let tmpSafe = null, tmpSafeErr = null;
+  try { tmpSafe = runner.scanLiteralTmpSource('guards/r15d-tmp-safe.sh', '# /tmp/comment only\nT="${TMPDIR:-/tmp}"\nU="${TMPDIR-/tmp}"\n'); } catch (e) { tmpSafeErr = e; }
+  check('R15d S2b literal /tmp preflight permits whole-line comments and exact TMPDIR defaults', !tmpSafeErr && tmpSafe && tmpSafe.exceptionsUsed.length === 0, String(tmpSafeErr && tmpSafeErr.message));
+  const tmpExceptionLine = '  case "$T" in /tmp/*|/var/*|"${TMPDIR:-/nonexistent}"*) : ;; *) echo "mktemp 异常路径 $T,拒绝继续"; exit 1;; esac';
+  const tmpException = runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine + '\n');
+  check('R15d S2b literal /tmp preflight accepts exactly the reviewed line-hash exception', tmpException.exceptionsUsed.length === 1 && tmpException.exceptionsUsed[0].lineSha256 === sha256(Buffer.from(tmpExceptionLine)), JSON.stringify(tmpException));
+  let tmpMutatedErr = null;
+  try { runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine.replace('异常路径', '异常路经') + '\n'); } catch (e) { tmpMutatedErr = e; }
+  check('R15d S2b literal /tmp exception fails closed when approved line changes', tmpMutatedErr && tmpMutatedErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpMutatedErr && tmpMutatedErr.detail));
+  const tmpEnvHome = fs.mkdtempSync(path.join(T, 'r15d-tmpdir-env-'));
+  const tmpEnv = runner.isolatedEnv(tmpEnvHome, null);
+  const tmpMissing = Object.assign({}, tmpEnv); delete tmpMissing.TMPDIR;
+  let tmpMissingErr = null, tmpOutsideErr = null;
+  try { runner.runHook('printf never', {}, tmpMissing, tmpEnvHome, 5000, []); } catch (e) { tmpMissingErr = e; }
+  const tmpOutside = Object.assign({}, tmpEnv, { TMPDIR: path.join(T, 'r15d-outside-tmpdir') });
+  try { runner.runHook('printf never', {}, tmpOutside, tmpEnvHome, 5000, []); } catch (e) { tmpOutsideErr = e; }
+  check('R15d S2b hook launch rejects missing TMPDIR before spawn', tmpMissingErr && tmpMissingErr.code === 'sandbox-tmpdir-invalid', String(tmpMissingErr && tmpMissingErr.message));
+  check('R15d S2b hook launch rejects TMPDIR outside case sandbox before spawn', tmpOutsideErr && tmpOutsideErr.code === 'sandbox-tmpdir-invalid', String(tmpOutsideErr && tmpOutsideErr.message));
+  fs.rmSync(tmpEnvHome, { recursive: true, force: true });
 
   const unknownRaw = clone(freeze);
   unknownRaw.hooks.push({
@@ -587,6 +655,8 @@ try {
     try { fs.rmSync(marker, { force: true }); } catch {}
   };
   a6RejectBeforeExecution('missing sourceFile sha256', (x) => { delete x.sourceFiles[0].sha256; }, 'freeze-source-hash-missing');
+  a6RejectBeforeExecution('missing inventorySha256', (x) => { delete x.inventorySha256; }, 'freeze-inventory-binding-missing');
+  a6RejectBeforeExecution('missing settingsEvidence', (x) => { delete x.settingsEvidence; }, 'freeze-settings-evidence-missing');
   a6RejectBeforeExecution('tampered source treeOid', (x) => { x.source.treeOid = '0'.repeat(40); }, 'freeze-tree-oid-mismatch');
   a6RejectBeforeExecution('deleted hook', (x) => { x.hooks.splice(1, 1); }, 'freeze-settings-hook-mismatch');
   a6RejectBeforeExecution('swapped hook order', (x) => { [x.hooks[0], x.hooks[1]] = [x.hooks[1], x.hooks[0]]; }, 'freeze-settings-hook-mismatch');
