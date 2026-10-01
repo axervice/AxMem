@@ -224,6 +224,49 @@ try {
   catch (e) { c2SupportedMatcherErr = e; }
   check('R15b C2 freeze still accepts supported non-empty tool matcher', !c2SupportedMatcherErr, String(c2SupportedMatcherErr && c2SupportedMatcherErr.message));
 
+
+  const r15dMatcherTypeCases = [
+    ['Stop number', 'Stop', 123, {}],
+    ['UserPromptSubmit array', 'UserPromptSubmit', [], {}],
+    ['Stop object', 'Stop', {}, {}],
+    ['unknown event number', 'NoSuchEvent', 1, {}],
+  ];
+  for (const [name, event, matcher, payload] of r15dMatcherTypeCases) {
+    let err = null;
+    try { runner.matcherMatches(event, matcher, payload); } catch (e) { err = e; }
+    check('R15d-B matcher rejects non-string before event support: ' + name,
+      err && err.code === 'hook-matcher-type' && err.detail && err.detail.event === event,
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  }
+
+  const r15dEmptyAlternatives = ['|', ',', ' | ', 'Bash|', '|Bash', 'Edit||Write', 'Edit,,Write'];
+  for (const matcher of r15dEmptyAlternatives) {
+    let err = null;
+    try { runner.matcherMatches('PreToolUse', matcher, { tool_name: 'Write' }); } catch (e) { err = e; }
+    check('R15d-B matcher rejects empty simple-list alternative: ' + JSON.stringify(matcher),
+      err && err.code === 'hook-matcher-empty-alternative' && err.detail
+        && err.detail.event === 'PreToolUse' && err.detail.matcher === matcher
+        && Number.isInteger(err.detail.alternativeIndex),
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  }
+  check('R15d-B matcher keeps empty/star/omitted as all-match',
+    runner.matcherMatches('PreToolUse', '', { tool_name: 'Anything' })
+      && runner.matcherMatches('PreToolUse', '*', { tool_name: 'Anything' })
+      && runner.matcherMatches('PreToolUse', undefined, { tool_name: 'Anything' }));
+  check('R15d-B matcher keeps valid simple lists exact',
+    runner.matcherMatches('PreToolUse', 'Edit|Write', { tool_name: 'Write' })
+      && runner.matcherMatches('PreToolUse', 'Edit, Write', { tool_name: 'Write' })
+      && !runner.matcherMatches('PreToolUse', 'Edit|Write', { tool_name: 'Bash' }));
+
+  let r15dFreezeEmptyAltErr = null;
+  try { freeze.flattenHooks({ hooks: { PreToolUse: [{ matcher: 'Edit||Write', hooks: [{ type: 'command', command: 'echo never' }] }] } }); }
+  catch (e) { r15dFreezeEmptyAltErr = e; }
+  check('R15d-B matcher freeze entry maps empty alternative to bad-inventory',
+    r15dFreezeEmptyAltErr && r15dFreezeEmptyAltErr.code === 'bad-inventory'
+      && r15dFreezeEmptyAltErr.detail && r15dFreezeEmptyAltErr.detail.matcherErrorCode === 'hook-matcher-empty-alternative'
+      && r15dFreezeEmptyAltErr.detail.event === 'PreToolUse',
+    JSON.stringify({ code: r15dFreezeEmptyAltErr && r15dFreezeEmptyAltErr.code, detail: r15dFreezeEmptyAltErr && r15dFreezeEmptyAltErr.detail }));
+
   const missingManualDependencyList = JSON.parse(JSON.stringify(inventory));
   missingManualDependencyList.files.push({ path: 'guards/dynamic.sh', disposition: 'port', dependencies: [], unresolvedDependencies: [
     { expression: '$G/guards/$TARGET.sh', reason: 'negative fixture intentionally omits dependencies[]' },
