@@ -4,6 +4,7 @@ adapters/claude-code/merge-hooks.cjs
 adapters/claude-code/README.md
 adapters/codex/README.md
 adapters/codex/uninstall-hooks.cjs
+adapters/codex/wire.sh
 adapters/generic/doctor.sh
 adapters/generic/README.md
 adapters/generic/schedule.sh

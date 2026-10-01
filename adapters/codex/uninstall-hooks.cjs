@@ -112,6 +112,7 @@ function findExactPreinstallBytes(currentConfig, currentMatches) {
       bytes = fs.readFileSync(candidatePath, 'utf8');
       parsed = JSON.parse(bytes);
       validateConfig(parsed);
+      if (findMatches(parsed).length > 0) continue;
       if (JSON.stringify(projectBackup(parsed, currentMatches)) === JSON.stringify(currentConfig)) {
         return { path: candidatePath, bytes };
       }

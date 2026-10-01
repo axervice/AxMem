@@ -38,6 +38,26 @@ const events = {
   Stop: 'stop',
 };
 
+function rawCaptureCount(config) {
+  let count = 0;
+  for (const event of Object.keys(events)) {
+    for (const group of config.hooks?.[event] || []) {
+      if (group?.hooks?.some(hook => String(hook.command || '').includes('raw-receipts.cjs'))) count += 1;
+    }
+  }
+  return count;
+}
+
+function installedConfig(base = { hooks: {} }, previousWindowsForm = false) {
+  const config = structuredClone(base);
+  if (config.hooks === undefined) config.hooks = {};
+  for (const [event, action] of Object.entries(events)) {
+    if (config.hooks[event] === undefined) config.hooks[event] = [];
+    config.hooks[event].push(rawGroup(action, 'C:/src/AxMem/adapters/codex/raw-receipts.cjs', previousWindowsForm));
+  }
+  return config;
+}
+
 function installFixture(home, originalBytes) {
   const file = path.join(home, 'hooks.json');
   fs.writeFileSync(file, originalBytes);
@@ -125,6 +145,37 @@ try {
     const res = run(home, ['--dry-run']);
     check(res.status === 0 && /would remove 1/.test(res.stdout), '--dry-run reports the AxMem removal');
     check(fs.readFileSync(file, 'utf8') === before && !fs.readdirSync(home).some(name => name.startsWith('hooks.json.before-axmem-uninstall-')), '--dry-run writes neither hooks.json nor backup');
+  }
+
+  {
+    const home = path.join(root, 'newer-dirty-backup');
+    fs.mkdirSync(home);
+    const file = path.join(home, 'hooks.json');
+    const cleanBytes = '{\r\n  "hooks": {}\r\n}\r\n';
+    const installed = installedConfig({ hooks: {} }, true);
+    fs.writeFileSync(file, JSON.stringify(installed, null, 2) + '\n');
+    fs.writeFileSync(path.join(home, 'hooks.json.before-axmem-2026-09-28T20-00-00-000Z'), cleanBytes);
+    fs.writeFileSync(path.join(home, 'hooks.json.before-axmem-2026-09-28T20-42-43-000Z'), JSON.stringify(installed, null, 2) + '\n');
+    const first = run(home);
+    const restored = fs.readFileSync(file, 'utf8');
+    const second = run(home);
+    check(first.status === 0 && restored === cleanBytes && rawCaptureCount(JSON.parse(restored)) === 0, 'newer AxMem-containing backup is skipped in favor of older clean backup and exact clean bytes are restored');
+    check(second.status === 0 && /not present/.test(second.stdout) && fs.readFileSync(file, 'utf8') === cleanBytes, 'clean-backup restoration is idempotent on second uninstall');
+  }
+
+  {
+    const home = path.join(root, 'only-dirty-backup');
+    fs.mkdirSync(home);
+    const file = path.join(home, 'hooks.json');
+    const installed = installedConfig({ hooks: {} }, true);
+    fs.writeFileSync(file, JSON.stringify(installed, null, 2) + '\n');
+    fs.writeFileSync(path.join(home, 'hooks.json.before-axmem-2026-09-28T20-42-43-000Z'), JSON.stringify(installed, null, 2) + '\n');
+    const first = run(home);
+    const afterFirst = fs.readFileSync(file, 'utf8');
+    const parsed = JSON.parse(afterFirst);
+    const second = run(home);
+    check(first.status === 0 && rawCaptureCount(parsed) === 0 && !/restored exact pre-install bytes/.test(first.stdout), 'AxMem-only backup set falls back to JSON cleanup and removes all raw-receipts groups');
+    check(second.status === 0 && /not present/.test(second.stdout) && fs.readFileSync(file, 'utf8') === afterFirst, 'JSON-cleanup fallback is idempotent on second uninstall');
   }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
