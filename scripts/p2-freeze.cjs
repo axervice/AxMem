@@ -880,6 +880,28 @@ function entryRelativeToLiveRoot(entryPath, liveRoot, label) {
   return safeRelativeFile(target.slice(root.length + 1));
 }
 
+function entryRelativeToDeclaredLiveRoot(entryPath, liveRelativePath, label) {
+  if (typeof liveRelativePath !== 'string' || !liveRelativePath.trim()) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe entry binding requires freeze.source.liveRelativePath', {
+      field: 'runtimeHealthProbe.innerCommand', label, entryPath, reason: 'entry-live-root-missing',
+    });
+  }
+  const declared = safeRelativeFile(posix(liveRelativePath));
+  const target = normalizePortableBindingPath(entryPath);
+  const absolute = /^[A-Za-z]:\//.test(target) || target.startsWith('/');
+  const fold = process.platform === 'win32' ? (x) => x.toLowerCase() : (x) => x;
+  const marker = '/' + declared + '/';
+  const markerIndex = absolute ? fold(target).lastIndexOf(fold(marker)) : -1;
+  if (!target || markerIndex < 0) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe entry path must be inside the declared live root', {
+      field: 'runtimeHealthProbe.innerCommand', label, entryPath, liveRelativePath: declared, reason: 'entry-path-outside-live-root',
+    });
+  }
+  const entryRel = safeRelativeFile(target.slice(markerIndex + marker.length));
+  const derivedLiveRoot = target.slice(0, markerIndex + 1 + declared.length);
+  return { entryRel, derivedLiveRoot };
+}
+
 function reviewedInnerCommandForOuter(command) {
   const outer = normalizeCommandWhitespace(command);
   let match = /^(.*\S)\s+\|\|\s+exit\s+0$/.exec(outer);
@@ -943,7 +965,7 @@ function normalizeRuntimeHealthProbe(h, label) {
   return { version: 1, innerCommand: p.innerCommand, reliable: p.reliable, notes: p.notes.trim() };
 }
 
-function validateInventory(inv, liveHooks, liveRoot) {
+function validateInventory(inv, liveHooks, liveRelativePath) {
   if (!inv || inv.version !== 1) throw new FreezeError('bad-inventory', 'inventory.version must be 1');
   if (!Array.isArray(inv.hooks) || !Array.isArray(inv.files)) throw new FreezeError('bad-inventory', 'inventory hooks/files must be arrays');
 
@@ -1025,11 +1047,12 @@ function validateInventory(inv, liveHooks, liveRoot) {
   }
   for (const check of entryBindingChecks) {
     const entryInfo = reviewedInnerCommandInfo(check.hook.runtimeHealthProbe.innerCommand, check.label);
-    const entryRel = entryRelativeToLiveRoot(entryInfo.entryPath, liveRoot, check.label);
-    if (!check.hook.files.includes(entryRel)) {
+    const binding = entryRelativeToDeclaredLiveRoot(entryInfo.entryPath, liveRelativePath, check.label);
+    if (!check.hook.files.includes(binding.entryRel)) {
       throw new FreezeError('bad-inventory', check.label + ' runtimeHealthProbe entry path must be declared in this hook files[]', {
-        field: 'runtimeHealthProbe.innerCommand', label: check.label, entryPath: entryInfo.entryPath, entryRelativePath: entryRel,
-        files: check.hook.files.slice(), reason: 'inner-command-entry-not-in-files',
+        field: 'runtimeHealthProbe.innerCommand', label: check.label, entryPath: entryInfo.entryPath,
+        liveRelativePath: safeRelativeFile(posix(liveRelativePath)), derivedLiveRoot: binding.derivedLiveRoot,
+        entryRelativePath: binding.entryRel, files: check.hook.files.slice(), reason: 'inner-command-entry-not-in-files',
       });
     }
   }
@@ -1089,7 +1112,7 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
     throw new FreezeError('settings-mirror-mismatch', 'live settings hooks do not exactly match tracked mirror: ' + settingsMirrorRel);
   }
   const settingsHookIdentitySha256 = hookIdentitySha256(liveHooks);
-  const { fileMap, inventoryHooks, externalMap, generatedArtifacts } = validateInventory(inv, liveHooks, live);
+  const { fileMap, inventoryHooks, externalMap, generatedArtifacts } = validateInventory(inv, liveHooks, relLive);
   if (!fileMap.has(settingsMirrorRel)) throw new FreezeError('bad-inventory', 'settingsMirror must also appear in files[] so its commit blob is frozen: ' + settingsMirrorRel);
 
   const blobs = new Map();

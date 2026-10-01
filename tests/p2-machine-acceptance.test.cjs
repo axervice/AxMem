@@ -77,6 +77,18 @@ try {
   const timeoutRel = 'guards/r15d-timeout-fixture.cjs';
   const timeoutAbs = path.join(live, ...timeoutRel.split('/'));
   fs.writeFileSync(timeoutAbs, "'use strict';\nsetTimeout(() => {}, 1000);\n");
+  const silentMissingRel = 'guards/r15e-silent-missing-runtime.cjs';
+  const silentMissingAbs = path.join(live, ...silentMissingRel.split('/'));
+  fs.writeFileSync(silentMissingAbs, [
+    "'use strict';",
+    "const cp=require('child_process');",
+    "const r=cp.spawnSync('axmem_definitely_missing_silent_runtime_entry_r15e',[],{stdio:'ignore'});",
+    "process.exit(r.error ? 1 : (Number.isInteger(r.status) ? r.status : 1));",
+    "",
+  ].join('\n'));
+  const commandNotFoundRel = 'guards/r15e-command-not-found.sh';
+  const commandNotFoundAbs = path.join(live, ...commandNotFoundRel.split('/'));
+  fs.writeFileSync(commandNotFoundAbs, '#!/usr/bin/env bash\naxmem_definitely_missing_command_r15e\n');
   const r15eEntryRel = 'guards/r15e-entry-binding.sh';
   const r15eEntryAbs = path.join(live, ...r15eEntryRel.split('/'));
   const r15eEntryMarker = path.join(T, 'r15e-entry-binding.marker');
@@ -901,19 +913,22 @@ try {
   const branchTree = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
   const branchSha = sha256(fs.readFileSync(branchyAbs));
   const branchInner = 'node "' + branchyAbs.replace(/\\/g, '/') + '"';
-  const mkBranchFreeze = (outer, inner, reliable = true) => bindFreeze({
-    schema: 'axmem-p2-freeze/v1',
-    source: { commit: branchCommit, liveRelativePath: '.claude', treeOid: branchTree, clean: true, uncommittedPatch: { empty: true, sha256: null } },
-    sourceFiles: [{ path: branchyRel, sha256: branchSha, disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'runtime health branch fixture' }],
-    hooks: [{
-      logicalId: 'runtime-health-branch', event: 'UserPromptSubmit', groupIndex: 0, hookIndex: 0, matcher: null,
-      command: outer, timeout: 5, disposition: 'port', files: [branchyRel], implementation: null,
-      notes: 'runtime health branch fixture', externalDependencies: [], businessExitCodes: [2],
-      runtimeHealthProbe: { version: 1, innerCommand: inner, reliable, notes: reliable ? 'exact reviewed inner command' : 'inner intentionally swallows failures; health cannot be proven' },
-    }],
-  }, 'branch');
-  const runBranch = (outer, prompt, inner = branchInner, reliable = true) =>
-    runner.runCase({ freeze: mkBranchFreeze(outer, inner, reliable), group: focusedGroup, c: { id: 'rh-' + prompt, input: { prompt } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  const mkBranchFreeze = (outer, inner, reliable = true, entryRel = branchyRel) => {
+    const entryAbs = path.join(live, ...entryRel.split('/'));
+    return bindFreeze({
+      schema: 'axmem-p2-freeze/v1',
+      source: { commit: branchCommit, liveRelativePath: '.claude', treeOid: branchTree, clean: true, uncommittedPatch: { empty: true, sha256: null } },
+      sourceFiles: [{ path: entryRel, sha256: sha256(fs.readFileSync(entryAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'runtime health branch fixture' }],
+      hooks: [{
+        logicalId: 'runtime-health-branch', event: 'UserPromptSubmit', groupIndex: 0, hookIndex: 0, matcher: null,
+        command: outer, timeout: 5, disposition: 'port', files: [entryRel], implementation: null,
+        notes: 'runtime health branch fixture', externalDependencies: [], businessExitCodes: [2],
+        runtimeHealthProbe: { version: 1, innerCommand: inner, reliable, notes: reliable ? 'exact reviewed inner command' : 'inner intentionally swallows failures; health cannot be proven' },
+      }],
+    }, 'branch');
+  };
+  const runBranch = (outer, prompt, inner = branchInner, reliable = true, entryRel = branchyRel) =>
+    runner.runCase({ freeze: mkBranchFreeze(outer, inner, reliable, entryRel), group: focusedGroup, c: { id: 'rh-' + prompt, input: { prompt } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
   const simpleOuter = branchInner + ' || exit 0';
   const braceOuter = branchInner + ' || { echo masked >&2; exit 0; }';
   const silentOuter = branchInner + ' >/dev/null 2>&1 || exit 0';
@@ -928,9 +943,11 @@ try {
     check('runtime health blocks ' + name, err && err.code === 'equiv-infrastructure' && new RegExp(expect).test(err.message), String(err && err.message));
   }
 
-  const missingEntry = 'node "' + path.join(live, 'guards', 'never-there.cjs').replace(/\\/g, '/') + '"';
+  // R15e entry binding requires the reviewed entry itself to be tracked in files[].
+  // Preserve the original fully-silent masked-startup-failure stage with a tracked wrapper whose child executable is absent.
+  const missingEntry = 'node "' + silentMissingAbs.replace(/\\/g, '/') + '"';
   let missingEntryErr = null;
-  try { runBranch(missingEntry + ' >/dev/null 2>&1 || exit 0', 'allow', missingEntry + ' >/dev/null 2>&1'); } catch (e) { missingEntryErr = e; }
+  try { runBranch(missingEntry + ' >/dev/null 2>&1 || exit 0', 'allow', missingEntry + ' >/dev/null 2>&1', true, silentMissingRel); } catch (e) { missingEntryErr = e; }
   check('runtime health blocks fully silent missing inner entry despite outer exit0',
     missingEntryErr && missingEntryErr.code === 'equiv-infrastructure' && /unexpected-exit:1/.test(missingEntryErr.message), String(missingEntryErr && missingEntryErr.message));
 
@@ -1027,10 +1044,11 @@ try {
   let missingErr = null;
   try {
     const raw = clone(freeze);
-    // Merge migration: this case tests missing-command infrastructure classification, not arbitrary shell syntax.
-    // Keep the expected command-start:127 assertion unchanged while expressing the hook as one C1-reviewed bash command.
-    const missingCommand = 'bash "' + path.join(live, 'guards', 'command_that_does_not_exist_axmem_p2.sh').replace(/\\/g, '/') + '"';
-    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'missing', command: missingCommand,
+    // R15e entry binding keeps the hook entry tracked while the entry itself invokes a guaranteed-missing command.
+    // The shell therefore still returns 127 at the original runHook stage; the command-start:127 assertion is unchanged.
+    const missingCommand = 'bash "' + commandNotFoundAbs.replace(/\\/g, '/') + '"';
+    raw.sourceFiles.push({ path: commandNotFoundRel, sha256: sha256(fs.readFileSync(commandNotFoundAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e tracked wrapper for command-not-found classification' });
+    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'missing', command: missingCommand, files: [commandNotFoundRel],
       runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: missingCommand }) })];
     const bad = bindFreeze(raw, 'missing-command');
     runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'missing', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });

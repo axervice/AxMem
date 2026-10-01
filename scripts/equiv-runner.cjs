@@ -745,8 +745,8 @@ function validateInventoryBinding(freeze, axmemRepoRoot, settingsHooks, sourceRe
   for (let i = 0; i < settingsHooks.length; i++) if (hookSemantics.hookIdentity(settingsHooks[i]) !== hookSemantics.hookIdentity(freeze.hooks[i])) throw new EquivInfrastructureError('freeze-settings-hook-mismatch', 'settings mirror hook identity/order differs from freeze hooks', { index: i });
 
   let validated;
-  const liveRoot = path.join(path.resolve(sourceRepoRoot), ...safeRel(freeze.source.liveRelativePath).split('/'));
-  try { validated = freezeTool.validateInventory(inv, settingsHooks, liveRoot); }
+  const liveRelativePath = safeRel(freeze.source.liveRelativePath);
+  try { validated = freezeTool.validateInventory(inv, settingsHooks, liveRelativePath); }
   catch (e) { throw new EquivInfrastructureError('freeze-inventory-validation-failed', 'p2-freeze validateInventory rejected the pinned inventory', { commit: freeze.inventoryCommit, path: rel, freezeCode: e && e.code ? String(e.code) : null, cause: String(e && e.message || e), freezeDetail: e && e.detail ? e.detail : null }); }
   const invByIdentity = validated.inventoryHooks;
   const fields = ['disposition', 'files', 'implementation', 'notes', 'externalDependencies', 'businessExitCodes', 'runtimeHealthProbe'];
