@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const cp = require('child_process');
 const F = require('../scripts/p2-freeze.cjs');
 const A = require('../scripts/private/p2-bash-ast/adapter.cjs');
 
@@ -89,6 +90,28 @@ expectError('duplicate marker',
 const parserDir = path.dirname(require.resolve('../scripts/private/p2-bash-ast/adapter.cjs'));
 const sharedExe = path.join(parserDir, ...A.EXE_REL.split('/'));
 const sharedLock = JSON.parse(fs.readFileSync(path.join(parserDir, 'helper.lock.json'), 'utf8'));
+const sourceLockSpecs = [
+  ['main.go', 'sourceSha256'],
+  ['go.mod', 'goModSha256'],
+  ['go.sum', 'goSumSha256'],
+];
+const lfCanonical = (buf) => Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
+const sourceLockResults = sourceLockSpecs.map(([name, key]) => {
+  const bytes = fs.readFileSync(path.join(parserDir, name));
+  return { name, key, normalizedSha256: sha256(lfCanonical(bytes)), expectedSha256: sharedLock[key] };
+});
+check('parser source lock matches LF-canonical source bytes',
+  sourceLockResults.every((x) => x.normalizedSha256 === x.expectedSha256), JSON.stringify(sourceLockResults));
+const repoRoot = path.join(__dirname, '..');
+if (fs.existsSync(path.join(repoRoot, '.git'))) {
+  const gitSourceResults = sourceLockSpecs.map(([name, key]) => {
+    const rel = 'scripts/private/p2-bash-ast/' + name;
+    const bytes = cp.execFileSync('git', ['-c', 'user.name=codex', '-c', 'user.email=codex@local.invalid', '-C', repoRoot, 'show', 'HEAD:' + rel]);
+    return { name, gitSha256: sha256(bytes), expectedSha256: sharedLock[key] };
+  });
+  check('parser source lock matches tracked Git blob bytes',
+    gitSourceResults.every((x) => x.gitSha256 === x.expectedSha256), JSON.stringify(gitSourceResults));
+}
 const sharedBefore = sha256(fs.readFileSync(sharedExe));
 check('shared helper starts at locked hash', sharedBefore === sharedLock.executableSha256, sharedBefore);
 

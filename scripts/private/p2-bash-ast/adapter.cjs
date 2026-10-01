@@ -11,7 +11,7 @@ const PARSER = 'mvdan.cc/sh/v3@v3.13.1';
 const EXE_REL = 'bin/p2-bash-ast.exe';
 const EXPECTED = Object.freeze({
   executableSha256: '4352c942f438a6a1183f05c64821157d54e46bdc835d3efb03881bee43bac6d7',
-  sourceSha256: 'a09adb570ef97a46cb14488d496818951967997a42fa88a29a2fb2f3dc11afdc',
+  sourceSha256: '821288387088c543dad09bebfaa4025c538f084ddaa755c1c02abae5ebc740f1',
   goModSha256: 'f1491f323bb58aee1a88eabb74b1e90db331ae1108f98984025be3bef16f84ee',
   goSumSha256: 'c6cfc2b595a285388027e0b1626224a068adb37518bab024f7946e1bc6130987',
 });
