@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const cp = require('child_process');
 
 if (process.argv[2] !== '--self-test') {
   console.error('usage: p2-bash-ast-v2.test.cjs --self-test');
@@ -16,6 +17,8 @@ const ADAPTER_REL = path.join('scripts', 'private', 'p2-bash-ast-js');
 const ADAPTER_ENTRY = path.join(ADAPTER_REL, 'adapter.cjs');
 const LOCK_REL = path.join(ADAPTER_REL, 'parser.lock.json');
 const FIXTURE = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'round1-real-shape.json');
+const GOLDEN = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'golden.json');
+const GO_V1_EXE = path.join(ROOT, 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'p2-v2-selftest-'));
 
 let pass = 0;
@@ -34,6 +37,66 @@ function evidence(assertion, expected, actual, falsePassGuard) {
 }
 function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+function sameJson(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+function goHeredoc(h, input) {
+  return {
+    op: h.op,
+    marker: h.marker,
+    wordSource: input.subarray(h.word.start, h.word.end).toString('utf8'),
+    body: input.subarray(h.body.start, h.body.end).toString('utf8'),
+  };
+}
+function goV1Projection(doc, source) {
+  const input = Buffer.from(source, 'utf8');
+  return {
+    calls: (doc.calls || []).map((x) => ({
+      commandValue: x.commandValue,
+      firstArgPresent: x.firstArgPresent,
+      firstArgSource: x.firstArgSource,
+      exactQuotedParam: x.exactQuotedParam,
+      paramName: x.paramName,
+    })),
+    unsupportedCommands: (doc.unsupportedCommands || []).map((x) => ({
+      source: x.source,
+      reason: x.reason,
+    })),
+    heredocs: (doc.heredocs || []).map((x) => goHeredoc(x, input)),
+    heredocStatements: (doc.heredocStatements || []).map((x) => ({
+      simpleCall: x.simpleCall,
+      commandStatic: x.commandStatic,
+      commandValue: x.commandValue,
+      argCount: x.argCount,
+      assignCount: x.assignCount,
+      redirs: (x.redirs || []).map((r) => ({
+        op: r.op,
+        fd: r.fd,
+        wordSource: r.wordSource,
+        exactQuotedParam: r.exactQuotedParam,
+        paramName: r.paramName,
+        hdoc: r.hdoc ? goHeredoc(r.hdoc, input) : null,
+      })),
+    })),
+  };
+}
+function runGoV1(source) {
+  const result = cp.spawnSync(GO_V1_EXE, [], {
+    input: Buffer.from(source, 'utf8'),
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 30000,
+    maxBuffer: 8 << 20,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error('Go v1 helper failed: ' +
+      JSON.stringify({ status: result.status, signal: result.signal, error: result.error && result.error.message, stderr: result.stderr }));
+  }
+  const doc = JSON.parse(String(result.stdout || '').trim());
+  if (!doc || doc.ok !== true) throw new Error('Go v1 helper returned non-success JSON');
+  return goV1Projection(doc, source);
 }
 function copyPinnedTree(dst) {
   fs.mkdirSync(path.join(dst, 'guards', 'vendor'), { recursive: true });
@@ -164,6 +227,132 @@ try {
     () => adapter.validateEnvelope(malformedError),
     adapter.ERROR_CODES.SCHEMA,
     'Without exact error-envelope keys callers could observe unstable ad-hoc error shapes; SCHEMA excludes that false pass.');
+
+
+  const nonEolMutant = sandbox('parser-non-eol-byte-mutant');
+  const nonEolParser = path.join(nonEolMutant, 'guards', 'vendor', 'unbash', 'parser.js');
+  const nonEolBytes = fs.readFileSync(nonEolParser);
+  const nonEolIndex = nonEolBytes.findIndex((byte) => byte !== 10 && byte !== 13);
+  if (nonEolIndex < 0) throw new Error('parser fixture has no non-EOL byte to mutate');
+  nonEolBytes[nonEolIndex] = nonEolBytes[nonEolIndex] === 32 ? 33 : (nonEolBytes[nonEolIndex] ^ 1);
+  fs.writeFileSync(nonEolParser, nonEolBytes);
+  expectCode(
+    'non-EOL single-byte change remains refused after canonicalization',
+    () => loadAdapter(nonEolMutant),
+    adapter.ERROR_CODES.SOURCE_HASH,
+    'If canonicalization altered bytes other than CRLF pairs, a semantic byte mutation could normalize away and falsely pass; SOURCE_HASH over CRLF-to-LF-only canonical bytes excludes that false pass.');
+
+  const eolOnly = sandbox('parser-eol-only-mutant');
+  const eolParser = path.join(eolOnly, 'guards', 'vendor', 'unbash', 'parser.js');
+  const lfParser = fs.readFileSync(eolParser, 'utf8').replace(/\r\n/g, '\n');
+  fs.writeFileSync(eolParser, lfParser.replace(/\n/g, '\r\n'), 'utf8');
+  const eolAdapter = loadAdapter(eolOnly);
+  check('CRLF-only source difference is accepted by declared canonical hash mode',
+    eolAdapter.PIN_VERIFICATION.hashMode === 'crlf-to-lf-bytes-v1',
+    JSON.stringify(eolAdapter.PIN_VERIFICATION));
+
+  const dynamicCases = [
+    ['brace expansion', 'printf %s x{a,b}', 2, 'BraceExpansion'],
+    ['process substitution', 'cat <(printf x)', 1, 'ProcessSubstitution'],
+    ['command substitution', 'echo $(printf x)', 1, 'CommandExpansion'],
+  ];
+  for (const [label, source, wordIndex, kind] of dynamicCases) {
+    const doc = adapter.parseShellV2(source);
+    const word = doc.commands[0].words[wordIndex];
+    check(label + ' is dynamic and unresolved',
+      word.dynamic === true && word.resolvedLiteral === null && word.expansionKinds.includes(kind),
+      JSON.stringify(word));
+  }
+  for (const [label, source, kind] of [
+    ['arithmetic expansion', 'x=$((1+1))', 'ArithmeticExpansion'],
+    ['parameter default expansion', 'x=${V:-d}', 'ParameterExpansion'],
+  ]) {
+    const doc = adapter.parseShellV2(source);
+    const value = doc.commands[0].assignments[0].value;
+    check(label + ' assignment is dynamic and unresolved',
+      value.dynamic === true && value.resolvedLiteral === null && value.expansionKinds.includes(kind),
+      JSON.stringify(value));
+  }
+
+  const tildeDynamic = adapter.parseShellV2('node ~/secret.cjs').commands[0].words[1];
+  const tildeQuoted = adapter.parseShellV2('node "~/secret.cjs"').commands[0].words[1];
+  check('unquoted tilde prefix is dynamic while quoted tilde is resolved',
+    tildeDynamic.dynamic === true && tildeDynamic.resolvedLiteral === null &&
+    tildeQuoted.dynamic === false && tildeQuoted.resolvedLiteral === '~/secret.cjs',
+    JSON.stringify({ tildeDynamic, tildeQuoted }));
+
+  const globDynamic = adapter.parseShellV2('node /outside/*.cjs').commands[0].words[1];
+  const globQuoted = adapter.parseShellV2('node "/outside/*.cjs"').commands[0].words[1];
+  check('unquoted pathname glob is dynamic while quoted glob is resolved',
+    globDynamic.dynamic === true && globDynamic.resolvedLiteral === null &&
+    globQuoted.dynamic === false && globQuoted.resolvedLiteral === '/outside/*.cjs',
+    JSON.stringify({ globDynamic, globQuoted }));
+
+  const quotedHeredoc = adapter.parseShellV2("cat <<'EOF'\n$X\nEOF\n");
+  const unquotedHeredoc = adapter.parseShellV2("cat <<EOF\n$X\nEOF\n");
+  const qh = quotedHeredoc.commands[0].redirections[0].heredoc;
+  const uh = unquotedHeredoc.commands[0].redirections[0].heredoc;
+  check('heredoc facts preserve delimiter quoting and raw source content',
+    qh && qh.quoted === true && qh.delimiterSource === "'EOF'" && qh.rawSourceContent === '$X\n' &&
+    uh && uh.quoted === false && uh.delimiterSource === 'EOF' && uh.rawSourceContent === '$X\n',
+    JSON.stringify({ qh, uh }));
+
+  const golden = JSON.parse(fs.readFileSync(GOLDEN, 'utf8'));
+  const goldenMismatches = [];
+  let goldenWords = 0, goldenAssignments = 0, goldenRedirections = 0;
+  for (const entry of golden.entries) {
+    const actual = adapter.parseShellV2(entry.original);
+    if (!sameJson(actual, entry.output) && goldenMismatches.length < 10) goldenMismatches.push(entry.id);
+    for (const command of actual.commands) {
+      goldenWords += command.words.length;
+      goldenAssignments += command.assignments.length;
+      goldenRedirections += command.redirections.length;
+    }
+  }
+  check('1616-entry v2 projection equals reviewed golden',
+    golden.entryCount === 1616 && golden.entries.length === 1616 &&
+    goldenMismatches.length === 0 &&
+    goldenWords === 12222 && goldenAssignments === 1117 && goldenRedirections === 937,
+    JSON.stringify({ entryCount: golden.entries.length, mismatches: goldenMismatches, goldenWords, goldenAssignments, goldenRedirections }));
+
+  const goldenNegativeActual = adapter.parseShellV2(golden.entries[0].original);
+  const goldenNegativeExpected = JSON.parse(JSON.stringify(golden.entries[0].output));
+  goldenNegativeExpected.sourceSha256 = '0'.repeat(64);
+  evidence(
+    'golden comparator negative control detects a mutated expected digest',
+    'sameJson(actual, mutatedExpected) === false',
+    sameJson(goldenNegativeActual, goldenNegativeExpected),
+    'If the golden assertion ignored output bytes or always returned true, a mutated golden entry would still pass; exact JSON equality excludes that false pass.');
+  check('golden comparator negative control detects a mutated expected digest',
+    sameJson(goldenNegativeActual, goldenNegativeExpected) === false,
+    JSON.stringify({ corpusId: golden.entries[0].id }));
+
+  if (!fs.existsSync(GO_V1_EXE)) throw new Error('Go v1 helper fixture is required for round-2 parity');
+  let v1Agree = 0;
+  const v1Mismatches = [];
+  let v1Negative = null;
+  for (const entry of golden.entries) {
+    const jsV1 = adapter.projectV1Fields(entry.original);
+    const goV1 = runGoV1(entry.original);
+    if (sameJson(jsV1, goV1)) v1Agree++;
+    else if (v1Mismatches.length < 10) v1Mismatches.push(entry.id);
+    if (!v1Negative && jsV1.calls.length > 0) {
+      const mutant = JSON.parse(JSON.stringify(jsV1));
+      mutant.calls[0].commandValue = 'mutated-node';
+      v1Negative = { id: entry.id, detected: !sameJson(mutant, goV1) };
+    }
+  }
+  check('v1 field projection remains equal to Go v1 on all 1616 corpus entries',
+    v1Agree === 1616 && v1Mismatches.length === 0,
+    JSON.stringify({ v1Agree, mismatches: v1Mismatches }));
+  evidence(
+    'v1 parity negative control detects a mutated projected field',
+    true,
+    v1Negative,
+    'If v1 parity compared only parse success or ignored call fields, mutating commandValue would still pass; exact projected-field equality excludes that false pass.');
+  check('v1 parity negative control detects a mutated projected field',
+    v1Negative && v1Negative.detected === true,
+    JSON.stringify(v1Negative));
 
   const description = adapter.describeProtocol();
   check('protocol description exposes pinned parser and acorn entries',

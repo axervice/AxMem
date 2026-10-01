@@ -169,6 +169,10 @@ function verifyPinnedSources(options = {}) {
 }
 
 const PIN_VERIFICATION = verifyPinnedSources();
+const projector = require('./projector.cjs');
+
+function parseShellV2(source) { return projector.parseShellV2(source); }
+function projectV1Fields(source) { return projector.projectV1Fields(source); }
 
 function describeProtocol() {
   return {
@@ -191,6 +195,8 @@ module.exports = {
   PIN_VERIFICATION,
   describeProtocol,
   verifyPinnedSources,
+  parseShellV2,
+  projectV1Fields,
   makeSuccess,
   makeError,
   validateEnvelope,

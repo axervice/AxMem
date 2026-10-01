@@ -63,8 +63,14 @@
     {
       "path": "scripts/private/p2-bash-ast-js/adapter.cjs",
       "role": "adapter",
-      "bytes": 6302,
-      "sha256": "e732c4e42001f022ecdaf6152aebe2b81555bfc7dc7017db17ea5d7441e6552f"
+      "bytes": 6536,
+      "sha256": "90972d96790eac02df066ff88c9fb92c92718733a2b3d35d4876b7d9dc1f3bc4"
+    },
+    {
+      "path": "scripts/private/p2-bash-ast-js/projector.cjs",
+      "role": "adapter",
+      "bytes": 12404,
+      "sha256": "8822b9d6075c511d52dd9d18561806a6a0f06d5e8c61ff7c504e6d8d8385bf98"
     },
     {
       "path": "scripts/private/p2-bash-ast-js/protocol.cjs",
