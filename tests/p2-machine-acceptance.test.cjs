@@ -15,10 +15,16 @@ if (process.argv[2] !== '--self-test') {
   process.exit(1);
 }
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
+const skipReasons = {};
 function check(name, ok, detail) {
   if (ok) { console.log('PASS ' + name); pass++; }
   else { console.log('FAIL ' + name + (detail ? ' :: ' + detail : '')); fail++; }
+}
+function skipCheck(name, reason) {
+  console.log('SKIP ' + name + ' :: ' + reason);
+  skip++;
+  skipReasons[reason] = (skipReasons[reason] || 0) + 1;
 }
 function git(cwd, args, options = {}) {
   const root = path.resolve(cwd);
@@ -27,6 +33,15 @@ function git(cwd, args, options = {}) {
 }
 function sha256(b) { return crypto.createHash('sha256').update(b).digest('hex'); }
 function clone(x) { return JSON.parse(JSON.stringify(x)); }
+const privateParserHelperPath = path.join(__dirname, '..', 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
+const privateParserHelperAvailable = fs.existsSync(privateParserHelperPath);
+const privateParserSkipReason = 'generated-parser-helper-missing';
+const privateParserHelperRequired = process.env.AXMEM_REQUIRE_GO_HELPER === '1';
+const privateParserRequiredMissingReason = 'generated-parser-helper-required-missing';
+function unavailablePrivateParserCheck(name) {
+  if (privateParserHelperRequired) check(name, false, privateParserRequiredMissingReason);
+  else skipCheck(name, privateParserSkipReason);
+}
 function localHookIdentity(h) {
   return JSON.stringify([h.event, h.groupIndex, h.hookIndex, h.matcher === undefined ? null : h.matcher, h.command, h.timeout === undefined ? null : h.timeout]);
 }
@@ -77,6 +92,39 @@ try {
   const timeoutRel = 'guards/r15d-timeout-fixture.cjs';
   const timeoutAbs = path.join(live, ...timeoutRel.split('/'));
   fs.writeFileSync(timeoutAbs, "'use strict';\nsetTimeout(() => {}, 1000);\n");
+  const silentMissingRel = 'guards/r15e-silent-missing-runtime.cjs';
+  const silentMissingAbs = path.join(live, ...silentMissingRel.split('/'));
+  fs.writeFileSync(silentMissingAbs, [
+    "'use strict';",
+    "const cp=require('child_process');",
+    "const r=cp.spawnSync('axmem_definitely_missing_silent_runtime_entry_r15e',[],{stdio:'ignore'});",
+    "process.exit(r.error ? 1 : (Number.isInteger(r.status) ? r.status : 1));",
+    "",
+  ].join('\n'));
+  const commandNotFoundRel = 'guards/r15e-command-not-found.sh';
+  const commandNotFoundAbs = path.join(live, ...commandNotFoundRel.split('/'));
+  fs.writeFileSync(commandNotFoundAbs, '#!/usr/bin/env bash\naxmem_definitely_missing_command_r15e\n');
+  const r15eEntryRel = 'guards/r15e-entry-binding.sh';
+  const r15eEntryAbs = path.join(live, ...r15eEntryRel.split('/'));
+  const r15eEntryMarker = path.join(T, 'r15e-entry-binding.marker');
+  fs.writeFileSync(r15eEntryAbs, '#!/usr/bin/env bash\nprintf ran > "' + r15eEntryMarker.replace(/\\/g, '/') + '"\n');
+  const r15eHelperRel = 'guards/r15e-entry-helper.sh';
+  const r15eHelperAbs = path.join(live, ...r15eHelperRel.split('/'));
+  fs.writeFileSync(r15eHelperAbs, '#!/usr/bin/env bash\nprintf helper\n');
+  const r15eOrphanRel = 'guards/r15e-materialized-orphan.sh';
+  const r15eOrphanAbs = path.join(live, ...r15eOrphanRel.split('/'));
+  fs.writeFileSync(r15eOrphanAbs, '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15e-orphan-never; fi\nprintf orphan\n');
+  const r15dTmpE2ERel = 'guards/r15d-tmp-e2e.sh';
+  const r15dTmpE2EAbs = path.join(live, ...r15dTmpE2ERel.split('/'));
+  fs.writeFileSync(r15dTmpE2EAbs, '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15d-e2e-probe; fi\nprintf ok\n');
+  const r15eBadAwaitRel = 'guards/r15e-bad-await.cjs';
+  const r15eBadAwaitAbs = path.join(live, ...r15eBadAwaitRel.split('/'));
+  fs.writeFileSync(r15eBadAwaitAbs, 'await 1;\n');
+  const r15eNestedRel = 'nested/.claude/guards/hook.cjs';
+  const r15eNestedAbs = path.join(live, ...r15eNestedRel.split('/'));
+  const r15eNestedMarker = path.join(T, 'r15e-nested-entry.marker');
+  fs.mkdirSync(path.dirname(r15eNestedAbs), { recursive: true });
+  fs.writeFileSync(r15eNestedAbs, "'use strict';\nrequire('fs').writeFileSync(" + JSON.stringify(r15eNestedMarker) + ", 'nested-ran');\n");
   git(repo, ['init', '-q']);
   git(repo, ['add', '.claude']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'fixture']);
@@ -191,6 +239,65 @@ try {
   check('runner emits full 21-case baseline', reportA.cases.length === 21 && reportA.fixtureCoverage.caseCount === 21);
   check('runner keeps writes inside temp sandbox despite inherited PMM path', !fs.existsSync(escape));
   check('runner leaves fixture git source clean', git(repo, ['status', '--porcelain', '--', '.claude']).trim() === '');
+
+  // R15e optional interpreter provenance hardening: reports identify the bash actually used.
+  const r15eBashProvenance = reportA.interpreterProvenance && reportA.interpreterProvenance.bash;
+  check('R15e report records resolved bash path and bash --version first line',
+    r15eBashProvenance
+      && typeof r15eBashProvenance.path === 'string'
+      && (path.win32.isAbsolute(r15eBashProvenance.path) || path.posix.isAbsolute(r15eBashProvenance.path))
+      && typeof r15eBashProvenance.versionFirstLine === 'string'
+      && /bash/i.test(r15eBashProvenance.versionFirstLine),
+    JSON.stringify(r15eBashProvenance));
+
+  const r15eProvHome = path.join(T, 'r15e-provenance-parent-home');
+  fs.mkdirSync(r15eProvHome, { recursive: true });
+  const r15eProvProfileMarker = path.join(T, 'r15e-provenance-profile.marker');
+  const r15eProvEnvMarker = path.join(T, 'r15e-provenance-bash-env.marker');
+  const shellPath = (p) => {
+    const s = String(p).replace(/\\/g, '/');
+    const m = /^([A-Za-z]):\/(.*)$/.exec(s);
+    return m ? '/' + m[1].toLowerCase() + '/' + m[2] : s;
+  };
+  fs.writeFileSync(path.join(r15eProvHome, '.bash_profile'), 'printf profile > "' + shellPath(r15eProvProfileMarker) + '"\n');
+  const r15eProvEnvScript = path.join(T, 'r15e-provenance-bash-env.sh');
+  fs.writeFileSync(r15eProvEnvScript, 'printf env > "' + shellPath(r15eProvEnvMarker) + '"\n');
+  const r15eProvKeys = ['AXMEM_EQUIV_BASH', 'BASH_ENV', 'HOME', 'USERPROFILE', 'PATH'];
+  const r15eProvSaved = new Map(r15eProvKeys.map((k) => [k, process.env[k]]));
+  let r15eProvErr = null;
+  try {
+    process.env.AXMEM_EQUIV_BASH = 'bash';
+    process.env.BASH_ENV = shellPath(r15eProvEnvScript);
+    process.env.HOME = r15eProvHome;
+    process.env.USERPROFILE = r15eProvHome;
+    if (process.platform === 'win32') {
+      const gitUsr = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'usr', 'bin');
+      if (fs.existsSync(gitUsr)) process.env.PATH = gitUsr + path.delimiter + String(process.env.PATH || '');
+    }
+    try { runner.runFreezeReport({ freeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live }); }
+    catch (e) { r15eProvErr = e; }
+  } finally {
+    for (const [k, v] of r15eProvSaved.entries()) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+  check('R15e v2.15 bash provenance uses isolated non-login shell without parent profile or BASH_ENV side effects',
+    !fs.existsSync(r15eProvProfileMarker) && !fs.existsSync(r15eProvEnvMarker),
+    JSON.stringify({ error: r15eProvErr && { code: r15eProvErr.code, message: r15eProvErr.message }, profileMarker: fs.existsSync(r15eProvProfileMarker), bashEnvMarker: fs.existsSync(r15eProvEnvMarker) }));
+
+  // R15e path-case sweep: FREEZE sourceFiles must also be unique under case folding.
+  const r15eCaseFoldFreeze = clone(freeze);
+  const r15eCaseFoldRow = clone(r15eCaseFoldFreeze.sourceFiles[0]);
+  r15eCaseFoldRow.path = r15eCaseFoldRow.path.replace(/^guards\//, 'GUARDS/');
+  r15eCaseFoldFreeze.sourceFiles.push(r15eCaseFoldRow);
+  let r15eCaseFoldSourceErr = null;
+  try {
+    runner.runCase({ freeze: r15eCaseFoldFreeze, group: fixture.events.find((x) => x.event === 'UserPromptSubmit'), c: fixture.events.find((x) => x.event === 'UserPromptSubmit').cases[0], repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  } catch (e) { r15eCaseFoldSourceErr = e; }
+  check('R15e H15 FREEZE sourceFiles reject paths that differ only by case',
+    r15eCaseFoldSourceErr && r15eCaseFoldSourceErr.code === 'freeze-source-file-duplicate'
+      && r15eCaseFoldSourceErr.detail && r15eCaseFoldSourceErr.detail.reason === 'path-case-collision',
+    JSON.stringify({ code: r15eCaseFoldSourceErr && r15eCaseFoldSourceErr.code, detail: r15eCaseFoldSourceErr && r15eCaseFoldSourceErr.detail }));
   const same = equiv.compareReports(reportA, reportB, []);
   check('full baseline compares green', same.equal === true && same.unexpected.length === 0);
 
@@ -263,6 +370,23 @@ try {
   b2Reject('missing stdout field', (c) => { delete c.stdout; }, 'report-case-field-type', 'stdout');
   b2Reject('renamed stderr field', (c) => { c.stderrRenamed = c.stderr; delete c.stderr; }, 'report-case-field-type', 'stderr');
   b2Reject('case exit inconsistent with first nonzero hook', (c) => { c.exitCode = 2; }, 'report-case-exit-mismatch', 'exitCode');
+
+  // R15e H5++: raw hook shape is validated before normalizeHookResult can coerce/default it.
+  const r15eBadHookRecord = (label, mutate) => {
+    const l = clone(reportA), r = clone(reportA);
+    const lh = l.cases[0].hookResults[0], rhh = r.cases[0].hookResults[0];
+    mutate(lh); mutate(rhh);
+    let err = null, out = null;
+    try { out = equiv.compareReports(l, r, []); } catch (e) { err = e; }
+    check('R15e H5++ rejects ' + label,
+      err && err.code === 'report-bad-hook-record',
+      JSON.stringify({ code: err && err.code, detail: err && err.detail, equal: out && out.equal }));
+  };
+  r15eBadHookRecord('logicalId renamed to id on both sides', (h) => { h.id = h.logicalId; delete h.logicalId; });
+  r15eBadHookRecord('numeric logicalId before string coercion', (h) => { h.logicalId = 123; if (h.runtimeHealth) h.runtimeHealth.logicalId = '123'; });
+  r15eBadHookRecord('numeric phase before string coercion', (h) => { h.phase = 123; if (h.runtimeHealth) h.runtimeHealth.phase = '123'; });
+  r15eBadHookRecord('missing matcher before null default', (h) => { delete h.matcher; });
+  r15eBadHookRecord('array matcher before normalization', (h) => { h.matcher = []; });
 
   let emptyReportErr = '';
   try { equiv.compareReports({ schema: 'axmem-equiv-report/v1', cases: [] }, { schema: 'axmem-equiv-report/v1', cases: [] }, []); }
@@ -486,6 +610,41 @@ try {
     Array.isArray(a2Run.environmentScrubbedKeys) && r15dExpectedScrubbed.every((k) => a2Run.environmentScrubbedKeys.some((x) => x.toLowerCase() === k.toLowerCase())) && a2Run.environmentScrubbedKeys.every((x) => typeof x === 'string' && !/[\\/=:]/.test(x)),
     JSON.stringify(a2Run.environmentScrubbedKeys));
 
+  // R15e H1++: on win32, inherited environment names are read case-insensitively before copying into an ordinary object.
+  const r15eParentPathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path');
+  const r15eParentPath = r15eParentPathKey ? String(process.env[r15eParentPathKey] || '') : '';
+  const r15eCaseParentHome = path.join(T, 'r15e-case-parent-home');
+  fs.mkdirSync(r15eCaseParentHome, { recursive: true });
+  const r15eEnvCaseProbe = (pathKey, profileKey, label) => {
+    const probeHome = fs.mkdtempSync(path.join(T, 'r15e-env-case-' + label + '-'));
+    const childEnv = Object.assign({}, process.env);
+    for (const k of Object.keys(childEnv)) if (['path', 'userprofile', 'home'].includes(k.toLowerCase())) delete childEnv[k];
+    childEnv[pathKey] = r15eParentPath;
+    childEnv[profileKey] = r15eCaseParentHome;
+    childEnv.R15E_ENV_CASE_LEAK = path.join(r15eCaseParentHome, 'secret');
+    const childCode = [
+      'const r=require(' + JSON.stringify(path.join(__dirname, '..', 'scripts', 'equiv-runner.cjs')) + ');',
+      'const e=r.isolatedEnv(process.argv[1],null);',
+      'console.log(JSON.stringify({PATH:e.PATH,leak:Object.prototype.hasOwnProperty.call(e,"R15E_ENV_CASE_LEAK")?e.R15E_ENV_CASE_LEAK:null,pathKeys:Object.keys(e).filter(k=>k.toLowerCase()==="path")}));',
+    ].join('');
+    const rr = cp.spawnSync(process.execPath, ['-e', childCode, probeHome], { env: childEnv, encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+    let value = null;
+    try { value = JSON.parse(String(rr.stdout || '').trim()); } catch {}
+    fs.rmSync(probeHome, { recursive: true, force: true });
+    return { status: rr.status, signal: rr.signal, stderr: String(rr.stderr || ''), value };
+  };
+  const r15eEnvUpper = r15eEnvCaseProbe('PATH', 'USERPROFILE', 'upper');
+  const r15eEnvMixed = r15eEnvCaseProbe('Path', 'UserProfile', 'mixed');
+  check('R15e H1++ win32 inherited Path/UserProfile spellings match PATH/USERPROFILE semantics',
+    process.platform !== 'win32' || (
+      r15eEnvUpper.status === 0 && r15eEnvMixed.status === 0
+      && r15eEnvUpper.value && r15eEnvMixed.value
+      && r15eEnvUpper.value.PATH === r15eEnvMixed.value.PATH
+      && r15eEnvUpper.value.leak === null && r15eEnvMixed.value.leak === null
+      && r15eEnvUpper.value.pathKeys.length === 1 && r15eEnvMixed.value.pathKeys.length === 1
+    ),
+    JSON.stringify({ upper: r15eEnvUpper, mixed: r15eEnvMixed }));
+
   const r15dNodeRestoreKey = 'NODE_V8_COVERAGE';
   const r15dNodeRestoreBefore = process.env[r15dNodeRestoreKey];
   const r15dNodeRestoreSentinel = 'C:/r15d-parent-node-v8-coverage-sentinel';
@@ -553,6 +712,29 @@ try {
     JSON.stringify(n2Inside.tool_input));
   fs.rmSync(n2Sandbox, { recursive: true, force: true });
 
+  // R15e F7 evidence repair: behavior proof goes through runCase, whose signature exists on the old baseline.
+  const r15dTmpE2ECmd = 'bash "' + r15dTmpE2EAbs.replace(/\\/g, '/') + '"';
+  const r15dTmpE2ERaw = clone(freeze);
+  r15dTmpE2ERaw.hooks = [Object.assign({}, r15dTmpE2ERaw.hooks[4], {
+    logicalId: 'r15d-tmp-e2e',
+    command: r15dTmpE2ECmd,
+    files: [r15dTmpE2ERel],
+    runtimeHealthProbe: { version: 1, innerCommand: r15dTmpE2ECmd, reliable: true, notes: 'R15e F7 old-compatible runCase evidence fixture' },
+  })];
+  r15dTmpE2ERaw.sourceFiles = [{
+    path: r15dTmpE2ERel, sha256: sha256(fs.readFileSync(r15dTmpE2EAbs)),
+    disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e F7 /tmp e2e fixture',
+  }];
+  const r15dTmpE2EFreeze = bindFreeze(r15dTmpE2ERaw, 'r15d-tmp-e2e');
+  let r15dTmpE2EErr = null;
+  try { runner.runCase({ freeze: r15dTmpE2EFreeze, group: focusedGroup, c: { id: 'r15d-tmp-e2e', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15dTmpE2EErr = e; }
+  check('R15e F7 literal /tmp behavior is refused through old-compatible runCase',
+    r15dTmpE2EErr && r15dTmpE2EErr.code === 'sandbox-literal-tmp'
+      && r15dTmpE2EErr.detail && r15dTmpE2EErr.detail.path === r15dTmpE2ERel,
+    JSON.stringify({ code: r15dTmpE2EErr && r15dTmpE2EErr.code, detail: r15dTmpE2EErr && r15dTmpE2EErr.detail }));
+
+  // Direct scanner calls below are guard-rails only, not old-red behavior evidence.
   let tmpDangerErr = null;
   try { runner.scanLiteralTmpSource('guards/r15d-tmp-fixture.sh', 'if false; then echo x > /tmp/r15d-probe; fi\n'); } catch (e) { tmpDangerErr = e; }
   check('R15d S2b literal /tmp preflight rejects executable source use', tmpDangerErr && tmpDangerErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpDangerErr && tmpDangerErr.detail));
@@ -560,18 +742,140 @@ try {
   try { tmpSafe = runner.scanLiteralTmpSource('guards/r15d-tmp-safe.sh', '# /tmp/comment only\nT="${TMPDIR:-/tmp}"\nU="${TMPDIR-/tmp}"\n'); } catch (e) { tmpSafeErr = e; }
   check('R15d S2b literal /tmp preflight permits whole-line comments and exact TMPDIR defaults', !tmpSafeErr && tmpSafe && tmpSafe.exceptionsUsed.length === 0, String(tmpSafeErr && tmpSafeErr.message));
   const tmpExceptionLine = '  case "$T" in /tmp/*|/var/*|"${TMPDIR:-/nonexistent}"*) : ;; *) echo "mktemp 异常路径 $T,拒绝继续"; exit 1;; esac';
-  const tmpException = runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine + '\n');
-  check('R15d S2b literal /tmp preflight accepts exactly the reviewed line-hash exception', tmpException.exceptionsUsed.length === 1 && tmpException.exceptionsUsed[0].lineSha256 === sha256(Buffer.from(tmpExceptionLine)), JSON.stringify(tmpException));
+  let tmpException = null, tmpExceptionErr = null;
+  try { tmpException = runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine + '\n'); } catch (e) { tmpExceptionErr = e; }
+  check('R15d S2b literal /tmp preflight accepts exactly the reviewed line-hash exception',
+    !tmpExceptionErr && tmpException && tmpException.exceptionsUsed.length === 1 && tmpException.exceptionsUsed[0].lineSha256 === sha256(Buffer.from(tmpExceptionLine)),
+    JSON.stringify({ error: tmpExceptionErr && String(tmpExceptionErr.message), result: tmpException }));
   let tmpMutatedErr = null;
   try { runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine.replace('异常路径', '异常路经') + '\n'); } catch (e) { tmpMutatedErr = e; }
   check('R15d S2b literal /tmp exception fails closed when approved line changes', tmpMutatedErr && tmpMutatedErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpMutatedErr && tmpMutatedErr.detail));
   let tmpShebangErr = null, tmpUnknownExecErr = null;
   try { runner.scanLiteralTmpSource('guards/r15d-noext-shell', '#!/usr/bin/env bash\necho x > /tmp/r15d-shebang-probe\n', { executableHint: true }); } catch (e) { tmpShebangErr = e; }
   check('R15d S2c literal /tmp preflight classifies extensionless executable by shell shebang', tmpShebangErr && tmpShebangErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpShebangErr && tmpShebangErr.detail));
-  const tmpJsonData = runner.scanLiteralTmpSource('memory/_local-config/settings.json', '{"path":"/tmp/data-only"}\n', { executableHint: true });
-  check('R15d S2c literal /tmp preflight marks pure JSON data not-applicable', tmpJsonData.checked === false && tmpJsonData.notApplicable === true && tmpJsonData.reason === 'pure-data-json', JSON.stringify(tmpJsonData));
+  let tmpJsonData = null, tmpJsonDataErr = null;
+  try { tmpJsonData = runner.scanLiteralTmpSource('memory/_local-config/settings.json', '{"path":"/tmp/data-only"}\n'); } catch (e) { tmpJsonDataErr = e; }
+  check('R15e H3++ literal /tmp preflight exempts parseable shebang-free JSON only when it is not executable-hinted',
+    !tmpJsonDataErr && tmpJsonData && tmpJsonData.checked === false && tmpJsonData.notApplicable === true && tmpJsonData.reason === 'pure-data-json',
+    JSON.stringify({ error: tmpJsonDataErr && String(tmpJsonDataErr.message), result: tmpJsonData }));
   try { runner.scanLiteralTmpSource('guards/r15d-unknown-exec', '#!/usr/bin/env python3\nprint("/tmp/r15d")\n', { executableHint: true }); } catch (e) { tmpUnknownExecErr = e; }
   check('R15d S2c literal /tmp preflight rejects executable files with unsupported shebang type', tmpUnknownExecErr && tmpUnknownExecErr.code === 'sandbox-source-type-unknown', JSON.stringify(tmpUnknownExecErr && tmpUnknownExecErr.detail));
+
+  // R15e H3++ / F1: only parseable, shebang-free JSON is pure data. Everything else is scanned.
+  const r15eF1Cases = [
+    ['executable-json', 'guards/r15e-exec.json', '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15e-json; fi\n', { executableHint: true }],
+    ['parseable-executable-json', 'guards/r15e-data-exec.json', '{"path":"/tmp/r15e-json-data"}\n', { executableHint: true, sourceTypeHint: 'shell' }],
+    ['markdown', 'notes/r15e.md', 'literal /tmp/r15e-md must be scanned\n', {}],
+    ['invalid-json', 'data/r15e-invalid.json', '{"path":"/tmp/r15e-json",}\n', {}],
+    ['other-text', 'notes/r15e.txt', 'literal /tmp/r15e-text must be scanned\n', {}],
+  ].map(([name, rel, text, options]) => {
+    let err = null;
+    try { runner.scanLiteralTmpSource(rel, text, options); } catch (e) { err = e; }
+    return { name, code: err && err.code, detail: err && err.detail };
+  });
+  check('R15e F1 only non-executable parseable shebang-free JSON is pure data; executable JSON, md, invalid JSON and other text are scanned',
+    r15eF1Cases.every((x) => x.code === 'sandbox-literal-tmp'), JSON.stringify(r15eF1Cases));
+
+  // R15e H13+ / F2: the executed entry itself must be declared in this hook's files[].
+  try { fs.rmSync(r15eEntryMarker, { force: true }); } catch {}
+  const r15eEntryCommand = 'bash "' + r15eEntryAbs.replace(/\\/g, '/') + '"';
+  const r15eEntryRaw = clone(freeze);
+  r15eEntryRaw.hooks = [Object.assign({}, r15eEntryRaw.hooks[4], {
+    command: r15eEntryCommand,
+    files: [r15eHelperRel],
+    runtimeHealthProbe: { version: 1, innerCommand: r15eEntryCommand, reliable: true, notes: 'R15e entry binding negative fixture' },
+  })];
+  r15eEntryRaw.sourceFiles = [
+    { path: r15eEntryRel, sha256: sha256(fs.readFileSync(r15eEntryAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e undeclared executed entry' },
+    { path: r15eHelperRel, sha256: sha256(fs.readFileSync(r15eHelperAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e declared helper only' },
+  ];
+  const r15eEntryFreeze = bindFreeze(r15eEntryRaw, 'r15e-entry-binding');
+  let r15eEntryErr = null;
+  try { runner.runCase({ freeze: r15eEntryFreeze, group: focusedGroup, c: { id: 'r15e-entry-binding', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { r15eEntryErr = e; }
+  check('R15e F2 hook entry outside files[] is refused specifically by inventory entry binding before execution',
+    r15eEntryErr && r15eEntryErr.code === 'freeze-inventory-validation-failed'
+      && r15eEntryErr.detail && r15eEntryErr.detail.freezeCode === 'bad-inventory'
+      && r15eEntryErr.detail.freezeDetail && r15eEntryErr.detail.freezeDetail.reason === 'inner-command-entry-not-in-files'
+      && !fs.existsSync(r15eEntryMarker),
+    JSON.stringify({ code: r15eEntryErr && r15eEntryErr.code, detail: r15eEntryErr && r15eEntryErr.detail, markerExists: fs.existsSync(r15eEntryMarker) }));
+  try { fs.rmSync(r15eEntryMarker, { force: true }); } catch {}
+
+  const r15eWhitespaceRaw = clone(freeze);
+  const r15eWhitespaceHook = r15eWhitespaceRaw.hooks[4];
+  r15eWhitespaceHook.command = 'node\n"' + hookAbs.replace(/\\/g, '/') + '" || exit 0';
+  r15eWhitespaceHook.runtimeHealthProbe = {
+    version: 1, innerCommand: command, reliable: true, notes: 'R15e v2.15 newline command relation negative',
+  };
+  const r15eWhitespaceFreeze = bindFreeze(r15eWhitespaceRaw, 'r15e-v215-newline');
+  let r15eWhitespaceErr = null, r15eWhitespaceRun = null;
+  try { r15eWhitespaceRun = runner.runCase({ freeze: r15eWhitespaceFreeze, group: focusedGroup, c: { id: 'r15e-v215-newline', input: { prompt: 'deny' } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15eWhitespaceErr = e; }
+  check('R15e v2.15 runCase rejects unquoted newline as non-blank whitespace before false-health execution',
+    r15eWhitespaceErr && r15eWhitespaceErr.code === 'freeze-inventory-validation-failed'
+      && r15eWhitespaceErr.detail && r15eWhitespaceErr.detail.freezeDetail
+      && r15eWhitespaceErr.detail.freezeDetail.reason === 'unquoted-non-blank-whitespace',
+    JSON.stringify({ code: r15eWhitespaceErr && r15eWhitespaceErr.code, detail: r15eWhitespaceErr && r15eWhitespaceErr.detail, oldRun: r15eWhitespaceRun && { exitCode: r15eWhitespaceRun.exitCode, hookResults: r15eWhitespaceRun.hookResults } }));
+
+  const r15eForeignRaw = clone(freeze);
+  const r15eForeignHook = r15eForeignRaw.hooks.find((h) => h.event === 'PreCompact');
+  const r15eForeignPath = path.join(T, 'foreign', '.claude', 'guards', 'hook.cjs').replace(/\\/g, '/');
+  const r15eForeignCommand = 'node "' + r15eForeignPath + '"';
+  r15eForeignHook.command = r15eForeignCommand;
+  r15eForeignHook.files = [hookRel];
+  r15eForeignHook.runtimeHealthProbe = { version: 1, innerCommand: r15eForeignCommand, reliable: true, notes: 'R15e v2.15 foreign live-root negative' };
+  const r15eForeignFreeze = bindFreeze(r15eForeignRaw, 'r15e-v215-foreign-live-root');
+  let r15eForeignErr = null, r15eForeignRun = null;
+  try { r15eForeignRun = runner.runCase({ freeze: r15eForeignFreeze, group: focusedGroup, c: { id: 'r15e-v215-foreign-root', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15eForeignErr = e; }
+  check('R15e v2.15 inventory binding rejects foreign /.claude/ segment outside the absolute live root',
+    r15eForeignErr && r15eForeignErr.code === 'freeze-inventory-validation-failed'
+      && r15eForeignErr.detail && r15eForeignErr.detail.freezeDetail
+      && r15eForeignErr.detail.freezeDetail.reason === 'entry-path-outside-live-root',
+    JSON.stringify({ code: r15eForeignErr && r15eForeignErr.code, detail: r15eForeignErr && r15eForeignErr.detail, oldRun: r15eForeignRun && { exitCode: r15eForeignRun.exitCode, executedHooks: r15eForeignRun.executedHooks } }));
+
+  try { fs.rmSync(r15eNestedMarker, { force: true }); } catch {}
+  const r15eNestedRaw = clone(freeze);
+  const r15eNestedCommand = 'node "' + r15eNestedAbs.replace(/\\/g, '/') + '"';
+  r15eNestedRaw.hooks[4].command = r15eNestedCommand;
+  r15eNestedRaw.hooks[4].files = [hookRel];
+  r15eNestedRaw.hooks[4].runtimeHealthProbe = { version: 1, innerCommand: r15eNestedCommand, reliable: true, notes: 'R15e v2.15 nested live-root negative' };
+  r15eNestedRaw.sourceFiles.push({ path: r15eNestedRel, sha256: sha256(fs.readFileSync(r15eNestedAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'nested .claude executed-entry negative' });
+  const r15eNestedFreeze = bindFreeze(r15eNestedRaw, 'r15e-v215-nested-live-root');
+  let r15eNestedErr = null, r15eNestedRun = null;
+  try { r15eNestedRun = runner.runCase({ freeze: r15eNestedFreeze, group: focusedGroup, c: { id: 'r15e-v215-nested-root', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15eNestedErr = e; }
+  check('R15e v2.15 nested .claude entry must be the exact relative path under the absolute live root and be in files[]',
+    r15eNestedErr && r15eNestedErr.code === 'freeze-inventory-validation-failed'
+      && r15eNestedErr.detail && r15eNestedErr.detail.freezeDetail
+      && r15eNestedErr.detail.freezeDetail.reason === 'inner-command-entry-not-in-files'
+      && !fs.existsSync(r15eNestedMarker),
+    JSON.stringify({ code: r15eNestedErr && r15eNestedErr.code, detail: r15eNestedErr && r15eNestedErr.detail, markerExists: fs.existsSync(r15eNestedMarker), oldRun: r15eNestedRun && { exitCode: r15eNestedRun.exitCode, executedHooks: r15eNestedRun.executedHooks } }));
+
+  const r15eExecCheckHome = fs.mkdtempSync(path.join(T, 'r15e-v215-exec-entry-'));
+  const r15eExecCheckEnv = runner.isolatedEnv(r15eExecCheckHome, null, { sourceRoot: live, axmemRepoRoot: repo });
+  let r15eExecCheckErr = null, r15eExecCheckResult = null;
+  try { r15eExecCheckResult = runner.preflightHookSources(r15eNestedFreeze, r15eNestedFreeze.hooks[4], live, r15eExecCheckEnv, 'r15e-v215-exec-entry', 5000, live); }
+  catch (e) { r15eExecCheckErr = e; }
+  check('R15e v2.15 execution preflight independently rechecks that the reviewed entry belongs to hook files[]',
+    r15eExecCheckErr && r15eExecCheckErr.code === 'hook-source-entry-binding-invalid'
+      && r15eExecCheckErr.detail && r15eExecCheckErr.detail.detail
+      && r15eExecCheckErr.detail.detail.reason === 'inner-command-entry-not-in-files',
+    JSON.stringify({ code: r15eExecCheckErr && r15eExecCheckErr.code, detail: r15eExecCheckErr && r15eExecCheckErr.detail, oldResult: r15eExecCheckResult }));
+  fs.rmSync(r15eExecCheckHome, { recursive: true, force: true });
+
+  // R15e H3++: /tmp scanning is over every materialized source file, even outside every hook closure.
+  const r15eOrphanRaw = clone(freeze);
+  r15eOrphanRaw.hooks = [clone(r15eOrphanRaw.hooks[4])];
+  r15eOrphanRaw.sourceFiles = [
+    clone(sourceFiles[0]),
+    { path: r15eOrphanRel, sha256: sha256(fs.readFileSync(r15eOrphanAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e materialized but intentionally outside every hook closure' },
+  ];
+  const r15eOrphanFreeze = bindFreeze(r15eOrphanRaw, 'r15e-materialized-orphan');
+  let r15eOrphanErr = null;
+  try { runner.runCase({ freeze: r15eOrphanFreeze, group: focusedGroup, c: { id: 'r15e-materialized-orphan', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { r15eOrphanErr = e; }
+  check('R15e H3++ materialized file outside every hook closure is still scanned for literal /tmp',
+    r15eOrphanErr && r15eOrphanErr.code === 'sandbox-literal-tmp' && r15eOrphanErr.detail && r15eOrphanErr.detail.path === r15eOrphanRel,
+    JSON.stringify({ code: r15eOrphanErr && r15eOrphanErr.code, detail: r15eOrphanErr && r15eOrphanErr.detail }));
   const tmpEnvHome = fs.mkdtempSync(path.join(T, 'r15d-tmpdir-env-'));
   const tmpEnv = runner.isolatedEnv(tmpEnvHome, null);
   const tmpMissing = Object.assign({}, tmpEnv); delete tmpMissing.TMPDIR;
@@ -632,6 +936,19 @@ try {
   const a6CandidateBytes = fs.readFileSync(path.join(a6CandidateRoot, ...a6InventoryRel.split('/')));
   const a6Inventory = JSON.parse(a6CandidateBytes.toString('utf8'));
   a6Inventory.generatedArtifacts = [];
+  const a6Repo = path.join(T, 'r15b-a6-real-inventory-repo');
+  const a6Live = path.join(a6Repo, '.claude');
+  const a6RootHook = a6Inventory.hooks.find((h) => (h.disposition === 'port' || h.disposition === 'replace') && h.runtimeHealthProbe && Array.isArray(h.files) && h.files.length > 0);
+  const a6RootEntry = freezeTool.reviewedInnerCommandInfo(a6RootHook.runtimeHealthProbe.innerCommand, 'r15e-a6-root-rewrite').entryPath.replace(/\\/g, '/');
+  const a6RootSuffix = '/' + a6RootHook.files[0].replace(/\\/g, '/');
+  if (!a6RootEntry.endsWith(a6RootSuffix)) throw new Error('A6 fixture cannot derive original live root from reviewed entry');
+  const a6OriginalLiveRoot = a6RootEntry.slice(0, -a6RootSuffix.length);
+  const a6FixtureLiveRoot = a6Live.replace(/\\/g, '/');
+  const a6RewriteRoot = (value) => typeof value === 'string' ? value.split(a6OriginalLiveRoot).join(a6FixtureLiveRoot) : value;
+  for (const h of a6Inventory.hooks) {
+    h.command = a6RewriteRoot(h.command);
+    if (h.runtimeHealthProbe) h.runtimeHealthProbe.innerCommand = a6RewriteRoot(h.runtimeHealthProbe.innerCommand);
+  }
   const a6AxmemRoot = path.join(T, 'r15d-a6-inventory-repo');
   const a6InventoryAbs = path.join(a6AxmemRoot, ...a6InventoryRel.split('/'));
   fs.mkdirSync(path.dirname(a6InventoryAbs), { recursive: true });
@@ -653,8 +970,6 @@ try {
       runtimeHealthProbe: runnable ? clone(h.runtimeHealthProbe) : null,
     };
   });
-  const a6Repo = path.join(T, 'r15b-a6-real-inventory-repo');
-  const a6Live = path.join(a6Repo, '.claude');
   const a6MirrorRel = a6Inventory.settingsMirror;
   const a6MirrorBytes = Buffer.from(JSON.stringify(settingsForHooks(a6Hooks), null, 2) + '\n');
   const a6SourceFiles = [];
@@ -712,7 +1027,7 @@ try {
   a6RejectBeforeExecution('missing sourceFile sha256', (x) => { delete x.sourceFiles[0].sha256; }, 'freeze-source-hash-missing');
   a6RejectBeforeExecution('missing inventorySha256', (x) => { delete x.inventorySha256; }, 'freeze-inventory-binding-missing');
   a6RejectBeforeExecution('missing inventoryCommit', (x) => { delete x.inventoryCommit; }, 'freeze-inventory-binding-missing');
-  a6RejectBeforeExecution('nonexistent inventory commit', (x) => { x.inventoryCommit = 'f'.repeat(40); }, 'freeze-inventory-blob-read-failed');
+  a6RejectBeforeExecution('nonexistent inventory commit', (x) => { x.inventoryCommit = 'f'.repeat(40); }, 'inventory-commit-unreachable');
   a6RejectBeforeExecution('nonexistent inventory path at pinned commit', (x) => { x.inventoryPath = 'docs/freeze/DOES-NOT-EXIST.json'; }, 'freeze-inventory-blob-read-failed');
   a6RejectBeforeExecution('deleted sourceFiles dependency declaration', (x) => { const row = x.sourceFiles.find((v) => Array.isArray(v.dependencies) && v.dependencies.length > 0); row.dependencies = row.dependencies.slice(1); }, 'freeze-source-dependencies-mismatch');
   a6RejectBeforeExecution('missing settingsEvidence', (x) => { delete x.settingsEvidence; }, 'freeze-settings-evidence-missing');
@@ -729,7 +1044,10 @@ try {
   s2cPinTarget.disposition = 'private-exclude';
   const s2cPinTamperedBytes = Buffer.from(JSON.stringify(s2cPinTamperedInventory, null, 2) + '\n');
   const s2cPinTamperedFreeze = clone(freeze);
-  s2cPinTamperedFreeze.hooks.find((h) => h.event === s2cPinTarget.event && h.groupIndex === s2cPinTarget.groupIndex && h.hookIndex === s2cPinTarget.hookIndex).disposition = 'private-exclude';
+  const s2cPinTamperedFreezeHook = s2cPinTamperedFreeze.hooks.find((h) => h.event === s2cPinTarget.event && h.groupIndex === s2cPinTarget.groupIndex && h.hookIndex === s2cPinTarget.hookIndex);
+  s2cPinTamperedFreezeHook.disposition = 'private-exclude';
+  s2cPinTamperedFreezeHook.businessExitCodes = [];
+  s2cPinTamperedFreezeHook.runtimeHealthProbe = null;
   s2cPinTamperedFreeze.inventorySha256 = sha256(s2cPinTamperedBytes);
   let s2cPinTamperErr = null;
   try {
@@ -841,19 +1159,22 @@ try {
   const branchTree = git(repo, ['rev-parse', 'HEAD:.claude']).trim();
   const branchSha = sha256(fs.readFileSync(branchyAbs));
   const branchInner = 'node "' + branchyAbs.replace(/\\/g, '/') + '"';
-  const mkBranchFreeze = (outer, inner, reliable = true) => bindFreeze({
-    schema: 'axmem-p2-freeze/v1',
-    source: { commit: branchCommit, liveRelativePath: '.claude', treeOid: branchTree, clean: true, uncommittedPatch: { empty: true, sha256: null } },
-    sourceFiles: [{ path: branchyRel, sha256: branchSha, disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'runtime health branch fixture' }],
-    hooks: [{
-      logicalId: 'runtime-health-branch', event: 'UserPromptSubmit', groupIndex: 0, hookIndex: 0, matcher: null,
-      command: outer, timeout: 5, disposition: 'port', files: [branchyRel], implementation: null,
-      notes: 'runtime health branch fixture', externalDependencies: [], businessExitCodes: [2],
-      runtimeHealthProbe: { version: 1, innerCommand: inner, reliable, notes: reliable ? 'exact reviewed inner command' : 'inner intentionally swallows failures; health cannot be proven' },
-    }],
-  }, 'branch');
-  const runBranch = (outer, prompt, inner = branchInner, reliable = true) =>
-    runner.runCase({ freeze: mkBranchFreeze(outer, inner, reliable), group: focusedGroup, c: { id: 'rh-' + prompt, input: { prompt } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  const mkBranchFreeze = (outer, inner, reliable = true, entryRel = branchyRel) => {
+    const entryAbs = path.join(live, ...entryRel.split('/'));
+    return bindFreeze({
+      schema: 'axmem-p2-freeze/v1',
+      source: { commit: branchCommit, liveRelativePath: '.claude', treeOid: branchTree, clean: true, uncommittedPatch: { empty: true, sha256: null } },
+      sourceFiles: [{ path: entryRel, sha256: sha256(fs.readFileSync(entryAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'runtime health branch fixture' }],
+      hooks: [{
+        logicalId: 'runtime-health-branch', event: 'UserPromptSubmit', groupIndex: 0, hookIndex: 0, matcher: null,
+        command: outer, timeout: 5, disposition: 'port', files: [entryRel], implementation: null,
+        notes: 'runtime health branch fixture', externalDependencies: [], businessExitCodes: [2],
+        runtimeHealthProbe: { version: 1, innerCommand: inner, reliable, notes: reliable ? 'exact reviewed inner command' : 'inner intentionally swallows failures; health cannot be proven' },
+      }],
+    }, 'branch');
+  };
+  const runBranch = (outer, prompt, inner = branchInner, reliable = true, entryRel = branchyRel) =>
+    runner.runCase({ freeze: mkBranchFreeze(outer, inner, reliable, entryRel), group: focusedGroup, c: { id: 'rh-' + prompt, input: { prompt } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
   const simpleOuter = branchInner + ' || exit 0';
   const braceOuter = branchInner + ' || { echo masked >&2; exit 0; }';
   const silentOuter = branchInner + ' >/dev/null 2>&1 || exit 0';
@@ -868,9 +1189,11 @@ try {
     check('runtime health blocks ' + name, err && err.code === 'equiv-infrastructure' && new RegExp(expect).test(err.message), String(err && err.message));
   }
 
-  const missingEntry = 'node "' + path.join(live, 'guards', 'never-there.cjs').replace(/\\/g, '/') + '"';
+  // R15e entry binding requires the reviewed entry itself to be tracked in files[].
+  // Preserve the original fully-silent masked-startup-failure stage with a tracked wrapper whose child executable is absent.
+  const missingEntry = 'node "' + silentMissingAbs.replace(/\\/g, '/') + '"';
   let missingEntryErr = null;
-  try { runBranch(missingEntry + ' >/dev/null 2>&1 || exit 0', 'allow', missingEntry + ' >/dev/null 2>&1'); } catch (e) { missingEntryErr = e; }
+  try { runBranch(missingEntry + ' >/dev/null 2>&1 || exit 0', 'allow', missingEntry + ' >/dev/null 2>&1', true, silentMissingRel); } catch (e) { missingEntryErr = e; }
   check('runtime health blocks fully silent missing inner entry despite outer exit0',
     missingEntryErr && missingEntryErr.code === 'equiv-infrastructure' && /unexpected-exit:1/.test(missingEntryErr.message), String(missingEntryErr && missingEntryErr.message));
 
@@ -911,6 +1234,32 @@ try {
   let syntaxHealthErr = null;
   try { runner.runCase({ freeze: syntaxFreeze, group: focusedGroup, c: { id: 'rh-syntax', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { syntaxHealthErr = e; }
   check('runtime health blocks syntax/startup failure hidden by outer exit0', syntaxHealthErr && /source health preflight failed/.test(syntaxHealthErr.message), String(syntaxHealthErr && syntaxHealthErr.message));
+
+  // R15e F8 evidence repair: Acorn accepts top-level await here, so Node --check must be the rejecting layer.
+  let r15eBadAwaitDependencyAnalysis = null, r15eBadAwaitDependencyErr = null;
+  try { r15eBadAwaitDependencyAnalysis = freezeTool.analyzeDependencyReferences(r15eBadAwaitRel, fs.readFileSync(r15eBadAwaitAbs, 'utf8')); }
+  catch (e) { r15eBadAwaitDependencyErr = e; }
+  const r15eBadAwaitInner = 'node "' + r15eBadAwaitAbs.replace(/\\/g, '/') + '" >/dev/null 2>&1';
+  const r15eBadAwaitRaw = clone(freeze);
+  r15eBadAwaitRaw.hooks = [Object.assign({}, r15eBadAwaitRaw.hooks[4], {
+    logicalId: 'r15e-node-check-await',
+    command: r15eBadAwaitInner + ' || exit 0',
+    files: [r15eBadAwaitRel],
+    runtimeHealthProbe: { version: 1, innerCommand: r15eBadAwaitInner, reliable: true, notes: 'R15e F8 Node --check directed guard-rail' },
+  })];
+  r15eBadAwaitRaw.sourceFiles = [{
+    path: r15eBadAwaitRel, sha256: sha256(fs.readFileSync(r15eBadAwaitAbs)),
+    disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e F8 top-level await syntax fixture',
+  }];
+  const r15eBadAwaitFreeze = bindFreeze(r15eBadAwaitRaw, 'r15e-node-check-await');
+  let r15eBadAwaitErr = null;
+  try { runner.runCase({ freeze: r15eBadAwaitFreeze, group: focusedGroup, c: { id: 'r15e-node-check-await', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15eBadAwaitErr = e; }
+  check('R15e F8 Node --check rejects Acorn-accepted top-level await before masked execution',
+    !r15eBadAwaitDependencyErr && r15eBadAwaitDependencyAnalysis
+      && r15eBadAwaitErr && r15eBadAwaitErr.code === 'equiv-infrastructure'
+      && /source health preflight failed .*r15e-bad-await\.cjs: syntax-exit:/.test(r15eBadAwaitErr.message),
+    JSON.stringify({ dependencyError: r15eBadAwaitDependencyErr && String(r15eBadAwaitDependencyErr.message), code: r15eBadAwaitErr && r15eBadAwaitErr.code, message: r15eBadAwaitErr && r15eBadAwaitErr.message }));
 
   // Comparator must reject missing/text-only/stale/cross-case health metadata and two equally bad reports.
   const validHealthReportA = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live });
@@ -967,10 +1316,11 @@ try {
   let missingErr = null;
   try {
     const raw = clone(freeze);
-    // Merge migration: this case tests missing-command infrastructure classification, not arbitrary shell syntax.
-    // Keep the expected command-start:127 assertion unchanged while expressing the hook as one C1-reviewed bash command.
-    const missingCommand = 'bash "' + path.join(live, 'guards', 'command_that_does_not_exist_axmem_p2.sh').replace(/\\/g, '/') + '"';
-    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'missing', command: missingCommand,
+    // R15e entry binding keeps the hook entry tracked while the entry itself invokes a guaranteed-missing command.
+    // The shell therefore still returns 127 at the original runHook stage; the command-start:127 assertion is unchanged.
+    const missingCommand = 'bash "' + commandNotFoundAbs.replace(/\\/g, '/') + '"';
+    raw.sourceFiles.push({ path: commandNotFoundRel, sha256: sha256(fs.readFileSync(commandNotFoundAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e tracked wrapper for command-not-found classification' });
+    raw.hooks = [Object.assign({}, raw.hooks[4], { logicalId: 'missing', command: missingCommand, files: [commandNotFoundRel],
       runtimeHealthProbe: Object.assign({}, raw.hooks[4].runtimeHealthProbe, { innerCommand: missingCommand }) })];
     const bad = bindFreeze(raw, 'missing-command');
     runner.runCase({ freeze: bad, group: focusedGroup, c: { id: 'missing', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 1000 });
@@ -1304,6 +1654,7 @@ try {
   check('resolved dependency must be explicitly declared', edgeErr === 'dependency-edge-missing', edgeErr);
 
 
+  if (privateParserHelperAvailable) {
   // ---- G1 generated-artifact evidence: temp git repos only; artifact-verified != execution-closed. ----
   const genRepo = path.join(T, 'generated-repo');
   const genLive = path.join(genRepo, '.claude');
@@ -1606,6 +1957,93 @@ try {
   } catch (e) { formalGeneratedErr = e.code; }
   check('G1 artifact-verified evidence alone does not mark formal execution dependency closed',
     formalGeneratedErr === 'dependency-unresolved-dynamic', formalGeneratedErr);
+  } else {
+    // These fail before generated-artifact parsing, so they remain real checks without the Go helper.
+    const noHelperRepo = path.join(T, 'generated-no-helper-early-rejects');
+    const noHelperLive = path.join(noHelperRepo, '.claude');
+    fs.mkdirSync(path.join(noHelperLive, 'guards'), { recursive: true });
+    const noHelperGenPath = 'guards/gen.sh';
+    const noHelperSource = '#!/usr/bin/env bash\nprintf ok\n';
+    fs.writeFileSync(path.join(noHelperLive, ...noHelperGenPath.split('/')), noHelperSource);
+    git(noHelperRepo, ['init', '-q']);
+    git(noHelperRepo, ['add', '.claude']);
+    git(noHelperRepo, ['-c', 'user.name=G1', '-c', 'user.email=g1@example.invalid', 'commit', '-qm', 'no-helper early reject fixture']);
+    const noHelperCommit = git(noHelperRepo, ['rev-parse', 'HEAD']).trim();
+    const noHelperBlob = fs.readFileSync(path.join(noHelperLive, ...noHelperGenPath.split('/')));
+    const noHelperMap = new Map([[noHelperGenPath, { path: noHelperGenPath, dependencies: [], unresolvedDependencies: [] }]]);
+    const noHelperBlobs = new Map([[noHelperGenPath, noHelperBlob]]);
+    const noHelperRecord = {
+      version: 1, id: 'no-helper-early-reject', generatorPath: noHelperGenPath, generatorSha256: sha256(noHelperBlob),
+      heredoc: {}, call: {},
+    };
+
+    let noHelperHashErr = '';
+    try {
+      const bad = clone(noHelperRecord); bad.generatorSha256 = '0'.repeat(64);
+      freezeTool.verifyGeneratedArtifactEvidence({
+        record: bad, fileMap: noHelperMap, repoRoot: noHelperRepo, commit: noHelperCommit, relLive: '.claude', blobs: noHelperBlobs,
+      });
+    } catch (e) { noHelperHashErr = e.code; }
+    check('G1 wrong generator source hash is rejected', noHelperHashErr === 'generated-generator-hash-mismatch', noHelperHashErr);
+
+    let noHelperEscapeErr = '';
+    try {
+      const bad = clone(noHelperRecord); bad.generatorPath = '../escape.sh';
+      freezeTool.verifyGeneratedArtifactEvidence({
+        record: bad, fileMap: noHelperMap, repoRoot: noHelperRepo, commit: noHelperCommit, relLive: '.claude', blobs: noHelperBlobs,
+      });
+    } catch (e) { noHelperEscapeErr = e.code; }
+    check('G1 generator path escape is rejected', noHelperEscapeErr === 'bad-file-path', noHelperEscapeErr);
+
+    const noHelperSyRepo = path.join(T, 'generated-no-helper-symlink');
+    fs.mkdirSync(path.join(noHelperSyRepo, '.claude', 'guards'), { recursive: true });
+    git(noHelperSyRepo, ['init', '-q']);
+    const noHelperSyTarget = 'guards/real.sh\n';
+    const noHelperSyOid = git(noHelperSyRepo, ['hash-object', '-w', '--stdin'], { input: noHelperSyTarget }).trim();
+    git(noHelperSyRepo, ['update-index', '--add', '--cacheinfo', '120000', noHelperSyOid, '.claude/guards/link.sh']);
+    git(noHelperSyRepo, ['-c', 'user.name=G1', '-c', 'user.email=g1@example.invalid', 'commit', '-qm', 'no-helper symlink fixture']);
+    const noHelperSyCommit = git(noHelperSyRepo, ['rev-parse', 'HEAD']).trim();
+    let noHelperSyErr = '';
+    try {
+      const bad = clone(noHelperRecord);
+      bad.generatorPath = 'guards/link.sh';
+      bad.generatorSha256 = sha256(Buffer.from(noHelperSyTarget));
+      freezeTool.verifyGeneratedArtifactEvidence({
+        record: bad,
+        fileMap: new Map([['guards/link.sh', { path: 'guards/link.sh', dependencies: [], unresolvedDependencies: [] }]]),
+        repoRoot: noHelperSyRepo, commit: noHelperSyCommit, relLive: '.claude',
+        blobs: new Map([['guards/link.sh', Buffer.from(noHelperSyTarget)]]),
+      });
+    } catch (e) { noHelperSyErr = e.code; }
+    check('G1 frozen generator symlink is rejected before artifact extraction', noHelperSyErr === 'generated-generator-symlink', noHelperSyErr);
+
+    const helperDependentChecks = [
+      'G1 literal heredoc artifact evidence verifies exact frozen bytes and generated-body dependency candidate',
+      'G1-R2 full verify rejects single-quoted literal redirect target',
+      'G1-R2 full verify rejects comment-only node call',
+      'G1-R2 full verify rejects generated-body-only node pseudo-call',
+      'G1-R2 full verify rejects node pseudo-call inside another heredoc',
+      'G1-R2 full verify rejects echo node argument',
+      'G1-R2 full verify rejects printf node argument',
+      'G1-R2 full verify rejects test node argument',
+      'G1-R2 full verify rejects assignment text containing node target',
+      'G1-R2 full verify rejects node text in redirection operand/argument position',
+      'G1-R6 full verify rejects cross-line quoted node text as non-call',
+      'G1-R2 full verify accepts supported command-position form: plain',
+      'G1-R2 full verify accepts supported command-position form: escaped-command',
+      'G1-R2 full verify accepts supported command-position form: backslash-newline',
+      'G1-R2 full verify accepts supported command-position form: pipeline',
+      'G1-R2 full verify accepts supported command-position form: command-substitution',
+      'G1 call anchor mismatch is rejected',
+      'G1 expanding/unquoted heredoc is rejected',
+      'G1 duplicate heredoc marker definition is rejected',
+      'G1 missing heredoc close marker is rejected',
+      'G1 generated body mutation is rejected even when generator hash field is refreshed',
+      'G1 generated content missing static dependency is rejected',
+      'G1 artifact-verified evidence alone does not mark formal execution dependency closed',
+    ];
+    for (const name of helperDependentChecks) unavailablePrivateParserCheck(name);
+  }
 
   const fixtureCommands = freeze.hooks.map((h) => h.command).join('\n');
   check('machine acceptance executes no network-capable fixture commands',
@@ -1617,5 +2055,6 @@ try {
   try { fs.rmSync(T, { recursive: true, force: true }); } catch {}
 }
 
-console.log('P2-MACHINE-ACCEPTANCE ' + JSON.stringify({ pass, fail }));
+const machineSummary = JSON.stringify({ pass, fail, skip, skipReasons });
+console.log('P2-MACHINE-ACCEPTANCE ' + machineSummary + (skip > 0 ? ' ' + skip + ' skipped' : ''));
 process.exit(fail ? 1 : 0);

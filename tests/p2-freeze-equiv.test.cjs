@@ -98,10 +98,18 @@ try {
     allowedDifferences: [],
   };
   const inv = path.join(repo, 'inventory.json');
-  fs.writeFileSync(inv, JSON.stringify(inventory, null, 2));
+  const committedInventoryBytes = Buffer.from(JSON.stringify(inventory, null, 2));
+  fs.writeFileSync(inv, committedInventoryBytes);
   git(repo, ['init', '-q']);
-  git(repo, ['add', '.gitignore', '.claude']);
+  git(repo, ['add', '.gitignore', '.claude', 'inventory.json']);
   git(repo, ['-c', 'user.name=P2 Selftest', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'fixture']);
+  const commitInventoryFixture = (value, label) => {
+    const bytes = Buffer.isBuffer(value) ? value : Buffer.from(typeof value === 'string' ? value : JSON.stringify(value));
+    fs.writeFileSync(inv, bytes);
+    git(repo, ['add', '--', 'inventory.json']);
+    git(repo, ['-c', 'user.name=P2 Selftest', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'inventory fixture: ' + label]);
+    return bytes;
+  };
 
   const m = freeze.buildManifest({ liveDir: live, inventoryPath: inv, generatedAt: '2026-09-29T00:00:00Z' });
   check('freeze clean source records commit/tree and empty patch', /^[0-9a-f]{40}$/.test(m.source.commit) && /^[0-9a-f]{40}$/.test(m.source.treeOid) && m.source.clean === true && m.source.uncommittedPatch.empty === true && m.source.uncommittedPatch.sha256 === null);
@@ -112,6 +120,46 @@ try {
   check('freeze binds ignored live settings hooks to tracked mirror', m.settingsJson === 'settings.json' && m.settingsSha256 === settingsHash && m.settingsEvidence.mirrorPath === 'memory/_local-config/settings.json' && m.settingsEvidence.mirrorSha256 === mirrorHash && /^[0-9a-f]{64}$/.test(m.settingsEvidence.hookIdentitySha256) && git(repo, ['ls-files', '--', '.claude/settings.json']).trim() === '');
   check('freeze fingerprints external prerequisite file without pretending it is tracked source', m.externalDependencies.length === 1 && m.externalDependencies[0].id === 'fixture-external' && m.externalDependencies[0].sha256 === externalHash && git(repo, ['ls-files', '--', '.claude/plugins/fixture/external.sh']).trim() === '');
   check('freeze source file SHA256', m.sourceFiles.length === 6 && m.sourceFiles.every((x) => /^[0-9a-f]{64}$/.test(x.sha256)));
+
+  // R15e H15 path-case sweep: inventory file paths are unique under case folding on every platform.
+  const r15eCaseInventory = JSON.parse(JSON.stringify(inventory));
+  r15eCaseInventory.files.push(Object.assign({}, r15eCaseInventory.files[0], { path: 'guards/GATE.cjs' }));
+  let r15eCaseInventoryErr = null;
+  try { freeze.validateInventory(r15eCaseInventory, freeze.flattenHooks(settings), live); }
+  catch (e) { r15eCaseInventoryErr = e; }
+  check('R15e H15 inventory files reject paths that differ only by case',
+    r15eCaseInventoryErr && r15eCaseInventoryErr.code === 'bad-inventory'
+      && r15eCaseInventoryErr.detail && r15eCaseInventoryErr.detail.reason === 'path-case-collision',
+    JSON.stringify({ code: r15eCaseInventoryErr && r15eCaseInventoryErr.code, detail: r15eCaseInventoryErr && r15eCaseInventoryErr.detail }));
+
+  // R15e H6++: buildManifest must not manufacture a detached commit for uncommitted inventory bytes.
+  fs.writeFileSync(inv, Buffer.concat([committedInventoryBytes, Buffer.from('\n')]));
+  let r15eUncommittedInventoryErr = null;
+  try { freeze.buildManifest({ liveDir: live, inventoryPath: inv, generatedAt: '2026-09-29T00:00:00Z' }); }
+  catch (e) { r15eUncommittedInventoryErr = e; }
+  check('R15e H6++ buildManifest rejects uncommitted inventory instead of creating a detached snapshot commit',
+    r15eUncommittedInventoryErr && r15eUncommittedInventoryErr.code === 'inventory-commit-binding',
+    JSON.stringify({ code: r15eUncommittedInventoryErr && r15eUncommittedInventoryErr.code, message: r15eUncommittedInventoryErr && r15eUncommittedInventoryErr.message }));
+  fs.writeFileSync(inv, committedInventoryBytes);
+
+  // R15e H6++: a readable detached inventory commit is still invalid when AxMem HEAD cannot reach it.
+  const r15eDetachedInventoryCommit = git(repo, [
+    '-c', 'user.name=P2 Selftest', '-c', 'user.email=p2@example.invalid',
+    'commit-tree', m.source.commit + '^{tree}', '-p', m.source.commit,
+  ], { input: 'R15e unreachable inventory fixture\n' }).trim();
+  const r15eAncestorEnv = Object.assign({}, process.env, { GIT_CEILING_DIRECTORIES: path.dirname(path.resolve(repo)) });
+  const r15eAncestorProbe = cp.spawnSync('git', ['-C', path.resolve(repo), 'merge-base', '--is-ancestor', r15eDetachedInventoryCommit, 'HEAD'],
+    { env: r15eAncestorEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 });
+  const r15eUnreachableFreeze = JSON.parse(JSON.stringify(m));
+  r15eUnreachableFreeze.inventoryCommit = r15eDetachedInventoryCommit;
+  const r15eUnreachableHome = fs.mkdtempSync(path.join(T, 'r15e-unreachable-inventory-'));
+  let r15eUnreachableErr = null;
+  try { runner.materializeFreeze(r15eUnreachableFreeze, repo, r15eUnreachableHome, repo); }
+  catch (e) { r15eUnreachableErr = e; }
+  finally { fs.rmSync(r15eUnreachableHome, { recursive: true, force: true }); }
+  check('R15e H6++ runner rejects inventoryCommit not reachable from AxMem HEAD before reading inventory bytes',
+    r15eAncestorProbe.status === 1 && r15eUnreachableErr && r15eUnreachableErr.code === 'inventory-commit-unreachable',
+    JSON.stringify({ ancestorStatus: r15eAncestorProbe.status, code: r15eUnreachableErr && r15eUnreachableErr.code, detail: r15eUnreachableErr && r15eUnreachableErr.detail }));
 
   const liveSettingsDrift = JSON.parse(JSON.stringify(settings));
   liveSettingsDrift.hooks.UserPromptSubmit[0].hooks[0].command += ' --drift';
@@ -137,28 +185,28 @@ try {
   const bad = JSON.parse(JSON.stringify(inventory));
   bad.hooks[0].command = 'node "wrong.cjs"';
   bad.hooks[0].runtimeHealthProbe.innerCommand = 'node "wrong.cjs"';
-  fs.writeFileSync(inv, JSON.stringify(bad));
+  commitInventoryFixture(bad, 'wrong hook');
   let mismatch = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { mismatch = e.code; }
   check('freeze rejects incomplete/wrong hook inventory', mismatch === 'hook-inventory-mismatch', String(mismatch));
 
   const missingExcludedRationale = JSON.parse(JSON.stringify(inventory));
   missingExcludedRationale.hooks[1].notes = '';
-  fs.writeFileSync(inv, JSON.stringify(missingExcludedRationale));
+  commitInventoryFixture(missingExcludedRationale, 'missing excluded rationale');
   let missingExcludedRationaleCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { missingExcludedRationaleCode = e.code; }
   check('freeze requires rationale for excluded/external hook', missingExcludedRationaleCode === 'bad-inventory', String(missingExcludedRationaleCode));
 
   const missingExitContract = JSON.parse(JSON.stringify(inventory));
   delete missingExitContract.hooks[0].businessExitCodes;
-  fs.writeFileSync(inv, JSON.stringify(missingExitContract));
+  commitInventoryFixture(missingExitContract, 'missing exit contract');
   let missingExitContractCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { missingExitContractCode = e.code; }
   check('freeze requires explicit runnable-hook business exit contract', missingExitContractCode === 'bad-inventory', String(missingExitContractCode));
 
   const missingHealthEvidence = JSON.parse(JSON.stringify(inventory));
   delete missingHealthEvidence.hooks[0].runtimeHealthProbe;
-  fs.writeFileSync(inv, JSON.stringify(missingHealthEvidence));
+  commitInventoryFixture(missingHealthEvidence, 'missing health evidence');
   let missingHealthEvidenceCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { missingHealthEvidenceCode = e.code; }
   check('freeze requires structured runtime health probe contract', missingHealthEvidenceCode === 'bad-inventory', String(missingHealthEvidenceCode));
@@ -222,6 +270,55 @@ try {
   try { freeze.normalizeRuntimeHealthProbe({ command: c1WhitespaceOuter, runtimeHealthProbe: { version: 1, innerCommand: ' ' + c1X + ' ', reliable: true, notes: 'r15d-b c1 whitespace' } }, 'R15d-B-C1/whitespace'); } catch (e) { c1WhitespaceErr = e; }
   check('R15d-B C1 compares outer and inner after whitespace normalization', !c1WhitespaceErr, JSON.stringify(c1WhitespaceErr && { code: c1WhitespaceErr.code, detail: c1WhitespaceErr.detail }));
 
+  let r15eQuotedPathWhitespaceErr = null;
+  try {
+    freeze.normalizeRuntimeHealthProbe({
+      command: 'node "C:/Users/jax-x/.claude/x  y.cjs" || exit 0',
+      runtimeHealthProbe: { version: 1, innerCommand: 'node "C:/Users/jax-x/.claude/x y.cjs"', reliable: true, notes: 'R15e quoted PATH byte-exact fixture' },
+    }, 'R15e-H13/quoted-path');
+  } catch (e) { r15eQuotedPathWhitespaceErr = e; }
+  check('R15e H13 quoted PATH whitespace is byte-exact between outer and inner',
+    r15eQuotedPathWhitespaceErr && r15eQuotedPathWhitespaceErr.code === 'bad-inventory'
+      && r15eQuotedPathWhitespaceErr.detail && r15eQuotedPathWhitespaceErr.detail.reason === 'inner-command-does-not-match-outer',
+    JSON.stringify({ code: r15eQuotedPathWhitespaceErr && r15eQuotedPathWhitespaceErr.code, detail: r15eQuotedPathWhitespaceErr && r15eQuotedPathWhitespaceErr.detail }));
+
+  let r15eQuotedEnvWhitespaceErr = null;
+  try {
+    freeze.normalizeRuntimeHealthProbe({
+      command: 'X="a  b" node "C:/Users/jax-x/.claude/x.cjs" || exit 0',
+      runtimeHealthProbe: { version: 1, innerCommand: 'X="a b" node "C:/Users/jax-x/.claude/x.cjs"', reliable: true, notes: 'R15e quoted ENV byte-exact fixture' },
+    }, 'R15e-H13/quoted-env');
+  } catch (e) { r15eQuotedEnvWhitespaceErr = e; }
+  check('R15e H13 quoted ENV whitespace is byte-exact between outer and inner',
+    r15eQuotedEnvWhitespaceErr && r15eQuotedEnvWhitespaceErr.code === 'bad-inventory'
+      && r15eQuotedEnvWhitespaceErr.detail && r15eQuotedEnvWhitespaceErr.detail.reason === 'inner-command-does-not-match-outer',
+    JSON.stringify({ code: r15eQuotedEnvWhitespaceErr && r15eQuotedEnvWhitespaceErr.code, detail: r15eQuotedEnvWhitespaceErr && r15eQuotedEnvWhitespaceErr.detail }));
+
+  const r15eNonBlankWhitespaceCases = [
+    ['LF', '\n'], ['CR', '\r'], ['VT', '\v'], ['FF', '\f'], ['NEL', '\u0085'], ['NBSP', '\u00a0'], ['LINE-SEPARATOR', '\u2028'],
+  ];
+  for (const [name, ws] of r15eNonBlankWhitespaceCases) {
+    let err = null;
+    try {
+      freeze.normalizeRuntimeHealthProbe({
+        command: 'node' + ws + '"C:/Users/jax-x/.claude/x.cjs" || exit 0',
+        runtimeHealthProbe: { version: 1, innerCommand: 'node "C:/Users/jax-x/.claude/x.cjs"', reliable: true, notes: 'R15e v2.15 non-blank whitespace negative' },
+      }, 'R15e-v2.15/non-blank-' + name);
+    } catch (e) { err = e; }
+    check('R15e v2.15 rejects unquoted non-blank whitespace: ' + name,
+      err && err.code === 'bad-inventory' && err.detail && err.detail.reason === 'unquoted-non-blank-whitespace',
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  }
+  let r15eBlankWhitespaceErr = null;
+  try {
+    freeze.normalizeRuntimeHealthProbe({
+      command: '\t node\t "C:/Users/jax-x/.claude/x.cjs"\t ||\t exit\t 0 ',
+      runtimeHealthProbe: { version: 1, innerCommand: ' node\t"C:/Users/jax-x/.claude/x.cjs" ', reliable: true, notes: 'R15e v2.15 bash blanks positive' },
+    }, 'R15e-v2.15/blanks');
+  } catch (e) { r15eBlankWhitespaceErr = e; }
+  check('R15e v2.15 still collapses unquoted space and tab bash blanks',
+    !r15eBlankWhitespaceErr, JSON.stringify(r15eBlankWhitespaceErr && { code: r15eBlankWhitespaceErr.code, detail: r15eBlankWhitespaceErr.detail }));
+
   let c2UnsupportedMatcherErr = null;
   try { freeze.flattenHooks({ hooks: { UserPromptSubmit: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo never' }] }] } }); }
   catch (e) { c2UnsupportedMatcherErr = e; }
@@ -280,21 +377,21 @@ try {
   missingManualDependencyList.files.push({ path: 'guards/dynamic.sh', disposition: 'port', dependencies: [], unresolvedDependencies: [
     { expression: '$G/guards/$TARGET.sh', reason: 'negative fixture intentionally omits dependencies[]' },
   ], notes: 'negative dynamic review schema fixture' });
-  fs.writeFileSync(inv, JSON.stringify(missingManualDependencyList));
+  commitInventoryFixture(missingManualDependencyList, 'missing manual dependency list');
   let missingManualDependencyListCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { missingManualDependencyListCode = e.code; }
   check('freeze requires dependencies[] on unresolved dynamic review', missingManualDependencyListCode === 'bad-inventory', String(missingManualDependencyListCode));
 
   const missingEdge = JSON.parse(JSON.stringify(inventory));
   missingEdge.files.find((x) => x.path === 'guards/gate.cjs').dependencies = [];
-  fs.writeFileSync(inv, JSON.stringify(missingEdge));
+  commitInventoryFixture(missingEdge, 'missing detected edge');
   let missingEdgeCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { missingEdgeCode = e.code; }
   check('freeze rejects detected dependency omitted from dependencies[]', missingEdgeCode === 'dependency-edge-missing', String(missingEdgeCode));
 
   const missingClosure = JSON.parse(JSON.stringify(missingEdge));
   missingClosure.files = missingClosure.files.filter((x) => x.path !== 'guards/helper.js');
-  fs.writeFileSync(inv, JSON.stringify(missingClosure));
+  commitInventoryFixture(missingClosure, 'missing closure file');
   let missingClosureCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { missingClosureCode = e.code; }
   check('freeze rejects detected tracked dependency absent from inventory', missingClosureCode === 'dependency-closure-missing', String(missingClosureCode));
@@ -309,19 +406,19 @@ try {
   emptyDynamicReview.files.push({ path: 'guards/dynamic.sh', disposition: 'port', dependencies: [], unresolvedDependencies: [
     { expression: '$G/guards/$TARGET.sh', dependencies: [], reason: 'empty dependency list must not count as closure evidence' },
   ], notes: 'negative dynamic dependency fixture' });
-  fs.writeFileSync(inv, JSON.stringify(emptyDynamicReview));
+  commitInventoryFixture(emptyDynamicReview, 'empty dynamic review');
   let emptyDynamicCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { emptyDynamicCode = e.code; }
   check('freeze refuses empty dependencies plus reason as dynamic closure evidence', emptyDynamicCode === 'bad-inventory', String(emptyDynamicCode));
 
   const missingDynamicReview = JSON.parse(JSON.stringify(inventory));
   missingDynamicReview.files.push({ path: 'guards/dynamic.sh', disposition: 'port', dependencies: [], notes: 'negative unresolved dynamic fixture' });
-  fs.writeFileSync(inv, JSON.stringify(missingDynamicReview));
+  commitInventoryFixture(missingDynamicReview, 'missing dynamic review');
   let missingDynamicCode = null;
   try { freeze.buildManifest({ liveDir: live, inventoryPath: inv }); } catch (e) { missingDynamicCode = e.code; }
   check('freeze refuses unresolved dynamic dependency without a proven target', missingDynamicCode === 'dependency-unresolved-dynamic', String(missingDynamicCode));
 
-  fs.writeFileSync(inv, JSON.stringify(inventory, null, 2));
+  commitInventoryFixture(Buffer.from(JSON.stringify(inventory, null, 2)), 'restore valid inventory');
 
   const runFixture = {
     version: 1,

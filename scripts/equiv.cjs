@@ -135,11 +135,10 @@ function validateStateTreeEntries(tree, side, caseId) {
 }
 
 function normalizeHookResult(h) {
-  const logicalId = String((h && (h.logicalId || h.id)) || '').trim();
   return {
-    logicalId,
-    phase: String((h && h.phase) || ''),
-    matcher: h && Object.prototype.hasOwnProperty.call(h, 'matcher') ? h.matcher : null,
+    logicalId: h.logicalId.trim(),
+    phase: h.phase,
+    matcher: h.matcher,
     disposition: String((h && h.disposition) || ''),
     status: String((h && h.status) || ''),
     exitCode: h && h.status === 'ran' ? h.exitCode : null,
@@ -301,6 +300,18 @@ function validateReport(report, side) {
     for (let i = 0; i < raw.hookResults.length; i++) {
       const rawHook = raw.hookResults[i];
       if (!rawHook || typeof rawHook !== 'object' || Array.isArray(rawHook)) reportError('report-hook-field-type', side + ' report case ' + id + ' has invalid hook record', { side, caseId: id, hookIndex: i, field: 'hook' });
+      if (typeof rawHook.logicalId !== 'string' || !rawHook.logicalId.trim()) {
+        reportError('report-bad-hook-record', side + ' report case ' + id + ' hook record requires non-empty string logicalId',
+          { side, caseId: id, hookIndex: i, field: 'logicalId', reason: 'logicalId-nonempty-string-required', valueType: Array.isArray(rawHook.logicalId) ? 'array' : typeof rawHook.logicalId });
+      }
+      if (!Object.prototype.hasOwnProperty.call(rawHook, 'phase') || typeof rawHook.phase !== 'string' || !rawHook.phase.trim()) {
+        reportError('report-bad-hook-record', side + ' report case ' + id + ' hook record requires non-empty string phase',
+          { side, caseId: id, hookIndex: i, field: 'phase', reason: 'phase-nonempty-string-required', valueType: Array.isArray(rawHook.phase) ? 'array' : typeof rawHook.phase });
+      }
+      if (!Object.prototype.hasOwnProperty.call(rawHook, 'matcher') || !(rawHook.matcher === null || typeof rawHook.matcher === 'string')) {
+        reportError('report-bad-hook-record', side + ' report case ' + id + ' hook record requires matcher to be present and null|string',
+          { side, caseId: id, hookIndex: i, field: 'matcher', reason: 'matcher-null-or-string-required', valueType: Array.isArray(rawHook.matcher) ? 'array' : typeof rawHook.matcher });
+      }
       if (!REPORT_DISPOSITIONS.has(rawHook.disposition)) {
         reportError('report-bad-disposition', side + ' report case ' + id + ' has invalid hook disposition',
           { side, caseId: id, hookIndex: i, status: rawHook.status, disposition: rawHook.disposition, reason: 'unknown-disposition' });

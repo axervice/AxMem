@@ -7,10 +7,25 @@ const cp = require('child_process');
 const crypto = require('crypto');
 const F = require('../scripts/p2-freeze.cjs');
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
+const skipReasons = {};
 function check(name, ok, detail = '') {
   console.log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? ' :: ' + detail : ''));
   ok ? pass++ : fail++;
+}
+function skipCheck(name, reason) {
+  console.log('SKIP ' + name + ' :: ' + reason);
+  skip++;
+  skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+}
+const privateParserHelperPath = path.join(__dirname, '..', 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
+const privateParserHelperAvailable = fs.existsSync(privateParserHelperPath);
+const privateParserSkipReason = 'generated-parser-helper-missing';
+const privateParserHelperRequired = process.env.AXMEM_REQUIRE_GO_HELPER === '1';
+const privateParserRequiredMissingReason = 'generated-parser-helper-required-missing';
+function unavailablePrivateParserCheck(name) {
+  if (privateParserHelperRequired) check(name, false, privateParserRequiredMissingReason);
+  else skipCheck(name, privateParserSkipReason);
 }
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 function git(root, args) {
@@ -30,7 +45,19 @@ const generatorText = [
 
 function makeBaseInventory() {
   const generator = Buffer.from(generatorText);
-  const actual = F.inspectLiteralGeneratedArtifact('generator.sh', generator, { variable: 'tmp', marker: 'GEN_EOF' });
+  const body = Buffer.from('console.log("ok");\n');
+  const callExpression = 'node "$tmp"';
+  const generatedRecord = {
+    version: 1,
+    id: 'generated-main',
+    generatorPath: 'generator.sh',
+    generatorSha256: sha256(generator),
+    heredoc: {
+      variable: 'tmp', marker: 'GEN_EOF', startLine: 3, endLine: 5,
+      bodyBytes: body.length, bodySha256: sha256(body), bodyEndsWithLf: true,
+    },
+    call: { line: 6, expression: callExpression, lineSha256: sha256(Buffer.from(callExpression, 'utf8')) },
+  };
   return {
     version: 1,
     settingsJson: 'settings.json',
@@ -54,15 +81,7 @@ function makeBaseInventory() {
     externalDependencies: [],
     auditEvidence: ['synthetic R9 generated-artifact buildManifest fixture'],
     allowedDifferences: [],
-    generatedArtifacts: [{
-      version: 1,
-      id: 'generated-main',
-      generatorPath: 'generator.sh',
-      generatorSha256: actual.generatorSha256,
-      heredoc: { ...actual.heredoc },
-      call: { ...actual.call },
-      untrustedClaim: 'must-not-survive-normalization',
-    }],
+    generatedArtifacts: [{ ...generatedRecord, untrustedClaim: 'must-not-survive-normalization' }],
   };
 }
 
@@ -75,15 +94,17 @@ function makeFixture() {
   fs.writeFileSync(path.join(live, 'generator.sh'), generatorText);
   fs.writeFileSync(path.join(live, 'generated-dep.cjs'), 'module.exports = 1;\n');
   git(root, ['init', '-q']);
-  git(root, ['config', 'user.name', 'R9']);
-  git(root, ['config', 'user.email', 'r9@example.invalid']);
+  const top = path.resolve(git(root, ['rev-parse', '--show-toplevel']));
+  if (top !== path.resolve(root)) throw new Error('fixture git toplevel mismatch: ' + top + ' != ' + path.resolve(root));
   git(root, ['config', 'core.autocrlf', 'false']);
   git(root, ['add', '.claude']);
-  git(root, ['commit', '-qm', 'synthetic frozen source']);
+  git(root, ['-c', 'user.name=R9', '-c', 'user.email=r9@example.invalid', '-c', 'core.autocrlf=false', 'commit', '-qm', 'synthetic frozen source']);
   return { root, live, inventory: makeBaseInventory(), inventoryPath: path.join(root, 'inventory.json') };
 }
 function runBuild(fx, inv = fx.inventory) {
   writeJson(fx.inventoryPath, inv);
+  git(fx.root, ['add', '--', 'inventory.json']);
+  git(fx.root, ['-c', 'user.name=R9', '-c', 'user.email=r9@example.invalid', '-c', 'core.autocrlf=false', 'commit', '-qm', 'inventory fixture']);
   return F.buildManifest({ liveDir: fx.live, inventoryPath: fx.inventoryPath, generatedAt: '2026-09-30T00:00:00.000Z' });
 }
 function expectError(name, mutate, code) {
@@ -101,7 +122,7 @@ function expectError(name, mutate, code) {
   check(name, got === code, 'got=' + got);
 }
 
-{
+if (privateParserHelperAvailable) {
   const fx = makeFixture();
   try {
     const m = runBuild(fx);
@@ -109,6 +130,17 @@ function expectError(name, mutate, code) {
     check('verified record reaches manifest', Array.isArray(g) && g.length === 1 && g[0].id === 'generated-main');
     check('manifest record is verifier output', g[0].status === 'artifact-verified' && g[0].executionClosed === false && !Object.prototype.hasOwnProperty.call(g[0], 'untrustedClaim'));
     check('verified hash bound to frozen generator', g[0].generatorSha256 === sha256(fs.readFileSync(path.join(fx.live, 'generator.sh'))));
+    check('existing manifest schema unchanged', m.schema === 'axmem-p2-freeze/v1' && Array.isArray(m.sourceFiles) && Array.isArray(m.hooks));
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+} else {
+  for (const name of ['verified record reaches manifest', 'manifest record is verifier output', 'verified hash bound to frozen generator']) {
+    unavailablePrivateParserCheck(name);
+  }
+  const fx = makeFixture();
+  try {
+    const inv = structuredClone(fx.inventory);
+    inv.generatedArtifacts = [];
+    const m = runBuild(fx, inv);
     check('existing manifest schema unchanged', m.schema === 'axmem-p2-freeze/v1' && Array.isArray(m.sourceFiles) && Array.isArray(m.hooks));
   } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
 }
@@ -163,9 +195,14 @@ expectError('bad record field type rejected', (inv) => {
   inv.generatedArtifacts[0].heredoc.bodyBytes = '17';
 }, 'generated-artifact-bad-record');
 
-expectError('generated evidence cannot waive unresolved dependency review', (inv) => {
-  inv.files.find((x) => x.path === 'generator.sh').unresolvedDependencies = [];
-}, 'dependency-unresolved-dynamic');
+if (privateParserHelperAvailable) {
+  expectError('generated evidence cannot waive unresolved dependency review', (inv) => {
+    inv.files.find((x) => x.path === 'generator.sh').unresolvedDependencies = [];
+  }, 'dependency-unresolved-dynamic');
+} else {
+  unavailablePrivateParserCheck('generated evidence cannot waive unresolved dependency review');
+}
 
-console.log('SUMMARY ' + JSON.stringify({ pass, fail, total: pass + fail }));
+const summary = JSON.stringify({ pass, fail, skip, total: pass + fail + skip, skipReasons });
+console.log('SUMMARY ' + summary + (skip > 0 ? ' ' + skip + ' skipped' : ''));
 if (fail) process.exit(1);

@@ -2,7 +2,6 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const cp = require('child_process');
@@ -39,36 +38,19 @@ function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('he
 
 function inventorySnapshotCommit(repoRoot, relPath, bytes) {
   const head = String(git(repoRoot, ['rev-parse', 'HEAD'])).trim();
-  try {
-    const committed = git(repoRoot, ['show', head + ':' + relPath], { binary: true });
-    if (Buffer.isBuffer(committed) && committed.equals(bytes)) return head;
-  } catch {}
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-p2-inventory-index-'));
-  const indexPath = path.join(temp, 'index');
-  const env = Object.assign({}, process.env, {
-    GIT_INDEX_FILE: indexPath,
-    GIT_AUTHOR_NAME: 'AxMem Freeze Snapshot',
-    GIT_AUTHOR_EMAIL: 'axmem-freeze@local.invalid',
-    GIT_COMMITTER_NAME: 'AxMem Freeze Snapshot',
-    GIT_COMMITTER_EMAIL: 'axmem-freeze@local.invalid',
-    GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
-    GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
-  });
-  const rawGit = (args, opts = {}) => cp.execFileSync('git', ['-C', repoRoot].concat(args), {
-    env, encoding: opts.binary ? null : 'utf8', input: opts.input, stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  try {
-    rawGit(['read-tree', head]);
-    const blobOid = String(rawGit(['hash-object', '-w', '--stdin'], { input: bytes })).trim();
-    rawGit(['update-index', '--add', '--cacheinfo', '100644,' + blobOid + ',' + relPath]);
-    const treeOid = String(rawGit(['write-tree'])).trim();
-    return String(rawGit(['commit-tree', treeOid, '-p', head], { input: 'AxMem inventory buildManifest snapshot\n' })).trim();
-  } catch (e) {
-    const err = String((e.stderr && e.stderr.toString()) || e.message || e).trim();
-    throw new FreezeError('inventory-snapshot-commit', 'cannot create detached inventory snapshot commit: ' + err);
-  } finally {
-    try { fs.rmSync(temp, { recursive: true, force: true }); } catch {}
+  let committed;
+  try { committed = git(repoRoot, ['show', head + ':' + relPath], { binary: true }); }
+  catch {
+    throw new FreezeError('inventory-commit-binding', 'buildManifest requires inventoryPath to be committed at AxMem HEAD', {
+      head, path: relPath, reason: 'inventory-path-not-committed-at-head',
+    });
   }
+  if (!Buffer.isBuffer(committed) || !committed.equals(bytes)) {
+    throw new FreezeError('inventory-commit-binding', 'buildManifest requires current inventory bytes to be committed at AxMem HEAD', {
+      head, path: relPath, reason: 'inventory-bytes-not-committed-at-head',
+    });
+  }
+  return head;
 }
 
 function safeRelativeFile(p) {
@@ -743,8 +725,40 @@ function normalizeBusinessExitContract(h, label) {
   return { businessExitCodes: codes };
 }
 
-function normalizeCommandWhitespace(value) {
-  return String(value === undefined || value === null ? '' : value).trim().replace(/\s+/g, ' ');
+function normalizeCommandWhitespace(value, label, field = 'runtimeHealthProbe.innerCommand') {
+  const input = String(value === undefined || value === null ? '' : value);
+  let out = '';
+  let quoted = false;
+  let pendingSpace = false;
+  let offset = 0;
+  for (const ch of input) {
+    if (ch === '"') {
+      if (!quoted && pendingSpace && out) out += ' ';
+      pendingSpace = false;
+      out += ch;
+      quoted = !quoted;
+      offset += ch.length;
+      continue;
+    }
+    if (!quoted && (ch === ' ' || ch === '\t')) {
+      if (out) pendingSpace = true;
+      offset += ch.length;
+      continue;
+    }
+    if (!quoted && (/\s/u.test(ch) || /\p{White_Space}/u.test(ch))) {
+      throw new FreezeError('bad-inventory', String(label || 'hook') + ' contains non-blank whitespace outside double quotes', {
+        field, label: String(label || 'hook'), reason: 'unquoted-non-blank-whitespace',
+        offset, codePoint: 'U+' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0'),
+      });
+    }
+    if (!quoted && pendingSpace) {
+      out += ' ';
+      pendingSpace = false;
+    }
+    out += ch;
+    offset += ch.length;
+  }
+  return out;
 }
 
 const REVIEWED_INNER_REDIRS = new Set(['>/dev/null', '2>/dev/null', '2>&1', '>&2']);
@@ -754,8 +768,8 @@ const REVIEWED_INNER_ENV_WORD_RE = /^[A-Za-z0-9._/:-]+$/;
 const REVIEWED_INNER_QUOTED_RE = /^"[^"$\x60\\]*"$/;
 const REVIEWED_INNER_SHELL_SYNTAX_RE = /(?:\|\||&&|[;|&(){}!\x60#<]|\$\()/;
 
-function reviewedInnerTokens(command) {
-  const input = normalizeCommandWhitespace(command);
+function reviewedInnerTokens(command, label) {
+  const input = normalizeCommandWhitespace(command, label, 'runtimeHealthProbe.innerCommand');
   const tokens = [];
   let token = '';
   let quoted = false;
@@ -794,7 +808,7 @@ function reviewedInnerSyntaxError(label, input, tokenIndex, token, reason) {
 }
 
 function validateReviewedInnerSimpleCommand(command, label) {
-  const parsed = reviewedInnerTokens(command);
+  const parsed = reviewedInnerTokens(command, label);
   const tokens = parsed.tokens;
   if (parsed.error) {
     reviewedInnerSyntaxError(label, parsed.input, parsed.error.tokenIndex, parsed.error.token, parsed.error.reason);
@@ -818,6 +832,7 @@ function validateReviewedInnerSimpleCommand(command, label) {
   if (tokens[i] !== 'bash' && tokens[i] !== 'node') {
     reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], 'interpreter-must-be-bash-or-node');
   }
+  const interpreter = tokens[i];
   i++;
   if (i >= tokens.length) reviewedInnerSyntaxError(label, parsed.input, i, '<eof>', 'missing-path');
   if (!REVIEWED_INNER_QUOTED_RE.test(tokens[i])) {
@@ -826,6 +841,7 @@ function validateReviewedInnerSimpleCommand(command, label) {
       : 'path-must-be-double-quoted-literal';
     reviewedInnerSyntaxError(label, parsed.input, i, tokens[i], reason);
   }
+  const entryPath = tokens[i].slice(1, -1);
   i++;
   let redirections = false;
   for (; i < tokens.length; i++) {
@@ -840,11 +856,46 @@ function validateReviewedInnerSimpleCommand(command, label) {
     if (redirections) reviewedInnerSyntaxError(label, parsed.input, i, t, 'argument-after-redirection');
     if (!REVIEWED_INNER_ARG_RE.test(t)) reviewedInnerSyntaxError(label, parsed.input, i, t, 'invalid-argument');
   }
-  return parsed.input;
+  return { input: parsed.input, interpreter, entryPath };
 }
 
-function reviewedInnerCommandForOuter(command) {
-  const outer = normalizeCommandWhitespace(command);
+function reviewedInnerCommandInfo(command, label) {
+  return validateReviewedInnerSimpleCommand(command, label);
+}
+
+function normalizePortableBindingPath(value) {
+  let s = posix(String(value || '').trim());
+  let m = /^\/cygdrive\/([A-Za-z])\/(.*)$/.exec(s);
+  if (m) s = m[1].toUpperCase() + ':/' + m[2];
+  else {
+    m = /^\/([A-Za-z])\/(.*)$/.exec(s);
+    if (m) s = m[1].toUpperCase() + ':/' + m[2];
+    else if (/^[A-Za-z]:\//.test(s)) s = s[0].toUpperCase() + s.slice(1);
+  }
+  s = path.posix.normalize(s);
+  return s.length > 1 ? s.replace(/\/+$/, '') : s;
+}
+
+function entryRelativeToLiveRoot(entryPath, liveRoot, label) {
+  if (typeof liveRoot !== 'string' || !liveRoot.trim()) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe entry binding requires the live root', {
+      field: 'runtimeHealthProbe.innerCommand', label, entryPath, reason: 'entry-live-root-missing',
+    });
+  }
+  const root = normalizePortableBindingPath(path.resolve(liveRoot));
+  const target = normalizePortableBindingPath(entryPath);
+  const fold = process.platform === 'win32' ? (x) => x.toLowerCase() : (x) => x;
+  const rootFold = fold(root), targetFold = fold(target);
+  if (!target || targetFold === rootFold || !targetFold.startsWith(rootFold + '/')) {
+    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe entry path must be inside the live root', {
+      field: 'runtimeHealthProbe.innerCommand', label, entryPath, liveRoot: root, reason: 'entry-path-outside-live-root',
+    });
+  }
+  return safeRelativeFile(target.slice(root.length + 1));
+}
+
+function reviewedInnerCommandForOuter(command, label) {
+  const outer = normalizeCommandWhitespace(command, label, 'command');
   let match = /^(.*\S)\s+\|\|\s+exit\s+0$/.exec(outer);
   let kind = null;
   let inner = outer;
@@ -859,7 +910,7 @@ function reviewedInnerCommandForOuter(command) {
     }
   }
   if (kind) {
-    const nested = reviewedInnerCommandForOuter(inner);
+    const nested = reviewedInnerCommandForOuter(inner, label);
     if (nested.kind) return { outer, inner, kind, multipleTails: true };
   }
   return { outer, inner, kind, multipleTails: false };
@@ -873,8 +924,8 @@ function normalizeRuntimeHealthProbe(h, label) {
   if (typeof p.innerCommand !== 'string' || !p.innerCommand.trim()) {
     throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand must be a non-empty reviewed command');
   }
-  const relation = reviewedInnerCommandForOuter(h.command);
-  const reviewedInner = normalizeCommandWhitespace(p.innerCommand);
+  const relation = reviewedInnerCommandForOuter(h.command, label);
+  const reviewedInner = normalizeCommandWhitespace(p.innerCommand, label, 'runtimeHealthProbe.innerCommand');
   if (!relation.outer) {
     throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand requires a non-empty outer command', {
       field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
@@ -906,15 +957,23 @@ function normalizeRuntimeHealthProbe(h, label) {
   return { version: 1, innerCommand: p.innerCommand, reliable: p.reliable, notes: p.notes.trim() };
 }
 
-function validateInventory(inv, liveHooks) {
+function validateInventory(inv, liveHooks, liveRoot) {
   if (!inv || inv.version !== 1) throw new FreezeError('bad-inventory', 'inventory.version must be 1');
   if (!Array.isArray(inv.hooks) || !Array.isArray(inv.files)) throw new FreezeError('bad-inventory', 'inventory hooks/files must be arrays');
 
   const fileMap = new Map();
+  const fileCaseMap = new Map();
   for (const f of inv.files) {
     if (!f || typeof f !== 'object') throw new FreezeError('bad-inventory', 'inventory file entry must be an object');
     const rel = safeRelativeFile(f.path);
     if (fileMap.has(rel)) throw new FreezeError('bad-inventory', 'duplicate inventory file: ' + rel);
+    const foldedRel = rel.toLowerCase();
+    if (fileCaseMap.has(foldedRel)) {
+      throw new FreezeError('bad-inventory', 'inventory file paths must be unique under case folding: ' + fileCaseMap.get(foldedRel) + ' vs ' + rel, {
+        path: rel, existingPath: fileCaseMap.get(foldedRel), reason: 'path-case-collision',
+      });
+    }
+    fileCaseMap.set(foldedRel, rel);
     if (!DISPOSITIONS.has(f.disposition)) throw new FreezeError('bad-inventory', 'invalid disposition for ' + rel);
     const deps = Array.isArray(f.dependencies) ? f.dependencies.map(safeRelativeFile) : [];
     const unresolvedDependencies = Array.isArray(f.unresolvedDependencies) ? f.unresolvedDependencies.map((x) => {
@@ -945,6 +1004,7 @@ function validateInventory(inv, liveHooks) {
   const externalMap = normalizeExternalDependencies(inv);
   const generatedArtifacts = normalizeGeneratedArtifacts(inv);
 
+  const entryBindingChecks = [];
   const inventoryHooks = new Map();
   for (const h of inv.hooks) {
     if (!h || typeof h !== 'object' || !DISPOSITIONS.has(h.disposition)) throw new FreezeError('bad-inventory', 'hook disposition is missing/invalid');
@@ -972,6 +1032,7 @@ function validateInventory(inv, liveHooks) {
       runtimeHealthProbe,
     });
     for (const f of normalized.files) if (!fileMap.has(f)) throw new FreezeError('bad-inventory', 'hook references file absent from inventory: ' + f);
+    if (sourceRequired) entryBindingChecks.push({ label, hook: normalized });
     const key = hookIdentity(normalized);
     if (inventoryHooks.has(key)) throw new FreezeError('bad-inventory', 'duplicate hook inventory identity: ' + key);
     inventoryHooks.set(key, normalized);
@@ -983,6 +1044,17 @@ function validateInventory(inv, liveHooks) {
   for (const h of liveHooks) {
     const key = hookIdentity(h);
     if (!inventoryHooks.has(key)) throw new FreezeError('hook-inventory-mismatch', 'live hook is not exactly inventoried: ' + key);
+  }
+  for (const check of entryBindingChecks) {
+    const entryInfo = reviewedInnerCommandInfo(check.hook.runtimeHealthProbe.innerCommand, check.label);
+    const entryRel = entryRelativeToLiveRoot(entryInfo.entryPath, liveRoot, check.label);
+    if (!check.hook.files.includes(entryRel)) {
+      throw new FreezeError('bad-inventory', check.label + ' runtimeHealthProbe entry path must be declared in this hook files[]', {
+        field: 'runtimeHealthProbe.innerCommand', label: check.label, entryPath: entryInfo.entryPath,
+        liveRoot: normalizePortableBindingPath(path.resolve(liveRoot)),
+        entryRelativePath: entryRel, files: check.hook.files.slice(), reason: 'inner-command-entry-not-in-files',
+      });
+    }
   }
 
   if (!Array.isArray(inv.allowedDifferences)) throw new FreezeError('bad-inventory', 'allowedDifferences must be an array');
@@ -1040,7 +1112,7 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
     throw new FreezeError('settings-mirror-mismatch', 'live settings hooks do not exactly match tracked mirror: ' + settingsMirrorRel);
   }
   const settingsHookIdentitySha256 = hookIdentitySha256(liveHooks);
-  const { fileMap, inventoryHooks, externalMap, generatedArtifacts } = validateInventory(inv, liveHooks);
+  const { fileMap, inventoryHooks, externalMap, generatedArtifacts } = validateInventory(inv, liveHooks, live);
   if (!fileMap.has(settingsMirrorRel)) throw new FreezeError('bad-inventory', 'settingsMirror must also appear in files[] so its commit blob is frozen: ' + settingsMirrorRel);
 
   const blobs = new Map();
@@ -1178,7 +1250,7 @@ function parseArgs(argv) {
   return o;
 }
 
-module.exports = { FreezeError, flattenHooks, hookIdentity, validateInventory, normalizeGeneratedArtifacts, normalizeBusinessExitContract, normalizeRuntimeHealthProbe, analyzeDependencyReferences, inspectLiteralGeneratedArtifact, verifyGeneratedArtifactEvidence, detectLiteralDependencies, verifyDependencyClosure, buildManifest, generate, writeJsonAtomic, safeRelativeFile };
+module.exports = { FreezeError, flattenHooks, hookIdentity, validateInventory, normalizeGeneratedArtifacts, normalizeBusinessExitContract, normalizeRuntimeHealthProbe, reviewedInnerCommandInfo, entryRelativeToLiveRoot, analyzeDependencyReferences, inspectLiteralGeneratedArtifact, verifyGeneratedArtifactEvidence, detectLiteralDependencies, verifyDependencyClosure, buildManifest, generate, writeJsonAtomic, safeRelativeFile };
 
 if (require.main === module) {
   try {
