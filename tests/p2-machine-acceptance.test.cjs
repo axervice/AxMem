@@ -784,7 +784,7 @@ try {
   a6RejectBeforeExecution('missing sourceFile sha256', (x) => { delete x.sourceFiles[0].sha256; }, 'freeze-source-hash-missing');
   a6RejectBeforeExecution('missing inventorySha256', (x) => { delete x.inventorySha256; }, 'freeze-inventory-binding-missing');
   a6RejectBeforeExecution('missing inventoryCommit', (x) => { delete x.inventoryCommit; }, 'freeze-inventory-binding-missing');
-  a6RejectBeforeExecution('nonexistent inventory commit', (x) => { x.inventoryCommit = 'f'.repeat(40); }, 'freeze-inventory-blob-read-failed');
+  a6RejectBeforeExecution('nonexistent inventory commit', (x) => { x.inventoryCommit = 'f'.repeat(40); }, 'inventory-commit-unreachable');
   a6RejectBeforeExecution('nonexistent inventory path at pinned commit', (x) => { x.inventoryPath = 'docs/freeze/DOES-NOT-EXIST.json'; }, 'freeze-inventory-blob-read-failed');
   a6RejectBeforeExecution('deleted sourceFiles dependency declaration', (x) => { const row = x.sourceFiles.find((v) => Array.isArray(v.dependencies) && v.dependencies.length > 0); row.dependencies = row.dependencies.slice(1); }, 'freeze-source-dependencies-mismatch');
   a6RejectBeforeExecution('missing settingsEvidence', (x) => { delete x.settingsEvidence; }, 'freeze-settings-evidence-missing');

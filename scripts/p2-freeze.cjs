@@ -2,7 +2,6 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const cp = require('child_process');
@@ -39,36 +38,19 @@ function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('he
 
 function inventorySnapshotCommit(repoRoot, relPath, bytes) {
   const head = String(git(repoRoot, ['rev-parse', 'HEAD'])).trim();
-  try {
-    const committed = git(repoRoot, ['show', head + ':' + relPath], { binary: true });
-    if (Buffer.isBuffer(committed) && committed.equals(bytes)) return head;
-  } catch {}
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-p2-inventory-index-'));
-  const indexPath = path.join(temp, 'index');
-  const env = Object.assign({}, process.env, {
-    GIT_INDEX_FILE: indexPath,
-    GIT_AUTHOR_NAME: 'AxMem Freeze Snapshot',
-    GIT_AUTHOR_EMAIL: 'axmem-freeze@local.invalid',
-    GIT_COMMITTER_NAME: 'AxMem Freeze Snapshot',
-    GIT_COMMITTER_EMAIL: 'axmem-freeze@local.invalid',
-    GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
-    GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
-  });
-  const rawGit = (args, opts = {}) => cp.execFileSync('git', ['-C', repoRoot].concat(args), {
-    env, encoding: opts.binary ? null : 'utf8', input: opts.input, stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  try {
-    rawGit(['read-tree', head]);
-    const blobOid = String(rawGit(['hash-object', '-w', '--stdin'], { input: bytes })).trim();
-    rawGit(['update-index', '--add', '--cacheinfo', '100644,' + blobOid + ',' + relPath]);
-    const treeOid = String(rawGit(['write-tree'])).trim();
-    return String(rawGit(['commit-tree', treeOid, '-p', head], { input: 'AxMem inventory buildManifest snapshot\n' })).trim();
-  } catch (e) {
-    const err = String((e.stderr && e.stderr.toString()) || e.message || e).trim();
-    throw new FreezeError('inventory-snapshot-commit', 'cannot create detached inventory snapshot commit: ' + err);
-  } finally {
-    try { fs.rmSync(temp, { recursive: true, force: true }); } catch {}
+  let committed;
+  try { committed = git(repoRoot, ['show', head + ':' + relPath], { binary: true }); }
+  catch {
+    throw new FreezeError('inventory-commit-binding', 'buildManifest requires inventoryPath to be committed at AxMem HEAD', {
+      head, path: relPath, reason: 'inventory-path-not-committed-at-head',
+    });
   }
+  if (!Buffer.isBuffer(committed) || !committed.equals(bytes)) {
+    throw new FreezeError('inventory-commit-binding', 'buildManifest requires current inventory bytes to be committed at AxMem HEAD', {
+      head, path: relPath, reason: 'inventory-bytes-not-committed-at-head',
+    });
+  }
+  return head;
 }
 
 function safeRelativeFile(p) {
@@ -744,7 +726,29 @@ function normalizeBusinessExitContract(h, label) {
 }
 
 function normalizeCommandWhitespace(value) {
-  return String(value === undefined || value === null ? '' : value).trim().replace(/\s+/g, ' ');
+  const input = String(value === undefined || value === null ? '' : value);
+  let out = '';
+  let quoted = false;
+  let pendingSpace = false;
+  for (const ch of input) {
+    if (ch === '"') {
+      if (!quoted && pendingSpace && out) out += ' ';
+      pendingSpace = false;
+      out += ch;
+      quoted = !quoted;
+      continue;
+    }
+    if (!quoted && /\s/.test(ch)) {
+      if (out) pendingSpace = true;
+      continue;
+    }
+    if (!quoted && pendingSpace) {
+      out += ' ';
+      pendingSpace = false;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 const REVIEWED_INNER_REDIRS = new Set(['>/dev/null', '2>/dev/null', '2>&1', '>&2']);

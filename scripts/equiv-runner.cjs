@@ -733,6 +733,19 @@ function validateInventoryBinding(freeze, axmemRepoRoot, settingsHooks, sourceRe
   }
   if (!axmemRepoRoot) throw new EquivInfrastructureError('freeze-axmem-root-missing', 'AxMem repository root is required for inventory verification');
   const rel = safeRel(freeze.inventoryPath);
+  const axmemRoot = path.resolve(axmemRepoRoot);
+  const ancestry = cp.spawnSync('git', ['-C', axmemRoot, 'merge-base', '--is-ancestor', freeze.inventoryCommit, 'HEAD'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
+  });
+  if (ancestry.error || ancestry.signal || ancestry.status !== 0) {
+    throw new EquivInfrastructureError('inventory-commit-unreachable', 'freeze inventoryCommit must be reachable from AxMem HEAD before inventory bytes are read', {
+      commit: freeze.inventoryCommit,
+      axmemRepoRoot: axmemRoot,
+      status: ancestry.status,
+      signal: ancestry.signal || null,
+      cause: ancestry.error ? String(ancestry.error.message || ancestry.error) : String(ancestry.stderr || '').trim(),
+    });
+  }
   let bytes;
   try { bytes = gitBlob(path.resolve(axmemRepoRoot), freeze.inventoryCommit + ':' + rel); }
   catch (e) { throw new EquivInfrastructureError('freeze-inventory-blob-read-failed', 'cannot read bound inventory blob from recorded AxMem commit', { commit: freeze.inventoryCommit, path: rel, cause: String(e && e.message || e) }); }

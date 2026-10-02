@@ -75,15 +75,17 @@ function makeFixture() {
   fs.writeFileSync(path.join(live, 'generator.sh'), generatorText);
   fs.writeFileSync(path.join(live, 'generated-dep.cjs'), 'module.exports = 1;\n');
   git(root, ['init', '-q']);
-  git(root, ['config', 'user.name', 'R9']);
-  git(root, ['config', 'user.email', 'r9@example.invalid']);
+  const top = path.resolve(git(root, ['rev-parse', '--show-toplevel']));
+  if (top !== path.resolve(root)) throw new Error('fixture git toplevel mismatch: ' + top + ' != ' + path.resolve(root));
   git(root, ['config', 'core.autocrlf', 'false']);
   git(root, ['add', '.claude']);
-  git(root, ['commit', '-qm', 'synthetic frozen source']);
+  git(root, ['-c', 'user.name=R9', '-c', 'user.email=r9@example.invalid', '-c', 'core.autocrlf=false', 'commit', '-qm', 'synthetic frozen source']);
   return { root, live, inventory: makeBaseInventory(), inventoryPath: path.join(root, 'inventory.json') };
 }
 function runBuild(fx, inv = fx.inventory) {
   writeJson(fx.inventoryPath, inv);
+  git(fx.root, ['add', '--', 'inventory.json']);
+  git(fx.root, ['-c', 'user.name=R9', '-c', 'user.email=r9@example.invalid', '-c', 'core.autocrlf=false', 'commit', '-qm', 'inventory fixture']);
   return F.buildManifest({ liveDir: fx.live, inventoryPath: fx.inventoryPath, generatedAt: '2026-09-30T00:00:00.000Z' });
 }
 function expectError(name, mutate, code) {
