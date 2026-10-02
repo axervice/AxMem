@@ -166,6 +166,11 @@ function createScanner(source, options = {}) {
   let cwdUnknown = options._cwdUnknown === true;
   let posixMode = options._posixMode === true;
   let bashEnvActive = options._bashEnvActive === true;
+  let positional1Values = Array.isArray(options.productionArgv1Values) &&
+      options.productionArgv1Values.every((x) => typeof x === 'string') &&
+      options.productionArgv1Unknown !== true ?
+    new Set(options.productionArgv1Values) : null;
+  let currentDormantRule = typeof options._dormantRule === 'string' ? options._dormantRule : null;
   let functionDepth = 0;
   const records = new Map();
   const functionStack = new Set();
@@ -195,10 +200,85 @@ function createScanner(source, options = {}) {
     return names;
   }
 
-  const fileDefinesTerminatorFunction = (() => {
-    const names = functionNamesIn(ast);
-    return names.has('exit') || names.has('exec') || names.has('return');
-  })();
+  const fileFunctionNames = functionNamesIn(ast);
+  const productionInvocationPaths = Array.isArray(options.productionInvocationPaths) ?
+    options.productionInvocationPaths.filter((x) => typeof x === 'string').map((x) => x.replace(/\\/g, '/')) : [];
+  const uniqueInvocationPaths = [...new Set(productionInvocationPaths)];
+  const productionSourcePaths = Array.isArray(options.productionSourcePaths) ?
+    options.productionSourcePaths.filter((x) => typeof x === 'string').map((x) => x.replace(/\\/g, '/')) : [];
+  const uniqueSourcePaths = [...new Set(productionSourcePaths)];
+  function singleAbsoluteSpelling(values) {
+    if (values.length !== 1) return null;
+    const value = values[0];
+    return path.posix.isAbsolute(value) || /^[A-Za-z]:\//.test(value) ? value : null;
+  }
+  const directInvocationSpelling = options.sourcedOnProductionPath !== true ?
+    singleAbsoluteSpelling(uniqueInvocationPaths) : null;
+  const bashSourceSpelling = options.sourcedOnProductionPath === true ?
+    singleAbsoluteSpelling(uniqueSourcePaths) : directInvocationSpelling;
+  const localLiteralCalls = new Set();
+  let localDynamicCall = false;
+  walkAst(ast, (node) => {
+    if (!node || node.type !== 'Command' || !node.name) return;
+    const commandWord = shellWordValue(node.name, source, new Map());
+    if (commandWord.resolved) localLiteralCalls.add(commandWord.value);
+    else localDynamicCall = true;
+  });
+  const requestedNeverCalledFunctions = options.proveWholeClosureFunctions === true ?
+    new Set(options.wholeClosureNeverCalledFunctions || []) : new Set();
+  const closureNeverCalledFunctions = new Set([...requestedNeverCalledFunctions].filter((name) =>
+    fileFunctionNames.has(name) && !localLiteralCalls.has(name) && !localDynamicCall));
+
+  function commandProofSafe(name, spelling) {
+    return !!spelling &&
+      !functionTableUnknown && !commandResolutionUnknown &&
+      !functions.has(name) && !poisonedFunctions.has(name) && !fileFunctionNames.has(name);
+  }
+
+  function specialInvocationWordValue(word) {
+    if (!word || typeof word.text !== 'string') return null;
+    const raw = word.text.endsWith('\r') ? word.text.slice(0, -1) : word.text;
+    if (raw === '"$0"') return directInvocationSpelling;
+    if (raw === '"${BASH_SOURCE[0]}"') return bashSourceSpelling;
+
+    let m = /^"\$\(dirname "\$0"\)([^"]*)"$/.exec(raw);
+    if (m && commandProofSafe('dirname', directInvocationSpelling)) {
+      return path.posix.dirname(directInvocationSpelling) + m[1];
+    }
+    m = /^"\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)([^"]*)"$/.exec(raw);
+    if (m && commandProofSafe('dirname', bashSourceSpelling)) {
+      return path.posix.dirname(bashSourceSpelling) + m[1];
+    }
+    if (raw === '"$(cd "$(dirname "$0")" && pwd)"' &&
+        commandProofSafe('dirname', directInvocationSpelling) &&
+        commandProofSafe('cd', directInvocationSpelling) &&
+        commandProofSafe('pwd', directInvocationSpelling)) {
+      return path.posix.dirname(directInvocationSpelling);
+    }
+    if (raw === '"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' &&
+        commandProofSafe('dirname', bashSourceSpelling) &&
+        commandProofSafe('cd', bashSourceSpelling) &&
+        commandProofSafe('pwd', bashSourceSpelling)) {
+      return path.posix.dirname(bashSourceSpelling);
+    }
+    return null;
+  }
+
+  function targetFromWord(word, ignoredSource, bindings) {
+    if (!word) return { expression: '', resolved: false, value: null, word: null };
+    const v = shellWordValue(word, source, bindings);
+    if (v.resolved) {
+      return { expression: word.text, resolved: true, value: v.value, word: v.projected };
+    }
+    const special = specialInvocationWordValue(word);
+    if (special !== null) {
+      return { expression: word.text, resolved: true, value: special, word: v.projected };
+    }
+    return { expression: word.text, resolved: false, value: null, word: v.projected };
+  }
+
+  const fileDefinesTerminatorFunction =
+    fileFunctionNames.has('exit') || fileFunctionNames.has('exec') || fileFunctionNames.has('return');
 
   const fileDisablesControlFlowShortcuts = (() => {
     if (fileDefinesTerminatorFunction || fileHasEscapingFunctionLoopControl()) return true;
@@ -240,6 +320,7 @@ function createScanner(source, options = {}) {
       cwdUnknown,
       posixMode,
       bashEnvActive,
+      positional1Values: positional1Values ? new Set(positional1Values) : null,
     };
   }
 
@@ -253,6 +334,7 @@ function createScanner(source, options = {}) {
     cwdUnknown = state.cwdUnknown;
     posixMode = state.posixMode;
     bashEnvActive = state.bashEnvActive;
+    positional1Values = state.positional1Values ? new Set(state.positional1Values) : null;
     try {
       return fn();
     } finally {
@@ -264,6 +346,7 @@ function createScanner(source, options = {}) {
       cwdUnknown = saved.cwdUnknown;
       posixMode = saved.posixMode;
       bashEnvActive = saved.bashEnvActive;
+      positional1Values = saved.positional1Values ? new Set(saved.positional1Values) : null;
     }
   }
 
@@ -306,6 +389,7 @@ function createScanner(source, options = {}) {
       functionsUnknown: false,
       commandResolutionUnknown: false,
       cwdUnknown: false,
+      positionalUnknown: false,
     };
   }
 
@@ -314,6 +398,7 @@ function createScanner(source, options = {}) {
     effects.clearFunctions = true;
     effects.functionsUnknown = true;
     effects.cwdUnknown = true;
+    effects.positionalUnknown = true;
     return effects;
   }
 
@@ -323,6 +408,7 @@ function createScanner(source, options = {}) {
     if (other.clearFunctions) into.clearFunctions = true;    if (other.functionsUnknown) into.functionsUnknown = true;
     if (other.commandResolutionUnknown) into.commandResolutionUnknown = true;
     if (other.cwdUnknown) into.cwdUnknown = true;
+    if (other.positionalUnknown) into.positionalUnknown = true;
     for (const name of other.names || []) into.names.add(name);
     for (const name of other.poisonFunctions || []) into.poisonFunctions.add(name);
     return into;
@@ -341,6 +427,7 @@ function createScanner(source, options = {}) {
     poisonFunctionNames(effects.poisonFunctions);
     if (effects.commandResolutionUnknown) commandResolutionUnknown = true;
     if (effects.cwdUnknown) cwdUnknown = true;
+    if (effects.positionalUnknown) positional1Values = null;
   }
 
   function wordVariableName(word, bindings) {
@@ -875,7 +962,9 @@ function createScanner(source, options = {}) {
         if (localFunctions.has(command) && !seenFunctions.has(command)) {
           const nextSeen = new Set(seenFunctions);
           nextSeen.add(command);
-          mergeEffects(effects, collectEffects(localFunctions.get(command).body, localFunctions, nextSeen));
+          const functionEffects = collectEffects(localFunctions.get(command).body, localFunctions, nextSeen);
+          functionEffects.positionalUnknown = false;
+          mergeEffects(effects, functionEffects);
           return effects;
         }
         if (poisonedFunctions.has(command) || functionTableUnknown) {
@@ -886,6 +975,7 @@ function createScanner(source, options = {}) {
         if (command === 'source' || command === '.' || command === 'eval') {
           effects.clearAll = true;
           effects.clearFunctions = true;          effects.functionsUnknown = true;
+          effects.positionalUnknown = true;
           return effects;
         }
         if (['read', 'export', 'declare', 'local', 'typeset', 'readonly', 'unset',
@@ -906,6 +996,7 @@ function createScanner(source, options = {}) {
         if (['set', 'shift', 'shopt', 'enable', 'alias', 'hash'].includes(command)) {
           effects.clearAll = true;
           effects.clearFunctions = true;
+          if (command === 'shift' || (command === 'set' && argValues[0] === '--')) effects.positionalUnknown = true;
           if (['enable', 'alias', 'hash'].includes(command)) effects.commandResolutionUnknown = true;
           return effects;
         }
@@ -988,10 +1079,23 @@ function createScanner(source, options = {}) {
     poisonFunctionNames(names);
   }
 
-  function scanCandidateAndInvalidate(node, bindings) {
+  function withDormantRule(rule, fn) {
+    const saved = currentDormantRule;
+    currentDormantRule = rule || null;
+    try {
+      return fn();
+    } finally {
+      currentDormantRule = saved;
+    }
+  }
+
+  function scanBranchAndInvalidate(node, bindings, branchReachability = 'conditional', dormantRule = null) {
     if (!node) return;
     const innerState = cloneShellState();
-    withShellState(innerState, () => scanNode(node, 'candidate', new Map()));
+    const rule = branchReachability === 'dormant' ? (dormantRule || currentDormantRule) : null;
+    withShellState(innerState, () => withDormantRule(rule,
+      () => scanNode(node, branchReachability, cloneBindings(bindings))));
+    if (branchReachability === 'dormant') return;
     if (terminatingArm(node)) {
       assumptions.add('no-exit-function');
       return;
@@ -999,9 +1103,14 @@ function createScanner(source, options = {}) {
     applyEffects(bindings, collectEffects(node));
   }
 
+  function childConditionalReachability(parentReachability) {
+    return parentReachability === 'dormant' ? 'dormant' : 'conditional';
+  }
 
   function rank(reachability) {
-    return reachability === 'production' ? 2 : 1;
+    if (reachability === 'production') return 3;
+    if (reachability === 'conditional') return 2;
+    return 1;
   }
 
   function addRecord(record) {
@@ -1012,23 +1121,15 @@ function createScanner(source, options = {}) {
       record.span ? record.span.start : '',
       record.span ? record.span.end : '',
       record.target || '',
+      record.origin || '',
     ].join('\u0000');
     const old = records.get(key);
     if (!old || rank(record.reachability) > rank(old.reachability)) records.set(key, record);
   }
 
   function addTarget(kind, command, expression, target, resolved, reason, reachability, node, extra = {}) {
-    let status;
-    let finalReason = reason || null;
-    if (reachability !== 'production') {
-      status = 'candidate';
-      finalReason = finalReason || 'command reachability is not proven';
-    } else if (resolved) {
-      status = 'resolved';
-    } else {
-      status = 'unresolved';
-      finalReason = finalReason || 'target cannot be proven statically';
-    }
+    const status = resolved ? 'resolved' : 'unresolved';
+    const finalReason = resolved ? (reason || null) : (reason || 'target cannot be proven statically');
     addRecord({
       kind,
       command,
@@ -1038,6 +1139,7 @@ function createScanner(source, options = {}) {
       reason: finalReason,
       reachability,
       span: spanOf(node),
+      ...(reachability === 'dormant' && currentDormantRule ? { dormantRule: currentDormantRule } : {}),
       ...extra,
     });
   }
@@ -1111,17 +1213,19 @@ function createScanner(source, options = {}) {
       _cwdUnknown: cwdUnknown,
       _posixMode: posixMode,
       _bashEnvActive: bashEnvActive,
+      _dormantRule: currentDormantRule,
     });
     for (const assumption of nested.assumptions || []) assumptions.add(assumption);
     for (const rec of nested.targets) {
-      if (rec.reachability !== 'production' && rec.span && rec.span.start < codeOffset) continue;
-      const nestedReach = reachability === 'production' ? rec.reachability : 'candidate';
+      const nestedReach = reachability === 'production' ? rec.reachability :
+        (reachability === 'dormant' ? 'dormant' : 'conditional');
       addRecord({
         ...rec,
         reachability: nestedReach,
-        status: nestedReach === 'production' ? rec.status : 'candidate',
-        reason: nestedReach === 'production' ? rec.reason :
-          (rec.reason || 'parent inline shell command is not proven reachable'),
+        status: rec.status,
+        reason: rec.reason,
+        ...(nestedReach === 'dormant' && !rec.dormantRule && currentDormantRule ?
+          { dormantRule: currentDormantRule } : {}),
         origin,
       });
     }
@@ -1695,7 +1799,7 @@ function createScanner(source, options = {}) {
       addRecord({
         ...record,
         target: null,
-        status: record.reachability === 'production' ? 'unresolved' : 'candidate',
+        status: 'unresolved',
         reason: reason + (record.reason ? '; ' + record.reason : ''),
       });
     }
@@ -1751,7 +1855,13 @@ function createScanner(source, options = {}) {
         const hasLocal = containsLiteralCommand(fn.body, new Set(['local']));
         functionDepth++;
         try {
-          scanNode(fn.body, reachability, bindings);
+          const savedPositional1Values = positional1Values;
+          positional1Values = null;
+          try {
+            scanNode(fn.body, reachability === 'dormant' ? 'dormant' : 'conditional', bindings);
+          } finally {
+            positional1Values = savedPositional1Values;
+          }
           if (reachability === 'production') {
             applyEffects(bindings, collectEffects(fn.body, new Map(functions), new Set([command])));
             if (hasLocal) bindings.clear();
@@ -1763,11 +1873,12 @@ function createScanner(source, options = {}) {
       }
       return;
     }
-    if ((functionTableUnknown && allowFunctionLookup) ||
-        (commandResolutionUnknown && !SHELL_BUILTINS.has(command))) {
-      const unknownReason = functionTableUnknown ?
-        'function table is unknown after code-loading command' :
-        'shell command resolution state is unknown';
+    if (functionTableUnknown && allowFunctionLookup) {
+      const unknownReason = 'function table is unknown after code-loading command';
+      addUnresolved('command-name', command, commandWord.expression, unknownReason, reachability, words[0]);
+      bindings.clear();
+    } else if (commandResolutionUnknown && !SHELL_BUILTINS.has(command)) {
+      const unknownReason = 'shell command resolution state is unknown';
       addUnresolved('command-name', command, commandWord.expression, unknownReason, reachability, words[0]);
       bindings.clear();
       scanDependencyShapeWithUnprovenCommand(command, words, reachability, bindings, node, unknownReason);
@@ -1799,6 +1910,7 @@ function createScanner(source, options = {}) {
       resolveSourceLike(command, words[1], reachability, bindings, node);
       bindings.clear();
       clearFunctionProof();
+      if (reachability !== 'dormant') positional1Values = null;
       return;
     }
     if (command === 'bash' || command === 'sh') {
@@ -1845,6 +1957,7 @@ function createScanner(source, options = {}) {
       scanEval(words, reachability, bindings, node);
       bindings.clear();
       markFunctionsUnknownPreservingPoison();
+      if (reachability !== 'dormant') positional1Values = null;
       return;
     }
     if (command === 'mapfile' || command === 'readarray') {
@@ -1893,12 +2006,18 @@ function createScanner(source, options = {}) {
         posixMode = true;
         return;
       }
+      if (values.length >= 1 && values[0].resolved && values[0].value === '--') {
+        invalidatePositionalParameters(bindings);
+        if (reachability !== 'dormant') positional1Values = null;
+        return;
+      }
       bindings.clear();
       clearKnownFunctions();
       return;
     }
     if (command === 'shift') {
       invalidatePositionalParameters(bindings);
+      if (reachability !== 'dormant') positional1Values = null;
       return;
     }
     if (command === 'shopt') {
@@ -1966,14 +2085,8 @@ function createScanner(source, options = {}) {
   function inferAssignmentBinding(assignment, bindings) {
     if (!assignment || !assignment.name) return null;
     if (assignment.value) {
-      const direct = shellWordValue(assignment.value, source, bindings);
+      const direct = targetFromWord(assignment.value, source, bindings);
       if (direct.resolved) return direct.value;
-      const rawText = assignment.value.text || '';
-      const text = rawText.endsWith('\r') ? rawText.slice(0, -1) : rawText;
-      const bindingText = text.length >= 2 && text[0] === '"' && text[text.length - 1] === '"' ? text.slice(1, -1) : text;
-      if (fromPath && /^\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)" && pwd\)$/.test(bindingText)) {
-        return path.posix.dirname(fromPath);
-      }
       const parts = assignment.value.parts || [];
       for (const part of parts) {
         if (!part || part.type !== 'DoubleQuoted') continue;
@@ -2090,15 +2203,87 @@ function createScanner(source, options = {}) {
     return false;
   }
 
+  function positionalComparisonTruth(atom, bareDoubleBracket = false) {
+    if (!positional1Values || positional1Values.size === 0) return { truth: null, usesPositional: false };
+    let text = String(atom || '').trim().replace(/;$/, '').trim();
+    let m = null;
+    if (bareDoubleBracket) {
+      m = /^"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*("[^"]*"|[A-Za-z0-9_.:+\/-]+)$/.exec(text);
+    } else {
+      m = /^\[\s*"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*("[^"]*"|[A-Za-z0-9_.:+\/-]+)\s*\]$/.exec(text) ||
+        /^test\s+"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*("[^"]*"|[A-Za-z0-9_.:+\/-]+)$/.exec(text);
+    }
+    if (!m) return { truth: null, usesPositional: false };
+    const op = m[1];
+    const token = m[2];
+    const literal = token.startsWith('"') ? token.slice(1, -1) : token;
+    const results = [...positional1Values].map((value) => op === '!=' ? value !== literal : value === literal);
+    if (results.every(Boolean)) return { truth: true, usesPositional: true };
+    if (results.every((x) => !x)) return { truth: false, usesPositional: true };
+    return { truth: null, usesPositional: true };
+  }
+
+  function combineGuard(parts, mode, bareDoubleBracket) {
+    const values = parts.map((part) => guardTruthText(part, bareDoubleBracket));
+    const usesPositional = values.some((x) => x.usesPositional);
+    if (mode === 'and') {
+      if (values.some((x) => x.truth === false)) return { truth: false, usesPositional };
+      if (values.every((x) => x.truth === true)) return { truth: true, usesPositional };
+      return { truth: null, usesPositional };
+    }
+    if (values.every((x) => x.truth === false)) return { truth: false, usesPositional };
+    if (values.some((x) => x.truth === true)) return { truth: true, usesPositional };
+    return { truth: null, usesPositional };
+  }
+
+  function guardTruthText(raw, bareDoubleBracket = false) {
+    let text = String(raw || '').trim().replace(/;$/, '').trim();
+    if (!bareDoubleBracket && text.startsWith('[[') && text.endsWith(']]')) {
+      return guardTruthText(text.slice(2, -2).trim(), true);
+    }
+    const orParts = text.split(/\s+\|\|\s+/);
+    if (orParts.length > 1) return combineGuard(orParts, 'or', bareDoubleBracket);
+    const andParts = text.split(/\s+&&\s+/);
+    if (andParts.length > 1) return combineGuard(andParts, 'and', bareDoubleBracket);
+    return positionalComparisonTruth(text, bareDoubleBracket);
+  }
+
+  function guardTruth(node) {
+    if (!node || !Number.isSafeInteger(node.pos) || !Number.isSafeInteger(node.end)) {
+      return { truth: null, usesPositional: false };
+    }
+    return guardTruthText(source.slice(node.pos, node.end));
+  }
+
+  function caseItemReachability(caseNode, item, parentReachability) {
+    if (parentReachability === 'dormant') return 'dormant';
+    if (!positional1Values || positional1Values.size === 0 || !caseNode || !caseNode.word) return 'conditional';
+    const wordText = String(caseNode.word.text || '').trim();
+    if (wordText !== '"$1"' && wordText !== '"${1:-}"') return 'conditional';
+    const literals = [];
+    for (const pattern of item.pattern || []) {
+      const p = targetFromWord(pattern, source, new Map());
+      if (!p.resolved || /[*?[]/.test(p.value)) return 'conditional';
+      literals.push(p.value);
+    }
+    if (literals.length === 0) return 'conditional';
+    return [...positional1Values].every((value) => !literals.includes(value)) ? 'dormant' : 'conditional';
+  }
+
   function scanNode(node, reachability, bindings) {
     if (!node || typeof node !== 'object') return;
     switch (node.type) {
       case 'Script':
       case 'CompoundList': {
         let activeReachability = reachability;
+        let activeDormantRule = reachability === 'dormant' ? currentDormantRule : null;
         for (const statement of node.commands || []) {
-          scanNode(statement, activeReachability, bindings);
-          if (activeReachability === 'production' && scopeTerminator(statement)) activeReachability = 'candidate';
+          withDormantRule(activeReachability === 'dormant' ? activeDormantRule : null,
+            () => scanNode(statement, activeReachability, bindings));
+          if (activeReachability !== 'dormant' && scopeTerminator(statement)) {
+            activeReachability = 'dormant';
+            activeDormantRule = 'rule1-definite-terminator';
+          }
         }
         return;
       }
@@ -2138,7 +2323,18 @@ function createScanner(source, options = {}) {
           clearFunctionProof();
         }
         const innerState = cloneShellState();
-        withShellState(innerState, () => scanNode(node.body, 'candidate', new Map()));
+        innerState.positional1Values = null;
+        const provenNeverCalled = !!(name && closureNeverCalledFunctions.has(name));
+        const bodyReachability = reachability === 'dormant' || provenNeverCalled ? 'dormant' : 'conditional';
+        const bodyDormantRule = reachability === 'dormant' ? currentDormantRule :
+          (provenNeverCalled ? 'rule3-never-called-function' : null);
+        functionDepth++;
+        try {
+          withShellState(innerState, () => withDormantRule(bodyDormantRule,
+            () => scanNode(node.body, bodyReachability, new Map())));
+        } finally {
+          functionDepth--;
+        }
         return;
       }
       case 'BraceGroup':
@@ -2170,14 +2366,24 @@ function createScanner(source, options = {}) {
       case 'AndOr':
         if (node.commands && node.commands[0]) scanNode(node.commands[0], reachability, bindings);
         for (let i = 1; i < (node.commands || []).length; i++) {
-          scanCandidateAndInvalidate(node.commands[i], bindings);
+          scanBranchAndInvalidate(node.commands[i], bindings, childConditionalReachability(reachability));
         }
         return;
-      case 'If':
+      case 'If': {
         scanNode(node.clause, reachability, bindings);
-        if (node.then) scanCandidateAndInvalidate(node.then, bindings);
-        if (node.else) scanCandidateAndInvalidate(node.else, bindings);
+        const proof = guardTruth(node.clause);
+        const thenReach = reachability === 'dormant' ? 'dormant' :
+          (proof.usesPositional && proof.truth === false ? 'dormant' : 'conditional');
+        const elseReach = reachability === 'dormant' ? 'dormant' :
+          (proof.usesPositional && proof.truth === true ? 'dormant' : 'conditional');
+        const thenRule = reachability === 'dormant' ? currentDormantRule :
+          (proof.usesPositional && proof.truth === false ? 'rule2-argv1-guard-false' : null);
+        const elseRule = reachability === 'dormant' ? currentDormantRule :
+          (proof.usesPositional && proof.truth === true ? 'rule2-argv1-guard-false' : null);
+        if (node.then) scanBranchAndInvalidate(node.then, bindings, thenReach, thenRule);
+        if (node.else) scanBranchAndInvalidate(node.else, bindings, elseReach, elseRule);
         return;
+      }
       case 'Case': {
         const caseReason = unsupportedWordReason(node.word);
         if (caseReason) {
@@ -2195,17 +2401,20 @@ function createScanner(source, options = {}) {
               return;
             }
             const first = patternIndex++ === 0;
-            scanWordNested(pattern, first ? reachability : 'candidate',
+            scanWordNested(pattern, first ? reachability : childConditionalReachability(reachability),
               first ? bindings : new Map());
             applyEffects(bindings, wordEffects(pattern));
           }
-          scanCandidateAndInvalidate(item.body, bindings);
+          const itemReachability = caseItemReachability(node, item, reachability);
+          const itemRule = itemReachability === 'dormant' ?
+            (reachability === 'dormant' ? currentDormantRule : 'rule2-argv1-guard-false') : null;
+          scanBranchAndInvalidate(item.body, bindings, itemReachability, itemRule);
         }
         return;
       }
       case 'While':
         scanNode(node.clause, reachability, bindings);
-        scanCandidateAndInvalidate(node.body, bindings);
+        scanBranchAndInvalidate(node.body, bindings, childConditionalReachability(reachability));
         return;
       case 'For':
         for (const word of node.wordlist || []) {
@@ -2219,7 +2428,7 @@ function createScanner(source, options = {}) {
         }
         if (node.name && typeof node.name.value === 'string') bindings.delete(node.name.value);
         else bindings.clear();
-        scanCandidateAndInvalidate(node.body, bindings);
+        scanBranchAndInvalidate(node.body, bindings, childConditionalReachability(reachability));
         return;
       case 'ArithmeticCommand':
         scanNestedAstExecutions(node, reachability, bindings);
@@ -2230,7 +2439,7 @@ function createScanner(source, options = {}) {
         scanNestedAstExecutions(node, reachability, bindings);
         poisonUnsupported('ArithmeticFor', 'arithmetic for-loop is outside the supported scanner subset',
           reachability, node, bindings, 'ArithmeticFor');
-        if (node.body) scanNode(node.body, 'candidate', new Map());
+        if (node.body) scanNode(node.body, childConditionalReachability(reachability), new Map());
         return;
       case 'TestCommand':
         scanNestedAstExecutions(node, reachability, bindings);

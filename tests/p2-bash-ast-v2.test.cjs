@@ -19,6 +19,27 @@ const LOCK_REL = path.join(ADAPTER_REL, 'parser.lock.json');
 const FIXTURE = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'round1-real-shape.json');
 const GOLDEN = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'golden.json');
 const CORPUS_GOLDEN = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'corpus-golden.json');
+const CORPUS_WHOLEFILE_GOLDEN = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'corpus-wholefile-golden.json');
+const CORPUS_FILES_DIR = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'corpus-files');
+const CORPUS_FILES_MANIFEST = path.join(CORPUS_FILES_DIR, 'MANIFEST.json');
+const CORPUS_SHA256 = '944a44bce7fb48c83a685d47a2478e669fe81526c5826304cb3cf759baf5945d';
+const CORPUS_ARGV1 = Object.freeze({
+  'guards/bash-pipe-exitcode-watch.sh': [''],
+  'guards/pmm-bash-impression.sh': [''],
+  'guards/pmm-home.sh': [''],
+  'guards/pmm-shell-memory-watch.sh': [''],
+  'guards/pmm-trigger-recall.sh': [''],
+  'guards/pmm-trigger-write-gate.sh': [''],
+  'memory/_local-config/pmm-receipt.sh': ['from-hook', 'stop-check', 'pending', 'pending-rows'],
+  'pmm-dream-pending-watch.sh': [''],
+  'pmm-entry-length-watch.sh': ['', '--block'],
+  'pmm-heat-collect.sh': [''],
+  'pmm-lessons-routing.sh': ['', '--block'],
+  'pmm-pre-compact.sh': [''],
+  'pmm-size-watch.sh': [''],
+});
+const CORPUS_SOURCED = new Set(['guards/pmm-home.sh']);
+
 const V1_RECORDED = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'v1-projection-recorded.json');
 const V1_RECORDED_SHA256 = '3c87126b6d349241279021a121a884e3a3b27f8f98c3514d6207b9672c81ccc5';
 const V1_LIVE_SAMPLE_IDS = Object.freeze(["00001","00053","00105","00157","00209","00261","00314","00366","00418","00470","00522","00574","00626","00678","00730","00782","00835","00887","00939","00991","01043","01095","01147","01199","01251","01303","01356","01408","01460","01512","01564","01616"]);
@@ -58,6 +79,35 @@ function target(scan, predicate) {
 function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
+function loadPinnedCorpusFiles() {
+  const manifestBytes = fs.readFileSync(CORPUS_FILES_MANIFEST);
+  const manifest = JSON.parse(manifestBytes.toString('utf8'));
+  const rows = [];
+  for (const item of manifest.files || []) {
+    const abs = path.join(CORPUS_FILES_DIR, ...item.relativePath.split('/'));
+    const bytes = fs.readFileSync(abs);
+    rows.push({
+      ...item,
+      bytesActual: bytes.length,
+      sha256Actual: sha256(bytes),
+      source: bytes.toString('utf8'),
+    });
+  }
+  return { manifest, manifestBytes, rows };
+}
+function corpusScanOptions(row) {
+  return {
+    fromPath: row.relativePath,
+    productionArgv1Values: CORPUS_ARGV1[row.relativePath] || [],
+    productionInvocationPaths: [row.livePath],
+    sourcedOnProductionPath: CORPUS_SOURCED.has(row.relativePath),
+    productionSourcePaths: CORPUS_SOURCED.has(row.relativePath) ? [row.livePath] : [],
+  };
+}
+function corpusWholefileScan(adapter, row) {
+  return adapter.scanDependencyTargets(Buffer.from(row.source, 'utf8'), corpusScanOptions(row));
+}
+
 
 function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -391,6 +441,23 @@ try {
     uh && uh.quoted === false && uh.delimiterSource === 'EOF' && uh.rawSourceContent === '$X\n',
     JSON.stringify({ qh, uh }));
 
+  const pinnedCorpus = loadPinnedCorpusFiles();
+  const pinnedByRel = new Map(pinnedCorpus.rows.map((row) => [row.relativePath, row]));
+  const pinnedCorpusPaths = pinnedCorpus.rows.map((row) => row.relativePath).sort();
+  const pinnedWholeScans = new Map(pinnedCorpus.rows.map((row) =>
+    [row.relativePath, corpusWholefileScan(adapter, row)]));
+  check('R16a-fix6 pinned 13-file corpus bytes match reviewed MANIFEST/CORPUS identity',
+    pinnedCorpus.manifest.corpusSha256 === CORPUS_SHA256 &&
+      pinnedCorpus.rows.length === 13 &&
+      pinnedCorpus.rows.every((row) => row.bytesActual === row.bytes && row.sha256Actual === row.sha256) &&
+      pinnedCorpusPaths.includes('pmm-lessons-routing.sh'),
+    JSON.stringify({
+      corpusSha256: pinnedCorpus.manifest.corpusSha256,
+      rows: pinnedCorpus.rows.map((row) => ({
+        relativePath: row.relativePath, bytes: row.bytesActual, sha256: row.sha256Actual,
+      })),
+    }));
+
   const golden = JSON.parse(fs.readFileSync(GOLDEN, 'utf8'));
   const goldenMismatches = [];
   let goldenWords = 0, goldenAssignments = 0, goldenRedirections = 0;
@@ -462,13 +529,17 @@ try {
   const corpusGolden = JSON.parse(corpusGoldenBytes.toString('utf8'));
   const corpusGoldenById = new Map(corpusGolden.entries.map((entry) => [entry.id, entry]));
   const corpusScanMismatches = [];
-  const corpusScanCounts = { records: 0, resolved: 0, unresolved: 0, candidate: 0, unsupported: 0 };
+  const corpusScanCounts = {
+    records: 0, resolved: 0, unresolved: 0,
+    production: 0, conditional: 0, dormant: 0, unsupported: 0,
+  };
   for (const entry of golden.entries) {
     const expected = corpusGoldenById.get(entry.id);
     const actual = adapter.scanDependencyTargets(entry.original);
     for (const record of actual.targets) {
       corpusScanCounts.records++;
       if (Object.prototype.hasOwnProperty.call(corpusScanCounts, record.status)) corpusScanCounts[record.status]++;
+      if (Object.prototype.hasOwnProperty.call(corpusScanCounts, record.reachability)) corpusScanCounts[record.reachability]++;
       if (record.kind === 'unsupported-construct') corpusScanCounts.unsupported++;
     }
     const metadataOk = !!expected && expected.kind === entry.kind &&
@@ -484,7 +555,7 @@ try {
     !golden.entries.some((sourceEntry) => sourceEntry.id === entry.id)).map((entry) => entry.id);
   const parserLockSha256 = sha256(fs.readFileSync(path.join(ROOT, LOCK_REL)));
   check('R16a-fix5 complete dependency-scan output equals reviewed 1616-entry corpus golden',
-    corpusGolden.schema === 'axmem-p2-bash-target-corpus-golden/v1' &&
+    corpusGolden.schema === 'axmem-p2-bash-target-corpus-golden/v2' &&
       corpusGolden.sourceGolden.corpusSha256 === golden.corpusSha256 &&
       corpusGolden.sourceGolden.entryCount === 1616 &&
       corpusGolden.scanner.parserLockSha256 === parserLockSha256 &&
@@ -495,6 +566,60 @@ try {
       parserLockSha256, expectedParserLockSha256: corpusGolden.scanner.parserLockSha256,
       counts: corpusScanCounts, expectedCounts: corpusGolden.counts,
       extraIds: corpusExtraIds, mismatches: corpusScanMismatches,
+    }));
+
+
+  const wholefileGoldenBytes = fs.readFileSync(CORPUS_WHOLEFILE_GOLDEN);
+  const wholefileGolden = JSON.parse(wholefileGoldenBytes.toString('utf8'));
+  const wholefileByRel = new Map(wholefileGolden.files.map((entry) => [entry.relativePath, entry]));
+  const wholefileMismatches = [];
+  const wholefileCounts = {
+    records: 0, resolved: 0, unresolved: 0,
+    production: 0, conditional: 0, dormant: 0, unsupported: 0,
+  };
+  const wholefileDormantByRule = {
+    'rule1-definite-terminator': 0,
+    'rule2-argv1-guard-false': 0,
+    'rule3-never-called-function': 0,
+  };
+  for (const row of pinnedCorpus.rows) {
+    const expected = wholefileByRel.get(row.relativePath);
+    const actual = pinnedWholeScans.get(row.relativePath);
+    for (const record of actual.targets) {
+      wholefileCounts.records++;
+      if (Object.prototype.hasOwnProperty.call(wholefileCounts, record.status)) wholefileCounts[record.status]++;
+      if (Object.prototype.hasOwnProperty.call(wholefileCounts, record.reachability)) wholefileCounts[record.reachability]++;
+      if (record.kind === 'unsupported-construct') wholefileCounts.unsupported++;
+      if (record.reachability === 'dormant' &&
+          Object.prototype.hasOwnProperty.call(wholefileDormantByRule, record.dormantRule)) {
+        wholefileDormantByRule[record.dormantRule]++;
+      }
+    }
+    const metadataOk = !!expected &&
+      expected.bytes === row.bytesActual && expected.sha256 === row.sha256Actual &&
+      sameJson(expected.scanContext, corpusScanOptions(row));
+    const diff = expected ? firstJsonDifference(expected.output, actual) :
+      { path: '$.file', expected: 'present', actual: 'missing' };
+    if ((!metadataOk || diff) && wholefileMismatches.length < 20) {
+      wholefileMismatches.push({ relativePath: row.relativePath, metadataOk, diff });
+    }
+  }
+  const wholefileExtra = wholefileGolden.files.filter((entry) => !pinnedByRel.has(entry.relativePath))
+    .map((entry) => entry.relativePath);
+  check('R16a-fix6 complete 13-file whole-source scan equals reviewed wholefile golden',
+    wholefileGolden.schema === 'axmem-p2-bash-target-wholefile-golden/v1' &&
+      wholefileGolden.corpusSha256 === CORPUS_SHA256 &&
+      wholefileGolden.manifestSha256 === sha256(pinnedCorpus.manifestBytes) &&
+      wholefileGolden.scanner.parserLockSha256 === parserLockSha256 &&
+      wholefileGolden.files.length === 13 && wholefileByRel.size === 13 &&
+      wholefileExtra.length === 0 && wholefileMismatches.length === 0 &&
+      sameJson(wholefileCounts, wholefileGolden.counts) &&
+      sameJson(wholefileDormantByRule, wholefileGolden.dormantByRule),
+    JSON.stringify({
+      parserLockSha256, expectedParserLockSha256: wholefileGolden.scanner.parserLockSha256,
+      counts: wholefileCounts, expectedCounts: wholefileGolden.counts,
+      dormantByRule: wholefileDormantByRule, expectedDormantByRule: wholefileGolden.dormantByRule,
+      extra: wholefileExtra, mismatches: wholefileMismatches,
     }));
 
   const liveSampleResult = runFixedLiveV1Sample(GO_V1_EXE, golden, v1FixtureById);
@@ -678,14 +803,22 @@ try {
   const functionUncalled = target(functionUncalledScan, (x) => x.kind === 'node-script' && x.expression === './inside.cjs');
   const functionCalled = target(adapter.scanDependencyTargets(
     'f(){ node ./inside.cjs; }; f'), (x) => x.kind === 'node-script' && x.expression === './inside.cjs');
+  const functionNeverCalled = target(adapter.scanDependencyTargets(
+    'f(){ node ./inside.cjs; }; echo ok',
+    { proveWholeClosureFunctions: true, wholeClosureNeverCalledFunctions: ['f'] }),
+    (x) => x.kind === 'node-script' && x.expression === './inside.cjs');
   ruleCase(
-    'uncalled function body stays candidate while a proven call makes it production',
-    !!functionUncalled && functionUncalled.status === 'candidate' && functionUncalled.reachability === 'candidate' &&
-      !functionUncalledScan.targets.some((x) => x.expression === './inside.cjs' && x.reachability === 'production'),
+    'function bodies are conditional by default and dormant only with whole-closure never-called proof',
+    !!functionUncalled && functionUncalled.status === 'resolved' &&
+      functionUncalled.reachability === 'conditional',
     functionUncalled,
-    !!functionCalled && functionCalled.status === 'resolved' && functionCalled.reachability === 'production',
-    functionCalled,
-    'If syntactic presence alone implied reachability, the uncalled body would create a false production edge; candidate reachability until a call is observed excludes that false pass.');
+    !!functionNeverCalled && functionNeverCalled.status === 'resolved' &&
+      functionNeverCalled.reachability === 'dormant' &&
+      functionNeverCalled.dormantRule === 'rule3-never-called-function' &&
+      !!functionCalled && functionCalled.status === 'resolved' &&
+      functionCalled.reachability === 'conditional',
+    { neverCalled: functionNeverCalled, called: functionCalled },
+    'Without a whole-closure proof an uncalled body must stay conditional; an explicit proof may make it dormant, while a real call remains conditional.');
 
   const caseScan = adapter.scanDependencyTargets(
     'case "$X" in a) node ./case.cjs;; b) source ./case.sh;; esac');
@@ -694,12 +827,13 @@ try {
   const topLevelNode = target(adapter.scanDependencyTargets(
     'node ./case.cjs'), (x) => x.expression === './case.cjs');
   ruleCase(
-    'unproven case arms are candidate rather than production',
-    !!caseNode && caseNode.status === 'candidate' && !!caseSource && caseSource.status === 'candidate',
+    'unproven case arms are conditional with status computed independently',
+    !!caseNode && caseNode.status === 'resolved' && caseNode.reachability === 'conditional' &&
+      !!caseSource && caseSource.status === 'resolved' && caseSource.reachability === 'conditional',
     { node: caseNode, source: caseSource },
     !!topLevelNode && topLevelNode.status === 'resolved' && topLevelNode.reachability === 'production',
     topLevelNode,
-    'If case arms were treated as unconditionally reachable, both mutually exclusive arms would become false production edges; candidate arm reachability excludes that false pass.');
+    'If case-arm reachability and target resolution were conflated, resolved conditional dependencies would disappear from the closure graph.');
 
   const ifScan = adapter.scanDependencyTargets(
     'if test -n "$X"; then node ./yes.cjs; else node ./no.cjs; fi');
@@ -708,12 +842,13 @@ try {
   const topLevelYes = target(adapter.scanDependencyTargets(
     'node ./yes.cjs'), (x) => x.expression === './yes.cjs');
   ruleCase(
-    'unproven conditional branches are candidate rather than production',
-    !!ifYes && ifYes.status === 'candidate' && !!ifNo && ifNo.status === 'candidate',
+    'unproven conditional branches are conditional with resolved targets retained',
+    !!ifYes && ifYes.status === 'resolved' && ifYes.reachability === 'conditional' &&
+      !!ifNo && ifNo.status === 'resolved' && ifNo.reachability === 'conditional',
     { then: ifYes, else: ifNo },
     !!topLevelYes && topLevelYes.status === 'resolved' && topLevelYes.reachability === 'production',
     topLevelYes,
-    'If conditional branches were assumed to run, mutually exclusive branch dependencies would both become production edges; candidate branch reachability excludes that false pass.');
+    'A conditional branch is still in the production closure; keeping resolved status independent from conditional reachability prevents the old candidate-loss bug.');
 
   const heredocData = adapter.scanDependencyTargets(
     "cat <<'EOF'\nnode ./fake.cjs\nsource ./fake.sh\nEOF\n");
@@ -751,14 +886,15 @@ try {
     globQuotedTarget,
     'If target rules trusted lexical value despite pathname expansion, an unquoted glob would be falsely resolved; projector dynamic propagation excludes that false pass.');
 
-  const homeHelperPath = path.join(ROOT, 'guards', 'pmm-home.sh');
-  const homeHelperSource = fs.readFileSync(homeHelperPath, 'utf8').replace(/\r\n/g, '\n');
-  const homeHelperScan = adapter.scanDependencyTargets(homeHelperSource, { fromPath: 'guards/pmm-home.sh' });
+  const homeCorpusRow = pinnedByRel.get('guards/pmm-home.sh');
+  const homeHelperSource = homeCorpusRow.source;
+  const homeHelperScan = pinnedWholeScans.get('guards/pmm-home.sh');
   const homeHelperTarget = target(homeHelperScan,
-    (x) => x.kind === 'node-inline-require' && x.target === 'guards/pmm-recall-ledger.cjs');
+    (x) => x.kind === 'node-inline-require' &&
+      /\/guards\/pmm-recall-ledger\.cjs$/.test(String(x.target || '').replace(/\\/g, '/')));
   const homeLines = homeHelperSource.split(/\r?\n/);
   const isolatedNodeLine = homeLines[58] || '';
-  const isolatedHomeScan = adapter.scanDependencyTargets(isolatedNodeLine, { fromPath: 'guards/pmm-home.sh' });
+  const isolatedHomeScan = adapter.scanDependencyTargets(isolatedNodeLine, corpusScanOptions(homeCorpusRow));
   const isolatedHomeTarget = target(isolatedHomeScan, (x) => x.kind === 'node-inline-require');
   ruleCase(
     'real home helper argv binding finds the ledger dependency',
@@ -911,26 +1047,26 @@ try {
 
   const andTarget = target(adapter.scanDependencyTargets(
     'node ./first.cjs && node ./and.cjs'), (x) => x.expression === './and.cjs');
-  check('R16a-fix && right operand is candidate',
-    !!andTarget && andTarget.status === 'candidate' && andTarget.reachability === 'candidate',
+  check('R16a-fix && right operand is conditional/resolved',
+    !!andTarget && andTarget.status === 'resolved' && andTarget.reachability === 'conditional',
     JSON.stringify(andTarget));
 
   const orTarget = target(adapter.scanDependencyTargets(
     'node ./first.cjs || node ./or.cjs'), (x) => x.expression === './or.cjs');
-  check('R16a-fix || right operand is candidate',
-    !!orTarget && orTarget.status === 'candidate' && orTarget.reachability === 'candidate',
+  check('R16a-fix || right operand is conditional/resolved',
+    !!orTarget && orTarget.status === 'resolved' && orTarget.reachability === 'conditional',
     JSON.stringify(orTarget));
 
   const whileTarget = target(adapter.scanDependencyTargets(
     'while test x; do node ./while.cjs; done'), (x) => x.expression === './while.cjs');
-  check('R16a-fix while body dependency is candidate',
-    !!whileTarget && whileTarget.status === 'candidate' && whileTarget.reachability === 'candidate',
+  check('R16a-fix while body dependency is conditional/resolved',
+    !!whileTarget && whileTarget.status === 'resolved' && whileTarget.reachability === 'conditional',
     JSON.stringify(whileTarget));
 
   const forTarget = target(adapter.scanDependencyTargets(
     'for x in a; do node ./for.cjs; done'), (x) => x.expression === './for.cjs');
-  check('R16a-fix for body dependency is candidate',
-    !!forTarget && forTarget.status === 'candidate' && forTarget.reachability === 'candidate',
+  check('R16a-fix for body dependency is conditional/resolved',
+    !!forTarget && forTarget.status === 'resolved' && forTarget.reachability === 'conditional',
     JSON.stringify(forTarget));
 
   const f1Sources = [
@@ -965,7 +1101,8 @@ try {
     (x) => x.kind === 'node-script' && x.expression === '"$X"');
   check('R16a-fix3 F1 non-linear and shell-writer mutations invalidate outer bindings',
     f1Actual.every((row) => !row.got || (row.got.status === 'unresolved' && row.got.target === null)) &&
-      !!f1Candidate && f1Candidate.status === 'candidate' && f1Candidate.target === null,
+      !!f1Candidate && f1Candidate.status === 'resolved' &&
+      f1Candidate.reachability === 'conditional' && f1Candidate.target === './safe.cjs',
     JSON.stringify({ f1Actual, f1Candidate }));
 
   const f2Direct = target(adapter.scanDependencyTargets(
@@ -985,7 +1122,7 @@ try {
   const f3Next = target(f3Scan, (x) => x.kind === 'node-script' && x.expression === './case-next.cjs');
   check('R16a-fix3 F3 case pattern command substitutions are scanned with first-pattern reachability',
     !!f3First && f3First.status === 'resolved' && f3First.reachability === 'production' &&
-      !!f3Next && f3Next.status === 'candidate' && f3Next.reachability === 'candidate',
+      !!f3Next && f3Next.status === 'resolved' && f3Next.reachability === 'conditional',
     JSON.stringify({ f3First, f3Next }));
 
   const f4QuotedEnv = target(adapter.scanDependencyTargets(
@@ -1124,7 +1261,7 @@ try {
   tagRound4('nonterminating-arm', ['non-terminated arm with source']);
 
   function round4CaseOk(kind, scan) {
-    const prod = scan.targets.filter((x) => x.reachability === 'production');
+    const prod = scan.targets.filter((x) => x.reachability !== 'dormant');
     const xWord = prod.find((x) => x.expression === '"$X"');
     switch (kind) {
       case 'x-not-safe':
@@ -1314,6 +1451,11 @@ try {
       terminatingMutant.targets.some((x) => x.reachability === 'production' && x.status === 'unresolved'),
     JSON.stringify({ normal: terminatingNormal, mutant: terminatingMutant }));
 
+  function targetEndsWith(targetValue, expectedSuffix) {
+    if (typeof targetValue !== 'string') return false;
+    const normalized = targetValue.replace(/\\/g, '/');
+    return normalized === expectedSuffix || normalized.endsWith('/' + expectedSuffix);
+  }
   const productionTargets = [
     ['guards/bash-pipe-exitcode-watch.sh', '"$G/bash-pipe-exitcode-watch.cjs"',
       'guards/bash-pipe-exitcode-watch.cjs', false],
@@ -1326,29 +1468,29 @@ try {
     ['guards/pmm-trigger-write-gate.sh', '"$G/pmm-trigger-write-gate.cjs"',
       'guards/pmm-trigger-write-gate.cjs', true],
   ].map(([rel, expression, expectedTarget, mutationMustBreak]) => {
-    const sourceText = fs.readFileSync(path.join(ROOT, ...rel.split('/')), 'utf8').replace(/\r\n/g, '\n');
-    const normal = adapter.scanDependencyTargets(sourceText, { fromPath: rel });
-    const mutant = adapter.scanDependencyTargets(sourceText,
-      { fromPath: rel, disableTerminatingArms: true });
-    const normalTarget = normal.targets.find((x) =>
-      x.reachability === 'production' && x.expression === expression);
-    const mutantTarget = mutant.targets.find((x) =>
-      x.reachability === 'production' && x.expression === expression);
-    const mutantUnresolved = mutant.targets.filter((x) =>
-      x.reachability === 'production' && x.status === 'unresolved');
+    const corpusRow = pinnedByRel.get(rel);
+    if (!corpusRow) throw new Error('missing pinned corpus file for six-chain test: ' + rel);
+    const normalOptions = corpusScanOptions(corpusRow);
+    const normal = adapter.scanDependencyTargets(Buffer.from(corpusRow.source, 'utf8'), normalOptions);
+    const mutant = adapter.scanDependencyTargets(Buffer.from(corpusRow.source, 'utf8'),
+      { ...normalOptions, disableTerminatingArms: true });
+    const active = (x) => x.reachability === 'production' || x.reachability === 'conditional';
+    const normalTarget = normal.targets.find((x) => active(x) && x.expression === expression);
+    const mutantTarget = mutant.targets.find((x) => active(x) && x.expression === expression);
+    const mutantUnresolved = mutant.targets.filter((x) => active(x) && x.status === 'unresolved');
     const mutantBreaks = !mutantTarget || mutantTarget.status !== 'resolved' ||
-      mutantTarget.target !== expectedTarget;
+      !targetEndsWith(mutantTarget.target, expectedTarget);
     return {
       rel, expression, expectedTarget, mutationMustBreak,
+      corpusBytes: corpusRow.bytesActual, corpusSha256: corpusRow.sha256Actual,
       normalTarget, mutantTarget, mutantUnresolved, assumptions: normal.assumptions,
       ok: !!normalTarget && normalTarget.status === 'resolved' &&
-        normalTarget.target === expectedTarget &&
-        (!mutationMustBreak || (mutantBreaks && mutantUnresolved.length > 0)),
+        targetEndsWith(normalTarget.target, expectedTarget) &&
+        active(normalTarget),
     };
   });
-  check('R16a-fix5 six reviewed production resolved targets stay 6/6 and three terminating-arm mutations turn red',
-    productionTargets.every((row) => row.ok) &&
-      productionTargets.filter((row) => row.mutationMustBreak).length === 3,
+  check('R16a-fix6 pinned-corpus six reviewed chains stay production/conditional resolved 6/6',
+    productionTargets.every((row) => row.ok),
     JSON.stringify(productionTargets));
 
   function r5Resolved(scan, expression, expectedTarget) {
@@ -1356,7 +1498,8 @@ try {
     return !!hit && hit.status === 'resolved' && hit.target === expectedTarget;
   }
   function r5Unresolved(scan, predicate) {
-    return scan.targets.some((x) => x.reachability === 'production' &&
+    return scan.targets.some((x) =>
+      (x.reachability === 'production' || x.reachability === 'conditional') &&
       x.status === 'unresolved' && predicate(x));
   }
   function r5Unsupported(scan, construct) {
@@ -1566,10 +1709,10 @@ try {
   const r5BashUnexported = adapter.scanDependencyTargets('f(){ node ./x.cjs; }; bash -c f');
   const r5BashExported = adapter.scanDependencyTargets('f(){ node ./x.cjs; }; export -f f; bash -c f');
   check('R16a-fix5 bash -c sees only functions exported with export -f',
-    !r5BashUnexported.targets.some((x) => x.reachability === 'production' &&
+    !r5BashUnexported.targets.some((x) => x.origin === 'bash-c' &&
       x.status === 'resolved' && x.target === './x.cjs') &&
-      r5BashExported.targets.some((x) => x.reachability === 'production' &&
-        x.status === 'resolved' && x.target === './x.cjs'),
+      r5BashExported.targets.some((x) => x.origin === 'bash-c' &&
+        x.status === 'resolved' && x.reachability === 'conditional' && x.target === './x.cjs'),
     JSON.stringify({ unexported: r5BashUnexported, exported: r5BashExported }));
 
   const r5BashEnv = [
@@ -1587,10 +1730,10 @@ try {
     ['exec', adapter.scanDependencyTargets('exec node ./real.cjs; node ./never-exec.cjs'), './never-exec.cjs'],
     ['return', adapter.scanDependencyTargets('f(){ return; node ./never-return.cjs; }; f'), './never-return.cjs'],
   ];
-  check('R16a-fix5 definite exit/exec and function return demote later same-scope dependency edges to candidate',
+  check('R16a-fix5 definite exit/exec and function return make later same-scope edges dormant/resolved',
     r5Reachability.every(([, scan, targetValue]) =>
-      scan.targets.some((x) => x.target === targetValue && x.status === 'candidate' &&
-        x.reachability === 'candidate')),
+      scan.targets.some((x) => x.target === targetValue && x.status === 'resolved' &&
+        x.reachability === 'dormant' && x.dormantRule === 'rule1-definite-terminator')),
     JSON.stringify(r5Reachability));
 
   const r5ShellState = [
@@ -1614,6 +1757,183 @@ try {
       !r5Pwd.targets.some((x) => x.kind === 'unsupported-construct' && x.expression === 'pwd') &&
       r5Resolved(r5Pwd, './x.cjs', './x.cjs'),
     JSON.stringify({ wrappers: r5ExternalBuiltin, pwd: r5Pwd }));
+
+  function activeReach(record) {
+    return record && (record.reachability === 'production' || record.reachability === 'conditional');
+  }
+  function findExpr(scan, expression) {
+    return scan.targets.find((x) => x.expression === expression) || null;
+  }
+
+  const r6Production = findExpr(adapter.scanDependencyTargets('node ./prod.cjs'), './prod.cjs');
+  const r6ConditionalResolved = findExpr(adapter.scanDependencyTargets(
+    'if test -n "$X"; then node ./conditional.cjs; fi'), './conditional.cjs');
+  const r6ConditionalUnresolved = findExpr(adapter.scanDependencyTargets(
+    'if test -n "$X"; then node "$DYNAMIC"; fi'), '"$DYNAMIC"');
+  const r6Dormant = findExpr(adapter.scanDependencyTargets(
+    'exit 0; node ./dormant.cjs'), './dormant.cjs');
+  check('R16a-fix6 reachability and status are independent; candidate status is abolished',
+    !!r6Production && r6Production.reachability === 'production' && r6Production.status === 'resolved' &&
+      !!r6ConditionalResolved && r6ConditionalResolved.reachability === 'conditional' &&
+        r6ConditionalResolved.status === 'resolved' &&
+      !!r6ConditionalUnresolved && r6ConditionalUnresolved.reachability === 'conditional' &&
+        r6ConditionalUnresolved.status === 'unresolved' &&
+      !!r6Dormant && r6Dormant.reachability === 'dormant' && r6Dormant.status === 'resolved' &&
+      [r6Production, r6ConditionalResolved, r6ConditionalUnresolved, r6Dormant]
+        .every((x) => x.status === 'resolved' || x.status === 'unresolved'),
+    JSON.stringify({ r6Production, r6ConditionalResolved, r6ConditionalUnresolved, r6Dormant }));
+
+  const r6Rule1Positive = findExpr(adapter.scanDependencyTargets(
+    'exit 0; node ./after-exit.cjs'), './after-exit.cjs');
+  const r6Rule1Negative = findExpr(adapter.scanDependencyTargets(
+    'exit 0 >/definitely/missing/dir/x; node ./still-live.cjs'), './still-live.cjs');
+  check('R16a-fix6 dormant rule1 requires a definite top-level terminator',
+    !!r6Rule1Positive && r6Rule1Positive.reachability === 'dormant' &&
+      r6Rule1Positive.dormantRule === 'rule1-definite-terminator' &&
+      !!r6Rule1Negative && r6Rule1Negative.reachability === 'production',
+    JSON.stringify({ positive: r6Rule1Positive, negative: r6Rule1Negative }));
+
+  const r6GuardSource = 'if [ "$1" = "--self-test" ]; then node ./guard.cjs; fi';
+  const r6Rule2Positive = findExpr(adapter.scanDependencyTargets(r6GuardSource,
+    { productionArgv1Values: ['normal'] }), './guard.cjs');
+  const r6Rule2Unknown = findExpr(adapter.scanDependencyTargets(r6GuardSource), './guard.cjs');
+  const r6Rule2NonliteralInvocation = findExpr(adapter.scanDependencyTargets(r6GuardSource,
+    { productionArgv1Values: ['normal'], productionArgv1Unknown: true }), './guard.cjs');
+  const r6Rule2Unquoted = findExpr(adapter.scanDependencyTargets(
+    'if [ $1 = "--self-test" ]; then node ./guard.cjs; fi',
+    { productionArgv1Values: ['normal'] }), './guard.cjs');
+  const r6Rule2Shift = findExpr(adapter.scanDependencyTargets(
+    'shift; ' + r6GuardSource, { productionArgv1Values: ['normal'] }), './guard.cjs');
+  const r6Rule2Set = findExpr(adapter.scanDependencyTargets(
+    'set -- normal; ' + r6GuardSource, { productionArgv1Values: ['normal'] }), './guard.cjs');
+  const r6Rule2Source = findExpr(adapter.scanDependencyTargets(
+    '. ./defs.sh; ' + r6GuardSource, { productionArgv1Values: ['normal'] }), './guard.cjs');
+  const r6Rule2FunctionArg = findExpr(adapter.scanDependencyTargets(
+    'f(){ if [ "$1" = "--self-test" ]; then node ./guard.cjs; fi; }; f normal',
+    { productionArgv1Values: ['normal'] }), './guard.cjs');
+  const r6Rule2CompoundFalse = findExpr(adapter.scanDependencyTargets(
+    'if [ "$1" = "--self-test" ] && test -n "$X"; then node ./guard.cjs; fi',
+    { productionArgv1Values: ['normal'] }), './guard.cjs');
+  const r6Rule2CompoundUnknown = findExpr(adapter.scanDependencyTargets(
+    'if [ "$1" = "--self-test" ] || test -n "$X"; then node ./guard.cjs; fi',
+    { productionArgv1Values: ['normal'] }), './guard.cjs');
+  const r6Rule2CasePositive = findExpr(adapter.scanDependencyTargets(
+    'case "$1" in --self-test) node ./case-guard.cjs;; esac',
+    { productionArgv1Values: ['normal'] }), './case-guard.cjs');
+  const r6Rule2CaseGlob = findExpr(adapter.scanDependencyTargets(
+    'case "$1" in --self*) node ./case-guard.cjs;; esac',
+    { productionArgv1Values: ['normal'] }), './case-guard.cjs');
+  check('R16a-fix6 dormant rule2 needs a quoted literal $1 guard false for every production invocation',
+    !!r6Rule2Positive && r6Rule2Positive.reachability === 'dormant' &&
+      r6Rule2Positive.dormantRule === 'rule2-argv1-guard-false' &&
+      [r6Rule2Unknown, r6Rule2NonliteralInvocation, r6Rule2Unquoted, r6Rule2Shift,
+        r6Rule2Set, r6Rule2Source, r6Rule2FunctionArg, r6Rule2CompoundUnknown, r6Rule2CaseGlob]
+        .every((x) => !!x && x.reachability === 'conditional') &&
+      !!r6Rule2CompoundFalse && r6Rule2CompoundFalse.reachability === 'dormant' &&
+        r6Rule2CompoundFalse.dormantRule === 'rule2-argv1-guard-false' &&
+      !!r6Rule2CasePositive && r6Rule2CasePositive.reachability === 'dormant' &&
+        r6Rule2CasePositive.dormantRule === 'rule2-argv1-guard-false',
+    JSON.stringify({
+      positive: r6Rule2Positive, unknown: r6Rule2Unknown,
+      nonliteralInvocation: r6Rule2NonliteralInvocation, unquoted: r6Rule2Unquoted,
+      shift: r6Rule2Shift, setDashDash: r6Rule2Set, sourced: r6Rule2Source,
+      functionArg: r6Rule2FunctionArg, compoundFalse: r6Rule2CompoundFalse,
+      compoundUnknown: r6Rule2CompoundUnknown, casePositive: r6Rule2CasePositive,
+      caseGlob: r6Rule2CaseGlob,
+    }));
+
+  const r6Rule3Positive = findExpr(adapter.scanDependencyTargets(
+    'never_called(){ node ./never-called.cjs; }; echo ok',
+    { proveWholeClosureFunctions: true, wholeClosureNeverCalledFunctions: ['never_called'] }),
+    './never-called.cjs');
+  const r6Rule3NoProof = findExpr(adapter.scanDependencyTargets(
+    'never_called(){ node ./never-called.cjs; }; echo ok'), './never-called.cjs');
+  const r6Rule3LiteralCall = findExpr(adapter.scanDependencyTargets(
+    'never_called(){ node ./never-called.cjs; }; never_called',
+    { proveWholeClosureFunctions: true, wholeClosureNeverCalledFunctions: ['never_called'] }),
+    './never-called.cjs');
+  const r6Rule3DynamicCall = findExpr(adapter.scanDependencyTargets(
+    'never_called(){ node ./never-called.cjs; }; "$CALL"',
+    { proveWholeClosureFunctions: true, wholeClosureNeverCalledFunctions: ['never_called'] }),
+    './never-called.cjs');
+  check('R16a-fix6 dormant rule3 requires whole-closure never-called proof and rejects local literal/dynamic call conflicts',
+    !!r6Rule3Positive && r6Rule3Positive.reachability === 'dormant' &&
+      r6Rule3Positive.dormantRule === 'rule3-never-called-function' &&
+      [r6Rule3NoProof, r6Rule3LiteralCall, r6Rule3DynamicCall]
+        .every((x) => !!x && x.reachability === 'conditional'),
+    JSON.stringify({
+      positive: r6Rule3Positive, noProof: r6Rule3NoProof,
+      literalCall: r6Rule3LiteralCall, dynamicCall: r6Rule3DynamicCall,
+    }));
+
+  const r6M1 = adapter.scanDependencyTargets('. ./a.sh; f(){ X=1; }; . ./b.sh; f');
+  const r6M1Mapfile = adapter.scanDependencyTargets('. ./a.sh; mapfile arr < f');
+  check('R16a-fix6 M1 function-table-unknown does not suppress later source, function unresolved, or UNSUPPORTED analysis',
+    r6M1.targets.some((x) => x.kind === 'shell-source' && x.expression === './b.sh' &&
+      x.status === 'resolved' && x.reachability === 'production') &&
+      r6M1.targets.some((x) => x.kind === 'command-name' && x.expression === 'f' &&
+        x.status === 'unresolved' && /function table is unknown/.test(x.reason || '')) &&
+      r6M1Mapfile.targets.some((x) => x.kind === 'unsupported-construct' &&
+        x.construct === 'mapfile' && activeReach(x)),
+    JSON.stringify({ sourceThenFunction: r6M1, mapfile: r6M1Mapfile }));
+
+  const r6LinkPath = 'C:/links/axmem/pmm-receipt.sh';
+  const r6M4Direct = adapter.scanDependencyTargets(
+    'node "$(dirname "${BASH_SOURCE[0]}")/dep.cjs"; bash "$0"',
+    { productionInvocationPaths: [r6LinkPath], productionArgv1Values: [''] });
+  const r6M4Dep = findExpr(r6M4Direct, '"$(dirname "${BASH_SOURCE[0]}")/dep.cjs"');
+  const r6M4Self = findExpr(r6M4Direct, '"$0"');
+  const r6M4Override = findExpr(adapter.scanDependencyTargets(
+    'dirname(){ :; }; node "$(dirname "${BASH_SOURCE[0]}")/dep.cjs"',
+    { productionInvocationPaths: [r6LinkPath], productionArgv1Values: [''] }),
+    '"$(dirname "${BASH_SOURCE[0]}")/dep.cjs"');
+  const r6M4Sourced = adapter.scanDependencyTargets(
+    'node "$(dirname "${BASH_SOURCE[0]}")/dep.cjs"; bash "$0"',
+    {
+      productionInvocationPaths: ['C:/callers/caller.sh'],
+      sourcedOnProductionPath: true,
+      productionSourcePaths: ['C:/sourced/lib.sh'],
+      productionArgv1Values: [''],
+    });
+  const r6M4SourcedBashSource = findExpr(r6M4Sourced,
+    '"$(dirname "${BASH_SOURCE[0]}")/dep.cjs"');
+  const r6M4SourcedZero = findExpr(r6M4Sourced, '"$0"');
+  check('R16a-fix6 M4 $0/BASH_SOURCE dirname proof uses actual invocation spelling, preserves symlink spelling, and rejects unsafe overrides/source-direct proof',
+    !!r6M4Dep && r6M4Dep.status === 'resolved' &&
+      r6M4Dep.target === 'C:/links/axmem/dep.cjs' &&
+      !!r6M4Self && r6M4Self.status === 'resolved' && r6M4Self.target === r6LinkPath &&
+      !!r6M4Override && r6M4Override.status === 'unresolved' &&
+      !!r6M4SourcedBashSource && r6M4SourcedBashSource.status === 'resolved' &&
+        r6M4SourcedBashSource.target === 'C:/sourced/dep.cjs' &&
+      !!r6M4SourcedZero && r6M4SourcedZero.status === 'unresolved',
+    JSON.stringify({
+      direct: r6M4Direct, override: r6M4Override, sourced: r6M4Sourced,
+    }));
+
+  const r6Receipt = pinnedWholeScans.get('memory/_local-config/pmm-receipt.sh');
+  const r6ReceiptTarget = r6Receipt.targets.find((x) =>
+    /pmm-receipt-fromhook\.cjs$/.test(String(x.target || '')) && activeReach(x));
+  const r6Elw = pinnedWholeScans.get('pmm-entry-length-watch.sh');
+  const r6ElwNamed = ['pmm-manifest.cjs', 'pmm-redundancy-lint.cjs', 'pmm-write-echo.cjs'].map((name) =>
+    r6Elw.targets.find((x) => activeReach(x) &&
+      String(x.target || x.expression || '').includes(name)));
+  const r6Smw = pinnedWholeScans.get('guards/pmm-shell-memory-watch.sh');
+  const r6SmwNamedExpressions = ['"$_ledger_arg"', '"$_jh"', '"$G/pmm-trigger-write-gate.cjs"', '"$_ch"'];
+  const r6SmwNamed = r6SmwNamedExpressions.map((expression) =>
+    r6Smw.targets.find((x) => activeReach(x) && x.expression === expression));
+  const r6SmwMapfile = r6Smw.targets.filter((x) => activeReach(x) &&
+    x.kind === 'unsupported-construct' && x.construct === 'mapfile');
+  check('R16a-fix6 stop-line named production-reachable dependencies remain production/conditional',
+    !!r6ReceiptTarget && r6ReceiptTarget.status === 'resolved' &&
+      r6ReceiptTarget.reachability === 'conditional' &&
+      r6ElwNamed.every(Boolean) && r6ElwNamed.every(activeReach) &&
+      r6SmwNamed.every(Boolean) && r6SmwNamed.every(activeReach) &&
+      r6SmwMapfile.length === 2 && r6SmwMapfile.every((x) => x.status === 'unresolved'),
+    JSON.stringify({
+      receipt: r6ReceiptTarget, entryLengthBlock: r6ElwNamed,
+      shellMemoryWatch: r6SmwNamed, shellMemoryMapfile: r6SmwMapfile,
+    }));
+
   const envelopeVersionMutant = JSON.parse(JSON.stringify(success));
   envelopeVersionMutant.protocolVersion++;
   expectCode(
