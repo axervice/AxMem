@@ -32,6 +32,11 @@ function git(root, args) {
   return cp.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
 function writeJson(file, value) { fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n'); }
+function sameNativeRealPath(a, b) {
+  const ra = fs.realpathSync.native(path.resolve(a));
+  const rb = fs.realpathSync.native(path.resolve(b));
+  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
 
 const generatorText = [
   '#!/usr/bin/env bash',
@@ -85,8 +90,8 @@ function makeBaseInventory() {
   };
 }
 
-function makeFixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-r9-ga-'));
+function makeFixture(tempBase = os.tmpdir()) {
+  const root = fs.mkdtempSync(path.join(tempBase, 'axmem-r9-ga-'));
   const live = path.join(root, '.claude');
   fs.mkdirSync(live, { recursive: true });
   writeJson(path.join(live, 'settings.json'), { hooks: {} });
@@ -95,7 +100,7 @@ function makeFixture() {
   fs.writeFileSync(path.join(live, 'generated-dep.cjs'), 'module.exports = 1;\n');
   git(root, ['init', '-q']);
   const top = path.resolve(git(root, ['rev-parse', '--show-toplevel']));
-  if (top !== path.resolve(root)) throw new Error('fixture git toplevel mismatch: ' + top + ' != ' + path.resolve(root));
+  if (!sameNativeRealPath(top, root)) throw new Error('fixture git toplevel mismatch: ' + top + ' != ' + path.resolve(root));
   git(root, ['config', 'core.autocrlf', 'false']);
   git(root, ['add', '.claude']);
   git(root, ['-c', 'user.name=R9', '-c', 'user.email=r9@example.invalid', '-c', 'core.autocrlf=false', 'commit', '-qm', 'synthetic frozen source']);
@@ -107,6 +112,32 @@ function runBuild(fx, inv = fx.inventory) {
   git(fx.root, ['-c', 'user.name=R9', '-c', 'user.email=r9@example.invalid', '-c', 'core.autocrlf=false', 'commit', '-qm', 'inventory fixture']);
   return F.buildManifest({ liveDir: fx.live, inventoryPath: fx.inventoryPath, generatedAt: '2026-09-30T00:00:00.000Z' });
 }
+{
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-r9-junction-target-'));
+  const alias = target + '-alias';
+  let linked = false;
+  let ok = false;
+  let detail = '';
+  try {
+    fs.symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    linked = true;
+    const fx = makeFixture(alias);
+    const inv = structuredClone(fx.inventory);
+    inv.generatedArtifacts = [];
+    const m = runBuild(fx, inv);
+    ok = m.schema === 'axmem-p2-freeze/v1';
+  } catch (e) {
+    detail = e && e.code ? e.code : String(e && e.message || e);
+  } finally {
+    if (linked && fs.existsSync(alias)) {
+      if (process.platform === 'win32') fs.rmdirSync(alias);
+      else fs.unlinkSync(alias);
+    }
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+  check('junction/alias temp root resolves to the same native git path', ok, detail);
+}
+
 function expectError(name, mutate, code) {
   const fx = makeFixture();
   let got = '';

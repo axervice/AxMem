@@ -16,6 +16,8 @@
     "_comment_GITATTRIBUTES: 2026-09-26 W22-U2 -- belt-and-braces LF-pinning for this PRIVATE repo's own publish inputs (publish-overrides/**, publish.manifest.json, scripts/**, *.md), added alongside the real codex #6 fix (frozen-OID blob reads, immune to core.autocrlf regardless). Excluded here so this unit's export tree stays byte-identical to before it existed -- adding a public-tier .gitattributes (and re-baselining GATE5's path snapshot for it) is a separate, deliberate maintainer decision, not a side effect of this fix.",
     "scripts/**",
     ".github/workflows/publish-public.yml",
+    ".github/workflows/ci-private.yml",
+    "_comment_PRIVATE_CI: private helper build and private P2 acceptance gates; excluded so the public workflow never references private scripts/tests/fixtures.",
     "README.public.md",
     "README.zh.public.md",
     "publish-overrides/**",
@@ -112,7 +114,7 @@
     "README.zh.md": "4925e5f26ae6e6c060bebef13088ed0657c0553f",
     "guards/guard-canary.sh": "ed7844bf4c759d1db7f4a0870c4cc7b8fc62bba7",
     "guards/specs/isolation-gate-contract.json": "a3a8b2025ee0a3c057927ad43f57d76586b6ac08",
-    "CHANGELOG.md": "8637a7fb57c99cb9c04f4737ddd1e43f06026fa2"
+    "CHANGELOG.md": "58c0caca74a929075e50150f072814f3d2b4da79"
   },
   "replacements": [
     "_comment: each {file, findFile, replaceFile} pair does an exact, literal, whole-substring find/replace of findFile's content with replaceFile's content inside the exported copy of `file`. required=true (default) fails the export loudly if findFile's exact text is not found -- this is the forcing function that catches upstream drift instead of silently missing it.",

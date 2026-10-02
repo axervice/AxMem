@@ -310,6 +310,14 @@ case "${1:-}" in
     failcount=0
     _st_out="$(mktemp)"
     trap 'rm -f "$_st_out"' EXIT
+    _component_timeout="${AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC:-240}"
+    case "$_component_timeout" in
+      ''|*[!0-9]*) echo "axmem selftest: AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC must be a positive integer" >&2; exit 2 ;;
+    esac
+    if [ "$_component_timeout" -lt 1 ]; then
+      echo "axmem selftest: AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC must be a positive integer" >&2
+      exit 2
+    fi
     # [Opus H2, 2026-09-17] Previously took ONE before-snapshot and ONE
     # after-snapshot around the ENTIRE traversal — a component that
     # dirtied the repo, followed later by ANYTHING (another component, or
@@ -340,8 +348,8 @@ case "${1:-}" in
       count=$((count + 1))
       _rel="${_f#"$ROOT"/}"
       case "$_f" in
-        *.sh)  timeout 240 bash "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
-        *.cjs) timeout 240 node "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
+        *.sh)  timeout "$_component_timeout" bash "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
+        *.cjs) timeout "$_component_timeout" node "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
         *)     _src_rc=1; : > "$_st_out" ;;
       esac
       _summary="$(tail -n 1 "$_st_out")"
@@ -377,7 +385,7 @@ case "${1:-}" in
         failcount=$((failcount + 1))
         rc=1
         if [ "$_src_rc" -eq 124 ]; then
-          echo "  FAIL $_rel (timed out after 240s)"
+          echo "  FAIL $_rel (timed out after ${_component_timeout}s)"
         else
           echo "  FAIL $_rel (exit $_src_rc)"
         fi

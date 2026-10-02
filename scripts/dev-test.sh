@@ -42,8 +42,8 @@
 #   - A full export (--export) runs `npm run selftest` internally (GATE3) and takes roughly 10 minutes.
 #
 # One machine, one run at a time (W24-U2 follow-up, 2026-09-26): `bin/axmem selftest`'s per-component
-# self-tests run under a HARDCODED 240s `timeout` (bin/axmem is not owned by this script, so that
-# ceiling cannot be made configurable from here). Under heavy concurrent CPU load -- e.g. two clones
+# self-tests default to a 240s `timeout`. AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC can override that
+# ceiling for a deliberately slower acceptance environment. Under heavy concurrent CPU load -- e.g. two clones
 # each running `npm run selftest` at the same time, or a second dev-test.sh invocation on the same
 # machine -- a component that normally finishes in well under 240s (confirmed: tests/isolation-real-
 # configs.sh, otherwise green) can be starved past that ceiling and report a spurious FAIL that has
@@ -75,8 +75,8 @@ Usage: bash scripts/dev-test.sh [--export] [--keep] [--ref <rev>] [--allow-dirty
   -h, --help              show this help
 
 Note: run at most ONE `npm run selftest` / dev-test.sh at a time per machine. bin/axmem selftest's
-per-component self-tests have a hardcoded 240s timeout; heavy concurrent load can push an otherwise-
-healthy component past it and produce a spurious FAIL unrelated to the code under test.
+per-component self-tests default to 240s (override with AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC);
+heavy concurrent load can still produce a spurious FAIL unrelated to the code under test.
 EOF
 }
 

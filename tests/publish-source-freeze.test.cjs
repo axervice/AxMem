@@ -5,9 +5,8 @@
 //
 // EXCLUDED from the public export (see publish.manifest.json's exclude list): it requires
 // scripts/publish-public.cjs and publish.manifest.json, both private-only, same rationale as
-// tests/publish-leak-scan.test.cjs (W22-U1). Deliberately does NOT contain the literal string
-// "--self-test" so bin/axmem's component-selftest auto-discovery (grep -q -- '--self-test') never
-// sweeps it in.
+// tests/publish-leak-scan.test.cjs (W22-U1). Deliberately avoids the component self-test discovery
+// marker, so bin/axmem's grep-based auto-discovery never sweeps it in.
 //
 // A few of these tests deliberately dirty a REAL tracked file in this repo's own working tree
 // (publish-overrides/patches/pmm-size-watch.1.find.txt, publish.manifest.json) to exercise the

@@ -20,118 +20,12 @@ jobs:
         with:
           node-version: 22
 
-      - name: Set up pinned Go toolchain
-        if: runner.os == 'Windows'
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.1'
-
-      - name: Build and verify private Bash AST helpers
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          GOTOOLCHAIN: local
-          CGO_ENABLED: '0'
-          GOOS: windows
-          GOARCH: amd64
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $lockPath = 'scripts/private/p2-bash-ast/helper.lock.json'
-          $lockToolchain = (& node -p "require('./$lockPath').goToolchain").Trim()
-          $lockExeSha = (& node -p "require('./$lockPath').executableSha256").Trim()
-          $lockSourceSha = (& node -p "require('./$lockPath').sourceSha256").Trim()
-          $lockGoModSha = (& node -p "require('./$lockPath').goModSha256").Trim()
-          $lockGoSumSha = (& node -p "require('./$lockPath').goSumSha256").Trim()
-          if ($LASTEXITCODE -ne 0 -or $lockToolchain -ne 'go1.26.1 windows/amd64') {
-            throw "unexpected helper toolchain in $lockPath: $lockToolchain"
-          }
-          $goVersion = (& go version).Trim()
-          if ($LASTEXITCODE -ne 0 -or $goVersion -ne 'go version go1.26.1 windows/amd64') {
-            throw "Go toolchain mismatch: expected 'go version go1.26.1 windows/amd64', got '$goVersion'"
-          }
-
-          $sourceChecks = @(
-            @{ Path = 'scripts/private/p2-bash-ast/main.go'; Expected = $lockSourceSha },
-            @{ Path = 'scripts/private/p2-bash-ast/go.mod'; Expected = $lockGoModSha },
-            @{ Path = 'scripts/private/p2-bash-ast/go.sum'; Expected = $lockGoSumSha }
-          )
-          foreach ($item in $sourceChecks) {
-            $bytes = [IO.File]::ReadAllBytes($item.Path)
-            if ($bytes -contains 13) {
-              throw "helper source is not LF-only: $($item.Path)"
-            }
-            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.Path).Hash.ToLowerInvariant()
-            if ($actual -ne $item.Expected) {
-              throw "helper source hash mismatch for $($item.Path): expected $($item.Expected), got $actual"
-            }
-          }
-
-          $helperDir = 'scripts/private/p2-bash-ast'
-          $helperExe = Join-Path $helperDir 'bin/p2-bash-ast.exe'
-          New-Item -ItemType Directory -Force -Path (Split-Path $helperExe) | Out-Null
-          Push-Location $helperDir
-          try {
-            & go build -trimpath -buildvcs=false -o 'bin/p2-bash-ast.exe' .
-            if ($LASTEXITCODE -ne 0) { throw "private Bash AST helper build failed with exit $LASTEXITCODE" }
-          } finally {
-            Pop-Location
-          }
-          $actualHelperSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $helperExe).Hash.ToLowerInvariant()
-          if ($actualHelperSha -ne $lockExeSha) {
-            throw "private Bash AST helper SHA256 mismatch: expected $lockExeSha, got $actualHelperSha"
-          }
-
-          $badHelperDir = 'tests/fixtures/p2-bash-ast/bad-output-helper'
-          $badHelperExe = Join-Path $env:RUNNER_TEMP 'axmem-bad-output-helper.exe'
-          Push-Location $badHelperDir
-          try {
-            & go build -trimpath -buildvcs=false -o $badHelperExe .
-            if ($LASTEXITCODE -ne 0) { throw "bad-output helper build failed with exit $LASTEXITCODE" }
-          } finally {
-            Pop-Location
-          }
-          $badOutput = (& $badHelperExe | Out-String).TrimEnd()
-          if ($LASTEXITCODE -ne 0 -or $badOutput -ne '{bad') {
-            throw "bad-output helper sanity check failed: expected '{bad', got '$badOutput'"
-          }
-
-          "AXMEM_REQUIRE_GO_HELPER=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "AXMEM_R6A_BAD_OUTPUT_HELPER=$badHelperExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: axmem selftest (isolated HOME)
+      - name: axmem selftest (isolated HOME, no external dependencies)
         shell: bash
         run: |
           T="$(mktemp -d)"
           echo "isolated HOME: $T"
-          set +e
           HOME="$T" USERPROFILE="$T" PMM_HOME="$T" AXMEM_HOME="$T/.axmem" npm run selftest
-          rc=$?
-          set -e
-          [ "$rc" -eq 0 ] || { echo "npm run selftest failed with exit $rc" >&2; exit "$rc"; }
-
-      # These two tests intentionally have no --self-test marker, so bin/axmem
-      # does not discover them. They also exercise a Windows-only parser helper.
-      - name: generated-artifacts buildManifest test
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          T="$(mktemp -d)"
-          set +e
-          HOME="$T" USERPROFILE="$T" PMM_HOME="$T" AXMEM_HOME="$T/.axmem" node tests/p2-generated-artifacts-buildmanifest.test.cjs
-          rc=$?
-          set -e
-          [ "$rc" -eq 0 ] || { echo "buildManifest test failed with exit $rc" >&2; exit "$rc"; }
-
-      - name: generated AST integration test
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          T="$(mktemp -d)"
-          set +e
-          HOME="$T" USERPROFILE="$T" PMM_HOME="$T" AXMEM_HOME="$T/.axmem" node tests/p2-generated-ast-integration.test.cjs
-          rc=$?
-          set -e
-          [ "$rc" -eq 0 ] || { echo "generated AST integration test failed with exit $rc" >&2; exit "$rc"; }
 
       - name: axmem doctor (fresh, isolated HOME)
         shell: bash

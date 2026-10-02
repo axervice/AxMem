@@ -5,9 +5,9 @@
 //
 // EXCLUDED from the public export (see publish.manifest.json's exclude list,
 // "_comment_PUBLISH_LEAK_SCAN_TEST"): it requires scripts/publish-public.cjs and
-// publish.manifest.json, both of which are private-only. Deliberately does NOT contain the literal
-// string "--self-test" so bin/axmem's component-selftest auto-discovery (grep -q -- '--self-test')
-// never sweeps it in even if it were ever run against an unfiltered source tree.
+// publish.manifest.json, both of which are private-only. Deliberately avoids the component self-test
+// discovery marker, so bin/axmem's grep-based auto-discovery never sweeps it in even if it were
+// ever run against an unfiltered source tree.
 //
 // Everything here operates against a git tree/blob built with plumbing commands (hash-object,
 // update-index --cacheinfo, write-tree) under a throwaway GIT_INDEX_FILE -- never against any real

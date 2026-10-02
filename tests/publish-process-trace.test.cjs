@@ -5,8 +5,8 @@
 //
 // EXCLUDED from the public export (see publish.manifest.json's exclude list,
 // "_comment_PUBLISH_PROCESS_TRACE_TEST"): it requires scripts/publish-public.cjs and
-// publish.manifest.json, both private-only. Deliberately does NOT contain the literal string
-// "--self-test" so bin/axmem's component-selftest auto-discovery never sweeps it in.
+// publish.manifest.json, both private-only. Deliberately avoids the component self-test discovery
+// marker, so bin/axmem's grep-based auto-discovery never sweeps it in.
 //
 // Every file this test writes lives in a mkdtemp'd scratch directory -- never the real repo's
 // working tree, never a real ref/branch.

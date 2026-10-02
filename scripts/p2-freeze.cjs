@@ -1066,7 +1066,9 @@ function validateInventory(inv, liveHooks, liveRoot) {
 function buildManifest({ liveDir, inventoryPath, generatedAt }) {
   const live = path.resolve(liveDir);
   const repoRoot = String(git(live, ['rev-parse', '--show-toplevel'])).trim();
-  const relLive = posix(path.relative(repoRoot, live));
+  const canonicalLive = fs.realpathSync.native(live);
+  const canonicalRepoRoot = fs.realpathSync.native(path.resolve(repoRoot));
+  const relLive = posix(path.relative(canonicalRepoRoot, canonicalLive));
   if (!relLive || relLive === '.' || relLive.startsWith('../')) throw new FreezeError('bad-live-root', 'liveDir must be a tracked subdirectory of a git repository');
 
   const dirty = String(git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all', '--', relLive])).trim();
@@ -1081,7 +1083,14 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
   let inventoryRepoRoot;
   try { inventoryRepoRoot = String(git(path.dirname(inventoryAbs), ['rev-parse', '--show-toplevel'])).trim(); }
   catch { throw new FreezeError('bad-inventory', 'inventory must be inside a git repository: ' + inventoryAbs); }
-  const inventoryRel = posix(path.relative(inventoryRepoRoot, inventoryAbs));
+  let canonicalInventoryRepoRoot, canonicalInventoryAbs;
+  try {
+    canonicalInventoryRepoRoot = fs.realpathSync.native(path.resolve(inventoryRepoRoot));
+    canonicalInventoryAbs = fs.realpathSync.native(inventoryAbs);
+  } catch (e) {
+    throw new FreezeError('bad-inventory', 'cannot resolve inventory path: ' + inventoryAbs + ': ' + e.message);
+  }
+  const inventoryRel = posix(path.relative(canonicalInventoryRepoRoot, canonicalInventoryAbs));
   if (!inventoryRel || inventoryRel === '.' || inventoryRel.startsWith('../') || path.posix.isAbsolute(inventoryRel)) {
     throw new FreezeError('bad-inventory', 'inventory path must be inside its repository: ' + inventoryAbs);
   }

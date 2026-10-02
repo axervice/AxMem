@@ -10,7 +10,7 @@ const PROTOCOL = 'axmem-p2-bash-ast/v1';
 const PARSER = 'mvdan.cc/sh/v3@v3.13.1';
 const EXE_REL = 'bin/p2-bash-ast.exe';
 const EXPECTED = Object.freeze({
-  executableSha256: '4352c942f438a6a1183f05c64821157d54e46bdc835d3efb03881bee43bac6d7',
+  executableSha256: 'ce8b9c1e72511e1347b927387108ce0f57ac52acd92404c2c67d32c9882693e6',
   sourceSha256: '821288387088c543dad09bebfaa4025c538f084ddaa755c1c02abae5ebc740f1',
   goModSha256: 'f1491f323bb58aee1a88eabb74b1e90db331ae1108f98984025be3bef16f84ee',
   goSumSha256: 'c6cfc2b595a285388027e0b1626224a068adb37518bab024f7946e1bc6130987',

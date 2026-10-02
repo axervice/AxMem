@@ -1,5 +1,10 @@
 # AxMem CHANGELOG
 
+## 2026-10-02 — R15e merge package: LF helper re-pin + Windows path/CI closure
+
+- **Helper lock re-pin**: the old executable SHA `4352c942…` was produced from a CRLF `main.go`, while committed/CI helper sources are LF-pinned. Rebuilt from the locked LF source with portable Go 1.26.1, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`, `GOOS=windows`, `GOARCH=amd64`, `-trimpath -buildvcs=false`; the reproducible LF executable SHA is `ce8b9c1e72511e1347b927387108ce0f57ac52acd92404c2c67d32c9882693e6`. Lock metadata and adapter expectation are re-pinned together.
+- **Merge-package CI/path fixes**: private Go/helper acceptance moved to an export-excluded workflow; generated-artifact path checks canonicalize native real paths so Windows 8.3/junction aliases cannot create false `bad-live-root` failures; publish-only tests no longer match component self-test discovery, and push-hygiene establishes disposable Git identity before its first synthesized commit. Strong-mode machine acceptance measured 242.817s locally, so `bin/axmem` now keeps its 240s default but accepts `AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC`; private CI sets 360s.
+
 ## 2026-09-30 — R12b/R13：runtime-health 留一法收口与 witness registry 原料
 
 - **R12b / R12c / R13c 证据结论**：19 个 port|replace hook 的 leave-one-out 最终语义仍为 **41 detected / 17 silent-change / 33 no-effect**。R12b 原 `DEEP-PROBE-RESULTS.json` 的 17/17 继续作废；R13c 在修正 exact `Cannot find module` 归因并补入 `PreToolUse/2/0` 后，严格加载矩阵为 **21/21 healthy baseline + 21/21 detected，0 not-attributed / 0 probe-error**，其中 13 条是 direct-module preflight、8 条是真实 transitive-load preflight。`PREFLIGHT-EDGES.json` 现为 21 条 mandatory production edge + 1 条 selftest-only，0 optional-degradable。R12b inventory candidate 仍是 `candidate-blocked-review-not-formal-freeze-input`。

@@ -6,9 +6,8 @@
 //
 // EXCLUDED from the public export (see publish.manifest.json's exclude list), same rationale as
 // tests/publish-source-freeze.test.cjs and tests/publish-leak-scan.test.cjs: it requires
-// scripts/publish-public.cjs and publish.manifest.json, both private-only. Deliberately does NOT
-// contain the literal string "--self-test" so bin/axmem's component-selftest auto-discovery never
-// sweeps it in.
+// scripts/publish-public.cjs and publish.manifest.json, both private-only. Deliberately avoids the
+// component self-test discovery marker, so bin/axmem's grep-based auto-discovery never sweeps it in.
 //
 // W22-U3 follow-up (incident, 2026-09-26): an earlier version of this file ran every ref-touching
 // scenario (orphan/CAS/monotonicity) directly against REPO_ROOT via commitOntoPublic()/update-ref, on
@@ -51,6 +50,14 @@ const REPO_ROOT = pp.REPO_ROOT;
     process.exit(2);
   }
 })();
+
+// Belt-and-braces identity for every commit-tree call below. This must be established before the
+// first setupIsolatedClone(), because that helper may synthesize a parentless public commit.
+// A caller that already exported GIT_AUTHOR_*/GIT_COMMITTER_* keeps those values.
+process.env.GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME || 'w22u3-test';
+process.env.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL || 'w22u3-test@example.invalid';
+process.env.GIT_COMMITTER_NAME = process.env.GIT_COMMITTER_NAME || 'w22u3-test';
+process.env.GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || 'w22u3-test@example.invalid';
 
 let ok = 0;
 let total = 0;
@@ -160,15 +167,6 @@ console.log('== setup self-check: setupIsolatedClone must work against a main-on
 const { dir: isolatedDir, pp: ppIso, git: gitIso } = setupIsolatedClone(REPO_ROOT);
 check('isolated clone has zero remotes configured', gitIso(['remote']).trim() === '');
 check('the isolated module instance resolves REPO_ROOT to the clone, not this repo', ppIso.REPO_ROOT === isolatedDir && ppIso.REPO_ROOT !== REPO_ROOT);
-
-// Belt-and-braces identity for the `git commit-tree` calls this file makes directly (and that
-// commitOntoPublic makes internally) against the isolated clone -- set as env, never
-// `git config --global`, per the task's clone contract. A caller that already exported
-// GIT_AUTHOR_*/GIT_COMMITTER_* keeps those values.
-process.env.GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME || 'w22u3-test';
-process.env.GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL || 'w22u3-test@example.invalid';
-process.env.GIT_COMMITTER_NAME = process.env.GIT_COMMITTER_NAME || 'w22u3-test';
-process.env.GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || 'w22u3-test@example.invalid';
 
 function currentPublicHead() {
   try { return gitIso(['rev-parse', 'public']).trim(); } catch { return null; }
