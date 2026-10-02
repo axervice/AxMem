@@ -41,7 +41,7 @@ jobs:
           $lockGoModSha = (& node -p "require('./$lockPath').goModSha256").Trim()
           $lockGoSumSha = (& node -p "require('./$lockPath').goSumSha256").Trim()
           if ($LASTEXITCODE -ne 0 -or $lockToolchain -ne 'go1.26.1 windows/amd64') {
-            throw "unexpected helper toolchain in $lockPath: $lockToolchain"
+            throw "unexpected helper toolchain in ${lockPath}: $lockToolchain"
           }
           $goVersion = (& go version).Trim()
           if ($LASTEXITCODE -ne 0 -or $goVersion -ne 'go version go1.26.1 windows/amd64') {

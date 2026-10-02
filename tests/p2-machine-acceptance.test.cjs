@@ -6,14 +6,23 @@ const os = require('os');
 const path = require('path');
 const cp = require('child_process');
 const crypto = require('crypto');
-const runner = require('../scripts/equiv-runner.cjs');
-const equiv = require('../scripts/equiv.cjs');
-const freezeTool = require('../scripts/p2-freeze.cjs');
 
 if (process.argv[2] !== '--self-test') {
   console.error('usage: p2-machine-acceptance.test.cjs --self-test');
   process.exit(1);
 }
+
+const WINDOWS_MACHINE_CHECK_COUNT = 210;
+if (process.platform !== 'win32') {
+  const skipReasons = { 'windows-only-path-semantics': WINDOWS_MACHINE_CHECK_COUNT };
+  const machineSummary = JSON.stringify({ pass: 0, fail: 0, skip: WINDOWS_MACHINE_CHECK_COUNT, skipReasons });
+  console.log('P2-MACHINE-ACCEPTANCE ' + machineSummary + ' ' + WINDOWS_MACHINE_CHECK_COUNT + ' skipped');
+  process.exit(0);
+}
+
+const runner = require('../scripts/equiv-runner.cjs');
+const equiv = require('../scripts/equiv.cjs');
+const freezeTool = require('../scripts/p2-freeze.cjs');
 
 let pass = 0, fail = 0, skip = 0;
 const skipReasons = {};
@@ -2057,4 +2066,8 @@ try {
 
 const machineSummary = JSON.stringify({ pass, fail, skip, skipReasons });
 console.log('P2-MACHINE-ACCEPTANCE ' + machineSummary + (skip > 0 ? ' ' + skip + ' skipped' : ''));
+if (pass + fail + skip !== WINDOWS_MACHINE_CHECK_COUNT) {
+  console.error('P2-MACHINE-ACCEPTANCE internal count drift: expected ' + WINDOWS_MACHINE_CHECK_COUNT + ', got ' + (pass + fail + skip));
+  process.exit(1);
+}
 process.exit(fail ? 1 : 0);

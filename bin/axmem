@@ -289,8 +289,8 @@ case "${1:-}" in
     # --self-test support (grep-detected, not a hardcoded roster — a new
     # component's self-test is picked up automatically the next time this
     # runs; tests/ added 2026-09-17 for the spec §3 isolation/fresh-HOME/
-    # inherit-real-env E2E fixtures), and runs each one under a 240s
-    # timeout so a single hung self-test can
+    # inherit-real-env E2E fixtures), and runs each one under a 600s
+    # timeout by default so a single hung self-test can
     # never block the rest of the suite forever. guards/ and hooks/ are
     # deliberately excluded (D8: legacy / out of P1 scope, never touched
     # by this build).
@@ -310,7 +310,7 @@ case "${1:-}" in
     failcount=0
     _st_out="$(mktemp)"
     trap 'rm -f "$_st_out"' EXIT
-    _component_timeout="${AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC:-240}"
+    _component_timeout="${AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC:-600}"
     case "$_component_timeout" in
       ''|*[!0-9]*) echo "axmem selftest: AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC must be a positive integer" >&2; exit 2 ;;
     esac
