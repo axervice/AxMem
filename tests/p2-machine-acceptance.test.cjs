@@ -99,6 +99,12 @@ try {
   const r15eOrphanRel = 'guards/r15e-materialized-orphan.sh';
   const r15eOrphanAbs = path.join(live, ...r15eOrphanRel.split('/'));
   fs.writeFileSync(r15eOrphanAbs, '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15e-orphan-never; fi\nprintf orphan\n');
+  const r15dTmpE2ERel = 'guards/r15d-tmp-e2e.sh';
+  const r15dTmpE2EAbs = path.join(live, ...r15dTmpE2ERel.split('/'));
+  fs.writeFileSync(r15dTmpE2EAbs, '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15d-e2e-probe; fi\nprintf ok\n');
+  const r15eBadAwaitRel = 'guards/r15e-bad-await.cjs';
+  const r15eBadAwaitAbs = path.join(live, ...r15eBadAwaitRel.split('/'));
+  fs.writeFileSync(r15eBadAwaitAbs, 'await 1;\n');
   git(repo, ['init', '-q']);
   git(repo, ['add', '.claude']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'fixture']);
@@ -651,6 +657,29 @@ try {
     JSON.stringify(n2Inside.tool_input));
   fs.rmSync(n2Sandbox, { recursive: true, force: true });
 
+  // R15e F7 evidence repair: behavior proof goes through runCase, whose signature exists on the old baseline.
+  const r15dTmpE2ECmd = 'bash "' + r15dTmpE2EAbs.replace(/\\/g, '/') + '"';
+  const r15dTmpE2ERaw = clone(freeze);
+  r15dTmpE2ERaw.hooks = [Object.assign({}, r15dTmpE2ERaw.hooks[4], {
+    logicalId: 'r15d-tmp-e2e',
+    command: r15dTmpE2ECmd,
+    files: [r15dTmpE2ERel],
+    runtimeHealthProbe: { version: 1, innerCommand: r15dTmpE2ECmd, reliable: true, notes: 'R15e F7 old-compatible runCase evidence fixture' },
+  })];
+  r15dTmpE2ERaw.sourceFiles = [{
+    path: r15dTmpE2ERel, sha256: sha256(fs.readFileSync(r15dTmpE2EAbs)),
+    disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e F7 /tmp e2e fixture',
+  }];
+  const r15dTmpE2EFreeze = bindFreeze(r15dTmpE2ERaw, 'r15d-tmp-e2e');
+  let r15dTmpE2EErr = null;
+  try { runner.runCase({ freeze: r15dTmpE2EFreeze, group: focusedGroup, c: { id: 'r15d-tmp-e2e', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15dTmpE2EErr = e; }
+  check('R15e F7 literal /tmp behavior is refused through old-compatible runCase',
+    r15dTmpE2EErr && r15dTmpE2EErr.code === 'sandbox-literal-tmp'
+      && r15dTmpE2EErr.detail && r15dTmpE2EErr.detail.path === r15dTmpE2ERel,
+    JSON.stringify({ code: r15dTmpE2EErr && r15dTmpE2EErr.code, detail: r15dTmpE2EErr && r15dTmpE2EErr.detail }));
+
+  // Direct scanner calls below are guard-rails only, not old-red behavior evidence.
   let tmpDangerErr = null;
   try { runner.scanLiteralTmpSource('guards/r15d-tmp-fixture.sh', 'if false; then echo x > /tmp/r15d-probe; fi\n'); } catch (e) { tmpDangerErr = e; }
   check('R15d S2b literal /tmp preflight rejects executable source use', tmpDangerErr && tmpDangerErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpDangerErr && tmpDangerErr.detail));
@@ -658,16 +687,22 @@ try {
   try { tmpSafe = runner.scanLiteralTmpSource('guards/r15d-tmp-safe.sh', '# /tmp/comment only\nT="${TMPDIR:-/tmp}"\nU="${TMPDIR-/tmp}"\n'); } catch (e) { tmpSafeErr = e; }
   check('R15d S2b literal /tmp preflight permits whole-line comments and exact TMPDIR defaults', !tmpSafeErr && tmpSafe && tmpSafe.exceptionsUsed.length === 0, String(tmpSafeErr && tmpSafeErr.message));
   const tmpExceptionLine = '  case "$T" in /tmp/*|/var/*|"${TMPDIR:-/nonexistent}"*) : ;; *) echo "mktemp 异常路径 $T,拒绝继续"; exit 1;; esac';
-  const tmpException = runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine + '\n');
-  check('R15d S2b literal /tmp preflight accepts exactly the reviewed line-hash exception', tmpException.exceptionsUsed.length === 1 && tmpException.exceptionsUsed[0].lineSha256 === sha256(Buffer.from(tmpExceptionLine)), JSON.stringify(tmpException));
+  let tmpException = null, tmpExceptionErr = null;
+  try { tmpException = runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine + '\n'); } catch (e) { tmpExceptionErr = e; }
+  check('R15d S2b literal /tmp preflight accepts exactly the reviewed line-hash exception',
+    !tmpExceptionErr && tmpException && tmpException.exceptionsUsed.length === 1 && tmpException.exceptionsUsed[0].lineSha256 === sha256(Buffer.from(tmpExceptionLine)),
+    JSON.stringify({ error: tmpExceptionErr && String(tmpExceptionErr.message), result: tmpException }));
   let tmpMutatedErr = null;
   try { runner.scanLiteralTmpSource('guards/pmm-shell-memory-watch.sh', tmpExceptionLine.replace('异常路径', '异常路经') + '\n'); } catch (e) { tmpMutatedErr = e; }
   check('R15d S2b literal /tmp exception fails closed when approved line changes', tmpMutatedErr && tmpMutatedErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpMutatedErr && tmpMutatedErr.detail));
   let tmpShebangErr = null, tmpUnknownExecErr = null;
   try { runner.scanLiteralTmpSource('guards/r15d-noext-shell', '#!/usr/bin/env bash\necho x > /tmp/r15d-shebang-probe\n', { executableHint: true }); } catch (e) { tmpShebangErr = e; }
   check('R15d S2c literal /tmp preflight classifies extensionless executable by shell shebang', tmpShebangErr && tmpShebangErr.code === 'sandbox-literal-tmp', JSON.stringify(tmpShebangErr && tmpShebangErr.detail));
-  const tmpJsonData = runner.scanLiteralTmpSource('memory/_local-config/settings.json', '{"path":"/tmp/data-only"}\n');
-  check('R15e H3++ literal /tmp preflight exempts parseable shebang-free JSON only when it is not executable-hinted', tmpJsonData.checked === false && tmpJsonData.notApplicable === true && tmpJsonData.reason === 'pure-data-json', JSON.stringify(tmpJsonData));
+  let tmpJsonData = null, tmpJsonDataErr = null;
+  try { tmpJsonData = runner.scanLiteralTmpSource('memory/_local-config/settings.json', '{"path":"/tmp/data-only"}\n'); } catch (e) { tmpJsonDataErr = e; }
+  check('R15e H3++ literal /tmp preflight exempts parseable shebang-free JSON only when it is not executable-hinted',
+    !tmpJsonDataErr && tmpJsonData && tmpJsonData.checked === false && tmpJsonData.notApplicable === true && tmpJsonData.reason === 'pure-data-json',
+    JSON.stringify({ error: tmpJsonDataErr && String(tmpJsonDataErr.message), result: tmpJsonData }));
   try { runner.scanLiteralTmpSource('guards/r15d-unknown-exec', '#!/usr/bin/env python3\nprint("/tmp/r15d")\n', { executableHint: true }); } catch (e) { tmpUnknownExecErr = e; }
   check('R15d S2c literal /tmp preflight rejects executable files with unsupported shebang type', tmpUnknownExecErr && tmpUnknownExecErr.code === 'sandbox-source-type-unknown', JSON.stringify(tmpUnknownExecErr && tmpUnknownExecErr.detail));
 
@@ -877,7 +912,10 @@ try {
   s2cPinTarget.disposition = 'private-exclude';
   const s2cPinTamperedBytes = Buffer.from(JSON.stringify(s2cPinTamperedInventory, null, 2) + '\n');
   const s2cPinTamperedFreeze = clone(freeze);
-  s2cPinTamperedFreeze.hooks.find((h) => h.event === s2cPinTarget.event && h.groupIndex === s2cPinTarget.groupIndex && h.hookIndex === s2cPinTarget.hookIndex).disposition = 'private-exclude';
+  const s2cPinTamperedFreezeHook = s2cPinTamperedFreeze.hooks.find((h) => h.event === s2cPinTarget.event && h.groupIndex === s2cPinTarget.groupIndex && h.hookIndex === s2cPinTarget.hookIndex);
+  s2cPinTamperedFreezeHook.disposition = 'private-exclude';
+  s2cPinTamperedFreezeHook.businessExitCodes = [];
+  s2cPinTamperedFreezeHook.runtimeHealthProbe = null;
   s2cPinTamperedFreeze.inventorySha256 = sha256(s2cPinTamperedBytes);
   let s2cPinTamperErr = null;
   try {
@@ -1064,6 +1102,32 @@ try {
   let syntaxHealthErr = null;
   try { runner.runCase({ freeze: syntaxFreeze, group: focusedGroup, c: { id: 'rh-syntax', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { syntaxHealthErr = e; }
   check('runtime health blocks syntax/startup failure hidden by outer exit0', syntaxHealthErr && /source health preflight failed/.test(syntaxHealthErr.message), String(syntaxHealthErr && syntaxHealthErr.message));
+
+  // R15e F8 evidence repair: Acorn accepts top-level await here, so Node --check must be the rejecting layer.
+  let r15eBadAwaitDependencyAnalysis = null, r15eBadAwaitDependencyErr = null;
+  try { r15eBadAwaitDependencyAnalysis = freezeTool.analyzeDependencyReferences(r15eBadAwaitRel, fs.readFileSync(r15eBadAwaitAbs, 'utf8')); }
+  catch (e) { r15eBadAwaitDependencyErr = e; }
+  const r15eBadAwaitInner = 'node "' + r15eBadAwaitAbs.replace(/\\/g, '/') + '" >/dev/null 2>&1';
+  const r15eBadAwaitRaw = clone(freeze);
+  r15eBadAwaitRaw.hooks = [Object.assign({}, r15eBadAwaitRaw.hooks[4], {
+    logicalId: 'r15e-node-check-await',
+    command: r15eBadAwaitInner + ' || exit 0',
+    files: [r15eBadAwaitRel],
+    runtimeHealthProbe: { version: 1, innerCommand: r15eBadAwaitInner, reliable: true, notes: 'R15e F8 Node --check directed guard-rail' },
+  })];
+  r15eBadAwaitRaw.sourceFiles = [{
+    path: r15eBadAwaitRel, sha256: sha256(fs.readFileSync(r15eBadAwaitAbs)),
+    disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'R15e F8 top-level await syntax fixture',
+  }];
+  const r15eBadAwaitFreeze = bindFreeze(r15eBadAwaitRaw, 'r15e-node-check-await');
+  let r15eBadAwaitErr = null;
+  try { runner.runCase({ freeze: r15eBadAwaitFreeze, group: focusedGroup, c: { id: 'r15e-node-check-await', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15eBadAwaitErr = e; }
+  check('R15e F8 Node --check rejects Acorn-accepted top-level await before masked execution',
+    !r15eBadAwaitDependencyErr && r15eBadAwaitDependencyAnalysis
+      && r15eBadAwaitErr && r15eBadAwaitErr.code === 'equiv-infrastructure'
+      && /source health preflight failed .*r15e-bad-await\.cjs: syntax-exit:/.test(r15eBadAwaitErr.message),
+    JSON.stringify({ dependencyError: r15eBadAwaitDependencyErr && String(r15eBadAwaitDependencyErr.message), code: r15eBadAwaitErr && r15eBadAwaitErr.code, message: r15eBadAwaitErr && r15eBadAwaitErr.message }));
 
   // Comparator must reject missing/text-only/stale/cross-case health metadata and two equally bad reports.
   const validHealthReportA = runner.runFreezeReport({ freeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live });
