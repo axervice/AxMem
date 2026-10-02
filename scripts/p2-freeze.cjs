@@ -974,10 +974,18 @@ function validateInventory(inv, liveHooks, liveRelativePath) {
   if (!Array.isArray(inv.hooks) || !Array.isArray(inv.files)) throw new FreezeError('bad-inventory', 'inventory hooks/files must be arrays');
 
   const fileMap = new Map();
+  const fileCaseMap = new Map();
   for (const f of inv.files) {
     if (!f || typeof f !== 'object') throw new FreezeError('bad-inventory', 'inventory file entry must be an object');
     const rel = safeRelativeFile(f.path);
     if (fileMap.has(rel)) throw new FreezeError('bad-inventory', 'duplicate inventory file: ' + rel);
+    const foldedRel = rel.toLowerCase();
+    if (fileCaseMap.has(foldedRel)) {
+      throw new FreezeError('bad-inventory', 'inventory file paths must be unique under case folding: ' + fileCaseMap.get(foldedRel) + ' vs ' + rel, {
+        path: rel, existingPath: fileCaseMap.get(foldedRel), reason: 'path-case-collision',
+      });
+    }
+    fileCaseMap.set(foldedRel, rel);
     if (!DISPOSITIONS.has(f.disposition)) throw new FreezeError('bad-inventory', 'invalid disposition for ' + rel);
     const deps = Array.isArray(f.dependencies) ? f.dependencies.map(safeRelativeFile) : [];
     const unresolvedDependencies = Array.isArray(f.unresolvedDependencies) ? f.unresolvedDependencies.map((x) => {

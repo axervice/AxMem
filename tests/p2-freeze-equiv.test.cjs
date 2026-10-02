@@ -121,6 +121,17 @@ try {
   check('freeze fingerprints external prerequisite file without pretending it is tracked source', m.externalDependencies.length === 1 && m.externalDependencies[0].id === 'fixture-external' && m.externalDependencies[0].sha256 === externalHash && git(repo, ['ls-files', '--', '.claude/plugins/fixture/external.sh']).trim() === '');
   check('freeze source file SHA256', m.sourceFiles.length === 6 && m.sourceFiles.every((x) => /^[0-9a-f]{64}$/.test(x.sha256)));
 
+  // R15e H15 path-case sweep: inventory file paths are unique under case folding on every platform.
+  const r15eCaseInventory = JSON.parse(JSON.stringify(inventory));
+  r15eCaseInventory.files.push(Object.assign({}, r15eCaseInventory.files[0], { path: 'guards/GATE.cjs' }));
+  let r15eCaseInventoryErr = null;
+  try { freeze.validateInventory(r15eCaseInventory, freeze.flattenHooks(settings), '.claude'); }
+  catch (e) { r15eCaseInventoryErr = e; }
+  check('R15e H15 inventory files reject paths that differ only by case',
+    r15eCaseInventoryErr && r15eCaseInventoryErr.code === 'bad-inventory'
+      && r15eCaseInventoryErr.detail && r15eCaseInventoryErr.detail.reason === 'path-case-collision',
+    JSON.stringify({ code: r15eCaseInventoryErr && r15eCaseInventoryErr.code, detail: r15eCaseInventoryErr && r15eCaseInventoryErr.detail }));
+
   // R15e H6++: buildManifest must not manufacture a detached commit for uncommitted inventory bytes.
   fs.writeFileSync(inv, Buffer.concat([committedInventoryBytes, Buffer.from('\n')]));
   let r15eUncommittedInventoryErr = null;

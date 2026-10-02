@@ -67,6 +67,17 @@ function materializeFreeze(freeze, repoRoot, sandboxHome, axmemRepoRoot) {
     throw new EquivInfrastructureError('freeze-tree-oid-mismatch', 'freeze source treeOid does not match source commit', { expected: freeze.source.treeOid, actual: actualTree });
   }
   const sourceDir = path.join(sandboxHome, ...liveRel.split('/'));
+  const materializedPathCaseMap = new Map();
+  for (const row of freeze.sourceFiles) {
+    const rel = safeRel(row.path);
+    const folded = rel.toLowerCase();
+    if (materializedPathCaseMap.has(folded)) {
+      throw new EquivInfrastructureError('freeze-source-file-duplicate', 'freeze sourceFiles paths must be unique under case folding before materialization', {
+        path: rel, existingPath: materializedPathCaseMap.get(folded), reason: 'path-case-collision',
+      });
+    }
+    materializedPathCaseMap.set(folded, rel);
+  }
   for (const f of freeze.sourceFiles) {
     const rel = safeRel(f.path);
     if (!/^[0-9a-f]{64}$/i.test(String(f.sha256 || ''))) throw new EquivInfrastructureError('freeze-source-hash-missing', 'freeze source file sha256 is required', { path: rel, sha256: f.sha256 });
@@ -381,14 +392,55 @@ function casePayload(group, c, hookEvent, sandboxHome) {
   return input;
 }
 
+function inheritedEnvValue(env, name) {
+  if (process.platform !== 'win32') return env[name];
+  const want = String(name).toLowerCase();
+  for (const key of Object.keys(env || {})) if (key.toLowerCase() === want) return env[key];
+  return undefined;
+}
+
 function findBash() {
-  if (process.env.AXMEM_EQUIV_BASH) return process.env.AXMEM_EQUIV_BASH;
+  const override = inheritedEnvValue(process.env, 'AXMEM_EQUIV_BASH');
+  if (override) return override;
   if (process.platform === 'win32') {
-    const pf = process.env.ProgramFiles || 'C:\\Program Files';
+    const pf = inheritedEnvValue(process.env, 'ProgramFiles') || 'C:\\Program Files';
     const c = path.join(pf, 'Git', 'bin', 'bash.exe');
     if (fs.existsSync(c)) return c;
   }
   return 'bash';
+}
+
+function bashInterpreterProvenance() {
+  const executable = findBash();
+  let resolved = executable;
+  if (path.win32.isAbsolute(executable) || path.posix.isAbsolute(executable)) {
+    try { resolved = fs.realpathSync.native(executable); }
+    catch { resolved = path.resolve(executable); }
+  } else {
+    const probe = cp.spawnSync(executable, ['-lc', 'printf "%s\\n" "$BASH"'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
+    });
+    const candidate = String(probe.stdout || '').split(/\r?\n/).find((x) => x.trim());
+    if (probe.error || probe.signal || probe.status !== 0 || !candidate
+        || (!path.win32.isAbsolute(candidate.trim()) && !path.posix.isAbsolute(candidate.trim()))) {
+      throw new EquivInfrastructureError('bash-provenance-failed', 'cannot resolve bash interpreter path', {
+        executable, status: probe.status, signal: probe.signal || null,
+        cause: probe.error ? String(probe.error.message || probe.error) : String(probe.stderr || '').trim(),
+      });
+    }
+    resolved = candidate.trim();
+  }
+  const version = cp.spawnSync(executable, ['--version'], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
+  });
+  const versionFirstLine = String(version.stdout || '').split(/\r?\n/).find((x) => x.trim()) || '';
+  if (version.error || version.signal || version.status !== 0 || !versionFirstLine) {
+    throw new EquivInfrastructureError('bash-provenance-failed', 'cannot record bash --version provenance', {
+      executable, resolvedPath: resolved, status: version.status, signal: version.signal || null,
+      cause: version.error ? String(version.error.message || version.error) : String(version.stderr || '').trim(),
+    });
+  }
+  return { path: posix(resolved), versionFirstLine: versionFirstLine.trim() };
 }
 
 const GIT_LOCAL_ENV_VARS_STATIC = [
@@ -501,7 +553,7 @@ function isolatedEnv(sandboxHome, sessionId, context = {}) {
     GIT_CEILING_DIRECTORIES: gitCeilingForSandbox(absHome),
   };
   const managed = new Set(Object.keys(safe).concat(['CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'PATH']).map((k) => k.toLowerCase()));
-  const sensitiveRoots = [inherited.USERPROFILE || inherited.HOME || '', context.sourceRoot || '', context.axmemRepoRoot || ''].filter(Boolean);
+  const sensitiveRoots = [inheritedEnvValue(inherited, 'USERPROFILE') || inheritedEnvValue(inherited, 'HOME') || '', context.sourceRoot || '', context.axmemRepoRoot || ''].filter(Boolean);
   for (const k of Object.keys(env)) {
     if (managed.has(k.toLowerCase())) continue;
     if (inheritedValueLeaksRoot(env[k], sensitiveRoots, absHome)) { scrubbed.add(k); delete env[k]; }
@@ -514,7 +566,7 @@ function isolatedEnv(sandboxHome, sessionId, context = {}) {
     deleteEnvKeyCI(env, 'CLAUDE_SESSION_ID');
     deleteEnvKeyCI(env, 'CLAUDE_CODE_SESSION_ID');
   }
-  const parentPath = String(inherited.PATH || '');
+  const parentPath = String(inheritedEnvValue(inherited, 'PATH') || '');
   if (process.platform === 'win32') {
     const toMsys = (p) => {
       const s = String(p || '').replace(/\\/g, '/');
@@ -774,9 +826,17 @@ function validateInventoryBinding(freeze, axmemRepoRoot, settingsHooks, sourceRe
   }
 
   const freezeFiles = new Map();
+  const freezeFileCaseMap = new Map();
   for (const row of freeze.sourceFiles || []) {
     const filePath = safeRel(row.path);
     if (freezeFiles.has(filePath)) throw new EquivInfrastructureError('freeze-source-file-duplicate', 'freeze sourceFiles contains duplicate path', { path: filePath });
+    const foldedPath = filePath.toLowerCase();
+    if (freezeFileCaseMap.has(foldedPath)) {
+      throw new EquivInfrastructureError('freeze-source-file-duplicate', 'freeze sourceFiles paths must be unique under case folding', {
+        path: filePath, existingPath: freezeFileCaseMap.get(foldedPath), reason: 'path-case-collision',
+      });
+    }
+    freezeFileCaseMap.set(foldedPath, filePath);
     freezeFiles.set(filePath, row);
   }
   if (freezeFiles.size !== validated.fileMap.size) throw new EquivInfrastructureError('freeze-source-files-inventory-mismatch', 'freeze sourceFiles path set differs from pinned inventory files[]', { freezeCount: freezeFiles.size, inventoryCount: validated.fileMap.size });
@@ -1064,6 +1124,7 @@ function runFreezeReport(opts) {
   validateFreezeHooks(freeze);
   const expectedSourceRoot = path.join(repoRoot, ...safeRel(freeze.source.liveRelativePath).split('/'));
   if (!sameSourcePath(sourceRoot, expectedSourceRoot)) throw new EquivInfrastructureError('source-root-mismatch', '--source-root must identify the frozen live source directory', { provided: sourceRoot, expected: expectedSourceRoot });
+  const interpreterProvenance = { bash: bashInterpreterProvenance() };
   const defaultTimeoutMs = Number.isFinite(Number(opts.defaultTimeoutMs)) && Number(opts.defaultTimeoutMs) > 0 ? Number(opts.defaultTimeoutMs) : 60000;
   const cases = [];
   for (const group of fixture.events) for (const c of group.cases) {
@@ -1073,6 +1134,7 @@ function runFreezeReport(opts) {
   const report = {
     schema: 'axmem-equiv-report/v1', generatedAt: new Date().toISOString(),
     source: { commit: freeze.source.commit, treeOid: freeze.source.treeOid, sourceFiles: (freeze.sourceFiles || []).map((f) => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path)), sourceFilesSha256: hashObject((freeze.sourceFiles || []).map((f) => ({ path: f.path, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path))) },
+    interpreterProvenance,
     normalization: { pathPrefixes: cases.map((c) => c.sandboxRoot) }, fixtureCoverage: coverage, cases,
   };
   if (opts.out) {

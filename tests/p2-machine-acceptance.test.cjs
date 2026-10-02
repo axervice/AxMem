@@ -213,6 +213,30 @@ try {
   check('runner emits full 21-case baseline', reportA.cases.length === 21 && reportA.fixtureCoverage.caseCount === 21);
   check('runner keeps writes inside temp sandbox despite inherited PMM path', !fs.existsSync(escape));
   check('runner leaves fixture git source clean', git(repo, ['status', '--porcelain', '--', '.claude']).trim() === '');
+
+  // R15e optional interpreter provenance hardening: reports identify the bash actually used.
+  const r15eBashProvenance = reportA.interpreterProvenance && reportA.interpreterProvenance.bash;
+  check('R15e report records resolved bash path and bash --version first line',
+    r15eBashProvenance
+      && typeof r15eBashProvenance.path === 'string'
+      && (path.win32.isAbsolute(r15eBashProvenance.path) || path.posix.isAbsolute(r15eBashProvenance.path))
+      && typeof r15eBashProvenance.versionFirstLine === 'string'
+      && /bash/i.test(r15eBashProvenance.versionFirstLine),
+    JSON.stringify(r15eBashProvenance));
+
+  // R15e path-case sweep: FREEZE sourceFiles must also be unique under case folding.
+  const r15eCaseFoldFreeze = clone(freeze);
+  const r15eCaseFoldRow = clone(r15eCaseFoldFreeze.sourceFiles[0]);
+  r15eCaseFoldRow.path = r15eCaseFoldRow.path.replace(/^guards\//, 'GUARDS/');
+  r15eCaseFoldFreeze.sourceFiles.push(r15eCaseFoldRow);
+  let r15eCaseFoldSourceErr = null;
+  try {
+    runner.runCase({ freeze: r15eCaseFoldFreeze, group: fixture.events.find((x) => x.event === 'UserPromptSubmit'), c: fixture.events.find((x) => x.event === 'UserPromptSubmit').cases[0], repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 });
+  } catch (e) { r15eCaseFoldSourceErr = e; }
+  check('R15e H15 FREEZE sourceFiles reject paths that differ only by case',
+    r15eCaseFoldSourceErr && r15eCaseFoldSourceErr.code === 'freeze-source-file-duplicate'
+      && r15eCaseFoldSourceErr.detail && r15eCaseFoldSourceErr.detail.reason === 'path-case-collision',
+    JSON.stringify({ code: r15eCaseFoldSourceErr && r15eCaseFoldSourceErr.code, detail: r15eCaseFoldSourceErr && r15eCaseFoldSourceErr.detail }));
   const same = equiv.compareReports(reportA, reportB, []);
   check('full baseline compares green', same.equal === true && same.unexpected.length === 0);
 
@@ -285,6 +309,23 @@ try {
   b2Reject('missing stdout field', (c) => { delete c.stdout; }, 'report-case-field-type', 'stdout');
   b2Reject('renamed stderr field', (c) => { c.stderrRenamed = c.stderr; delete c.stderr; }, 'report-case-field-type', 'stderr');
   b2Reject('case exit inconsistent with first nonzero hook', (c) => { c.exitCode = 2; }, 'report-case-exit-mismatch', 'exitCode');
+
+  // R15e H5++: raw hook shape is validated before normalizeHookResult can coerce/default it.
+  const r15eBadHookRecord = (label, mutate) => {
+    const l = clone(reportA), r = clone(reportA);
+    const lh = l.cases[0].hookResults[0], rhh = r.cases[0].hookResults[0];
+    mutate(lh); mutate(rhh);
+    let err = null, out = null;
+    try { out = equiv.compareReports(l, r, []); } catch (e) { err = e; }
+    check('R15e H5++ rejects ' + label,
+      err && err.code === 'report-bad-hook-record',
+      JSON.stringify({ code: err && err.code, detail: err && err.detail, equal: out && out.equal }));
+  };
+  r15eBadHookRecord('logicalId renamed to id on both sides', (h) => { h.id = h.logicalId; delete h.logicalId; });
+  r15eBadHookRecord('numeric logicalId before string coercion', (h) => { h.logicalId = 123; if (h.runtimeHealth) h.runtimeHealth.logicalId = '123'; });
+  r15eBadHookRecord('numeric phase before string coercion', (h) => { h.phase = 123; if (h.runtimeHealth) h.runtimeHealth.phase = '123'; });
+  r15eBadHookRecord('missing matcher before null default', (h) => { delete h.matcher; });
+  r15eBadHookRecord('array matcher before normalization', (h) => { h.matcher = []; });
 
   let emptyReportErr = '';
   try { equiv.compareReports({ schema: 'axmem-equiv-report/v1', cases: [] }, { schema: 'axmem-equiv-report/v1', cases: [] }, []); }
@@ -507,6 +548,41 @@ try {
   check('R15d S2a N3 reports scrubbed inherited key names without values',
     Array.isArray(a2Run.environmentScrubbedKeys) && r15dExpectedScrubbed.every((k) => a2Run.environmentScrubbedKeys.some((x) => x.toLowerCase() === k.toLowerCase())) && a2Run.environmentScrubbedKeys.every((x) => typeof x === 'string' && !/[\\/=:]/.test(x)),
     JSON.stringify(a2Run.environmentScrubbedKeys));
+
+  // R15e H1++: on win32, inherited environment names are read case-insensitively before copying into an ordinary object.
+  const r15eParentPathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path');
+  const r15eParentPath = r15eParentPathKey ? String(process.env[r15eParentPathKey] || '') : '';
+  const r15eCaseParentHome = path.join(T, 'r15e-case-parent-home');
+  fs.mkdirSync(r15eCaseParentHome, { recursive: true });
+  const r15eEnvCaseProbe = (pathKey, profileKey, label) => {
+    const probeHome = fs.mkdtempSync(path.join(T, 'r15e-env-case-' + label + '-'));
+    const childEnv = Object.assign({}, process.env);
+    for (const k of Object.keys(childEnv)) if (['path', 'userprofile', 'home'].includes(k.toLowerCase())) delete childEnv[k];
+    childEnv[pathKey] = r15eParentPath;
+    childEnv[profileKey] = r15eCaseParentHome;
+    childEnv.R15E_ENV_CASE_LEAK = path.join(r15eCaseParentHome, 'secret');
+    const childCode = [
+      'const r=require(' + JSON.stringify(path.join(__dirname, '..', 'scripts', 'equiv-runner.cjs')) + ');',
+      'const e=r.isolatedEnv(process.argv[1],null);',
+      'console.log(JSON.stringify({PATH:e.PATH,leak:Object.prototype.hasOwnProperty.call(e,"R15E_ENV_CASE_LEAK")?e.R15E_ENV_CASE_LEAK:null,pathKeys:Object.keys(e).filter(k=>k.toLowerCase()==="path")}));',
+    ].join('');
+    const rr = cp.spawnSync(process.execPath, ['-e', childCode, probeHome], { env: childEnv, encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+    let value = null;
+    try { value = JSON.parse(String(rr.stdout || '').trim()); } catch {}
+    fs.rmSync(probeHome, { recursive: true, force: true });
+    return { status: rr.status, signal: rr.signal, stderr: String(rr.stderr || ''), value };
+  };
+  const r15eEnvUpper = r15eEnvCaseProbe('PATH', 'USERPROFILE', 'upper');
+  const r15eEnvMixed = r15eEnvCaseProbe('Path', 'UserProfile', 'mixed');
+  check('R15e H1++ win32 inherited Path/UserProfile spellings match PATH/USERPROFILE semantics',
+    process.platform !== 'win32' || (
+      r15eEnvUpper.status === 0 && r15eEnvMixed.status === 0
+      && r15eEnvUpper.value && r15eEnvMixed.value
+      && r15eEnvUpper.value.PATH === r15eEnvMixed.value.PATH
+      && r15eEnvUpper.value.leak === null && r15eEnvMixed.value.leak === null
+      && r15eEnvUpper.value.pathKeys.length === 1 && r15eEnvMixed.value.pathKeys.length === 1
+    ),
+    JSON.stringify({ upper: r15eEnvUpper, mixed: r15eEnvMixed }));
 
   const r15dNodeRestoreKey = 'NODE_V8_COVERAGE';
   const r15dNodeRestoreBefore = process.env[r15dNodeRestoreKey];
