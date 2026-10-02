@@ -327,7 +327,7 @@
         {
           "id": "posix special prefix",
           "src": "set -o posix; X=./safe.cjs; X=./o.cjs :; node \"$X\"",
-          "expectation": "x-o"
+          "expectation": "unsupported"
         },
         {
           "id": "case pattern arith",
@@ -337,12 +337,12 @@
         {
           "id": "trap code",
           "src": "trap 'node ./trap.cjs' EXIT",
-          "expectation": "trap-edge"
+          "expectation": "unsupported"
         },
         {
           "id": "mapfile -C",
           "src": "mapfile -C 'node ./cb.cjs' -c 1 arr < f",
-          "expectation": "mapfile-edge"
+          "expectation": "unsupported"
         },
         {
           "id": "time only in branch",

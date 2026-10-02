@@ -25,6 +25,7 @@ function requireProjector() {
 const { ERROR_CODES } = require('./protocol.cjs');
 
 const SCAN_SCHEMA = 'axmem-p2-bash-target-scan/v1';
+const POSITIONAL_UNKNOWN = '__axmem_positional_parameters_unknown__';
 
 function cloneBindings(bindings) {
   return new Map(bindings instanceof Map ? bindings : Object.entries(bindings || {}));
@@ -68,12 +69,14 @@ function shellWordValue(node, source, bindings) {
       }
       if (part.type === 'SimpleExpansion') {
         const name = String(part.text || '').replace(/^\$/, '');
+        if (/^[0-9]+$/.test(name) && bindings.get(POSITIONAL_UNKNOWN) === true) return null;
         if (!bindings.has(name)) return null;
         out += String(bindings.get(name));
         continue;
       }
       if (part.type === 'ParameterExpansion' && !part.operator && !part.index) {
         const name = part.parameter;
+        if (/^[0-9]+$/.test(String(name)) && bindings.get(POSITIONAL_UNKNOWN) === true) return null;
         if (!bindings.has(name)) return null;
         out += String(bindings.get(name));
         continue;
@@ -156,11 +159,14 @@ function createScanner(source, options = {}) {
   const fromPath = typeof options.fromPath === 'string' ? options.fromPath.replace(/\\/g, '/') : '';
   const initialBindings = cloneBindings(options.bindings);
   let functions = options._functions instanceof Map ? new Map(options._functions) : new Map();
+  let exportedFunctions = new Set(options._exportedFunctions || []);
   let poisonedFunctions = new Set(options._poisonedFunctions || []);
   let functionTableUnknown = options._functionTableUnknown === true;
   let commandResolutionUnknown = options._commandResolutionUnknown === true;
   let cwdUnknown = options._cwdUnknown === true;
   let posixMode = options._posixMode === true;
+  let bashEnvActive = options._bashEnvActive === true;
+  let functionDepth = 0;
   const records = new Map();
   const functionStack = new Set();
   const assumptions = new Set();
@@ -191,37 +197,73 @@ function createScanner(source, options = {}) {
 
   const fileDefinesTerminatorFunction = (() => {
     const names = functionNamesIn(ast);
-    return names.has('exit') || names.has('exec');
+    return names.has('exit') || names.has('exec') || names.has('return');
+  })();
+
+  const fileDisablesControlFlowShortcuts = (() => {
+    if (fileDefinesTerminatorFunction || fileHasEscapingFunctionLoopControl()) return true;
+    let disabled = false;
+    walkAst(ast, (node) => {
+      if (disabled || !node || node.type !== 'Command' ||
+          !node.name || typeof node.name.value !== 'string') return;
+      const command = node.name.value;
+      const args = (node.suffix || []).map((word) =>
+        word && typeof word.value === 'string' ? word.value : null).filter((x) => x !== null);
+      if (command === 'enable') {
+        disabled = true;
+        return;
+      }
+      if (command === 'shopt') {
+        const setIndex = args.indexOf('-s');
+        if (setIndex >= 0 && args.slice(setIndex + 1).some((x) => x === 'extdebug' || x === 'execfail')) {
+          disabled = true;
+        }
+        return;
+      }
+      if (command === 'set') {
+        if (args.includes('-T')) disabled = true;
+        for (let i = 0; i + 1 < args.length; i++) {
+          if (args[i] === '-o' && args[i + 1] === 'functrace') disabled = true;
+        }
+      }
+    });
+    return disabled;
   })();
 
   function snapshotShellState() {
     return {
       functions: new Map(functions),
+      exportedFunctions: new Set(exportedFunctions),
       poisonedFunctions: new Set(poisonedFunctions),
       functionTableUnknown,
       commandResolutionUnknown,
       cwdUnknown,
       posixMode,
+      bashEnvActive,
     };
   }
 
   function withShellState(state, fn) {
     const saved = snapshotShellState();
     functions = state.functions;
+    exportedFunctions = state.exportedFunctions;
     poisonedFunctions = state.poisonedFunctions;
     functionTableUnknown = state.functionTableUnknown;
     commandResolutionUnknown = state.commandResolutionUnknown;
     cwdUnknown = state.cwdUnknown;
     posixMode = state.posixMode;
+    bashEnvActive = state.bashEnvActive;
     try {
       return fn();
     } finally {
       functions = saved.functions;
+      exportedFunctions = saved.exportedFunctions;
       poisonedFunctions = saved.poisonedFunctions;
       functionTableUnknown = saved.functionTableUnknown;
       commandResolutionUnknown = saved.commandResolutionUnknown;
       cwdUnknown = saved.cwdUnknown;
       posixMode = saved.posixMode;
+      bashEnvActive = saved.bashEnvActive;
     }
   }
 
@@ -232,22 +274,26 @@ function createScanner(source, options = {}) {
   function poisonFunctionNames(names) {
     for (const name of names || []) {
       functions.delete(name);
+      exportedFunctions.delete(name);
       poisonedFunctions.add(name);
     }
   }
 
   function clearKnownFunctions() {
     functions.clear();
+    exportedFunctions.clear();
     poisonedFunctions.clear();
   }
 
   function clearFunctionProof() {
     functions.clear();
+    exportedFunctions.clear();
     poisonedFunctions.clear();
     functionTableUnknown = true;
   }
   function markFunctionsUnknownPreservingPoison() {
     functions.clear();
+    exportedFunctions.clear();
     functionTableUnknown = true;
   }
 
@@ -261,6 +307,14 @@ function createScanner(source, options = {}) {
       commandResolutionUnknown: false,
       cwdUnknown: false,
     };
+  }
+
+  function poisonEffects(effects) {
+    effects.clearAll = true;
+    effects.clearFunctions = true;
+    effects.functionsUnknown = true;
+    effects.cwdUnknown = true;
+    return effects;
   }
 
   function mergeEffects(into, other) {
@@ -475,6 +529,8 @@ function createScanner(source, options = {}) {
     if (command === 'printf') return printfWriterEffects(args, bindings);
     if (command === 'mapfile' || command === 'readarray') return mapfileWriterEffects(args, bindings);
     if (command === 'getopts') {
+      effects.names.add('OPTIND');
+      effects.names.add('OPTARG');
       if (args[1]) addVariableName(effects, args[1], bindings);
       else effects.clearAll = true;
       return effects;
@@ -573,17 +629,141 @@ function createScanner(source, options = {}) {
     return effects;
   }
 
+  function unsupportedWordReason(word) {
+    const raw = word && typeof word.text === 'string' ? word.text : '';
+    if (raw.includes('$((')) return 'arithmetic expansion in a shell word is outside the supported subset';
+    if (/\$\{[A-Za-z_][A-Za-z0-9_]*(?::?=)/.test(raw)) {
+      return 'parameter assignment expansion is outside the supported subset';
+    }
+    if (/\[[^\]]*(?:\+\+|--|[A-Za-z_][A-Za-z0-9_]*\s*(?:<<=|>>=|[+\-*\/%&^|]?=))[^\]]*\]/.test(raw)) {
+      return 'assignment in an array subscript is outside the supported subset';
+    }
+    return null;
+  }
+
+  function testCommandHasAssignment(node) {
+    let hit = false;
+    walkAst(node && node.expression, (part) => {
+      if (hit || !part || typeof part !== 'object') return;
+      for (const value of [part.text, part.value]) {
+        if (typeof value === 'string' && /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?=[^=]/.test(value)) {
+          hit = true;
+          break;
+        }
+      }
+    });
+    return hit;
+  }
+
+  function redirectUnsupportedReason(redir) {
+    if (!redir || typeof redir !== 'object') return null;
+    if (typeof redir.variableName === 'string' && redir.variableName) {
+      return 'file-descriptor allocation writes a shell variable';
+    }
+    return redir.target ? unsupportedWordReason(redir.target) : null;
+  }
+
+  function poisonUnsupported(construct, reason, reachability, node, bindings, expression) {
+    addUnsupported(construct, expression || construct, reason, reachability, node);
+    bindings.clear();
+    clearFunctionProof();
+    cwdUnknown = true;
+  }
+
+  function invalidatePositionalParameters(bindings) {
+    for (const key of [...bindings.keys()]) if (/^[0-9]+$/.test(String(key))) bindings.delete(key);
+    bindings.set(POSITIONAL_UNKNOWN, true);
+  }
+
+  function containsLiteralCommand(value, names) {
+    let found = false;
+    walkAst(value, (node) => {
+      if (found || !node || node.type !== 'Command' || !node.name || typeof node.name.value !== 'string') return;
+      if (names.has(node.name.value)) found = true;
+    });
+    return found;
+  }
+
+  function loopControlLevel(command) {
+    if (!command || command.type !== 'Command' || !command.name ||
+        (command.name.value !== 'break' && command.name.value !== 'continue')) return null;
+    const args = command.suffix || [];
+    if (args.length === 0) return 1;
+    if (args.length !== 1 || !args[0] || typeof args[0].text !== 'string' ||
+        !/^[0-9]+$/.test(args[0].text)) return Infinity;
+    const value = Number(args[0].text);
+    return Number.isSafeInteger(value) ? value : Infinity;
+  }
+
+  function hasEscapingLoopControl(value) {
+    let escaped = false;
+    function visit(node, loopDepth, isRoot = false) {
+      if (escaped || !node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const item of node) visit(item, loopDepth, false);
+        return;
+      }
+      if (!isRoot && node.type === 'Function') return;
+      const level = loopControlLevel(node);
+      if (level !== null && level > loopDepth) {
+        escaped = true;
+        return;
+      }
+      const childDepth = ['For', 'While', 'Select'].includes(node.type) ? loopDepth + 1 : loopDepth;
+      for (const [key, child] of Object.entries(node)) {
+        if (key === 'body' && node.operator && node.target) continue;
+        visit(child, childDepth, false);
+      }
+    }
+    visit(value, 0, true);
+    return escaped;
+  }
+
+  function fileHasEscapingFunctionLoopControl() {
+    let escaped = false;
+    walkAst(ast, (node) => {
+      if (escaped || !node || node.type !== 'Function') return;
+      if (hasEscapingLoopControl(node.body)) escaped = true;
+    });
+    return escaped;
+  }
+
+  function execHasCommandOperand(node) {
+    const words = node && Array.isArray(node.suffix) ? node.suffix : [];
+    let i = 0;
+    while (i < words.length) {
+      const value = words[i] && typeof words[i].value === 'string' ? words[i].value : null;
+      if (value === null) return false;
+      if (value === '--') { i++; break; }
+      if (value === '-a') {
+        if (!words[i + 1] || typeof words[i + 1].value !== 'string') return false;
+        i += 2;
+        continue;
+      }
+      if (/^-[cl]+$/.test(value)) { i++; continue; }
+      if (value.startsWith('-')) return false;
+      break;
+    }
+    return i < words.length;
+  }
+
   function nodeTerminates(node) {
     if (!node || typeof node !== 'object') return false;
-    if (node.type === 'Statement') return nodeTerminates(node.command);
+    if (node.type === 'Statement') {
+      if (node.background || (node.redirects || []).length > 0) return false;
+      return nodeTerminates(node.command);
+    }
     if (node.type === 'Command') {
-      if (!node.name || typeof node.name.value !== 'string') return false;
-      return node.name.value === 'exit' || node.name.value === 'exec';
+      if ((node.redirects || []).length > 0 || !node.name || typeof node.name.value !== 'string') return false;
+      if (node.name.value === 'exit') return true;
+      if (node.name.value === 'exec') return execHasCommandOperand(node);
+      return false;
     }
     if (node.type === 'BraceGroup') return nodeTerminates(node.body);
     if (node.type === 'CompoundList' || node.type === 'Script') {
       const commands = node.commands || [];
-      return commands.length > 0 && nodeTerminates(commands[commands.length - 1]);
+      if (commands.length === 0 || hasEscapingLoopControl(node)) return false;
+      return nodeTerminates(commands[commands.length - 1]);
     }
     if (node.type === 'If') {
       return !!node.then && !!node.else && nodeTerminates(node.then) && nodeTerminates(node.else);
@@ -591,9 +771,25 @@ function createScanner(source, options = {}) {
     return false;
   }
 
+  function nodeReturns(node) {
+    if (!node || typeof node !== 'object') return false;
+    if (node.type === 'Statement') {
+      if (node.background || (node.redirects || []).length > 0) return false;
+      return nodeReturns(node.command);
+    }
+    return node.type === 'Command' && (node.redirects || []).length === 0 &&
+      node.name && node.name.value === 'return';
+  }
+
+  function scopeTerminator(node) {
+    if (fileDisablesControlFlowShortcuts) return false;
+    if (nodeTerminates(node)) return true;
+    return functionDepth > 0 && nodeReturns(node);
+  }
+
   function terminatingArm(node) {
     return options.disableTerminatingArms !== true &&
-      !fileDefinesTerminatorFunction && nodeTerminates(node);
+      !fileDisablesControlFlowShortcuts && nodeTerminates(node);
   }
 
   function collectEffects(node, localFunctions = new Map(functions), seenFunctions = new Set()) {
@@ -604,12 +800,17 @@ function createScanner(source, options = {}) {
       case 'CompoundList':
         for (const child of node.commands || []) mergeEffects(effects, collectEffects(child, localFunctions, seenFunctions));
         return effects;
-      case 'Statement':
+      case 'Statement': {
         if (node.background) {
           for (const name of functionNamesIn(node.command)) effects.poisonFunctions.add(name);
           return effects;
         }
-        return collectEffects(node.command, localFunctions, seenFunctions);
+        const statementEffects = collectEffects(node.command, localFunctions, seenFunctions);
+        for (const redir of node.redirects || []) {
+          if (redirectUnsupportedReason(redir)) return poisonEffects(statementEffects);
+        }
+        return statementEffects;
+      }
       case 'Command': {
         for (const assignment of node.prefix || []) {
           if (assignment && assignment.type === 'Assignment') {
@@ -622,6 +823,13 @@ function createScanner(source, options = {}) {
         for (const word of node.suffix || []) mergeEffects(effects, wordEffects(word));
         for (const redir of node.redirects || []) if (redir && redir.target) mergeEffects(effects, wordEffects(redir.target));
         const words = [node.name, ...(node.suffix || []).filter((w) => w && typeof w.text === 'string')];
+        const unsupportedSyntax = [
+          ...(node.prefix || []).filter((x) => x && x.type === 'Assignment' && x.value).map((x) => x.value),
+          node.name,
+          ...(node.suffix || []),
+        ].map((word) => unsupportedWordReason(word)).find(Boolean) ||
+          (node.redirects || []).map((redir) => redirectUnsupportedReason(redir)).find(Boolean);
+        if (unsupportedSyntax) return poisonEffects(effects);
         let resolved = targetFromWord(node.name, source, new Map());
         if (!resolved.resolved) {
           effects.clearAll = true;
@@ -651,6 +859,18 @@ function createScanner(source, options = {}) {
           }
           command = resolved.value;
           words.splice(0, i);
+        }
+        const argValues = words.slice(1).map((word) => targetFromWord(word, source, new Map()))
+          .filter((x) => x.resolved).map((x) => x.value);
+        if (['trap', 'mapfile', 'readarray', 'let', 'readonly'].includes(command)) {
+          return poisonEffects(effects);
+        }
+        if (['declare', 'local', 'typeset'].includes(command) && argValues.some((x) => x.startsWith('-'))) {
+          return poisonEffects(effects);
+        }
+        if (command === 'set' && (argValues.includes('-n') ||
+            argValues.some((x, index) => x === '-o' && argValues[index + 1] === 'posix'))) {
+          return poisonEffects(effects);
         }
         if (localFunctions.has(command) && !seenFunctions.has(command)) {
           const nextSeen = new Set(seenFunctions);
@@ -728,9 +948,13 @@ function createScanner(source, options = {}) {
         if (node.else && !terminatingArm(node.else)) mergeEffects(effects, collectEffects(node.else, new Map(localFunctions), seenFunctions));
         return effects;
       case 'Case':
+        if (unsupportedWordReason(node.word)) return poisonEffects(effects);
         mergeEffects(effects, wordEffects(node.word));
         for (const item of node.items || []) {
-          for (const pattern of item.pattern || []) mergeEffects(effects, wordEffects(pattern));
+          for (const pattern of item.pattern || []) {
+            if (unsupportedWordReason(pattern)) return poisonEffects(effects);
+            mergeEffects(effects, wordEffects(pattern));
+          }
           if (!terminatingArm(item.body)) mergeEffects(effects, collectEffects(item.body, new Map(localFunctions), seenFunctions));
         }
         return effects;
@@ -739,21 +963,21 @@ function createScanner(source, options = {}) {
         if (!terminatingArm(node.body)) mergeEffects(effects, collectEffects(node.body, new Map(localFunctions), seenFunctions));
         return effects;
       case 'For':
-        for (const word of node.wordlist || []) mergeEffects(effects, wordEffects(word));
+        for (const word of node.wordlist || []) {
+          if (unsupportedWordReason(word)) return poisonEffects(effects);
+          mergeEffects(effects, wordEffects(word));
+        }
         if (node.name && typeof node.name.value === 'string') effects.names.add(node.name.value);
         else effects.clearAll = true;
         if (!terminatingArm(node.body)) mergeEffects(effects, collectEffects(node.body, new Map(localFunctions), seenFunctions));
         return effects;
       case 'ArithmeticCommand':
       case 'ArithmeticFor':
-        mergeEffects(effects, arithmeticEffects(node));
-        return effects;
+      case 'TestCommand':
       case 'Select':
       case 'Coproc':
       default:
-        effects.clearAll = true;
-        effects.clearFunctions = true;
-        return effects;
+        return poisonEffects(effects);
     }
   }
 
@@ -844,7 +1068,13 @@ function createScanner(source, options = {}) {
       return;
     }
     if (t.value.includes('/')) {
-      addTarget('shell-source', command, t.expression, t.value, true, null, reachability, word);
+      const relative = !path.posix.isAbsolute(t.value) && !/^[A-Za-z]:[\\/]/.test(t.value);
+      if (cwdUnknown && relative) {
+        addUnresolved('shell-source', command, t.expression,
+          'relative source target after shell cwd change cannot be proven', reachability, word);
+      } else {
+        addTarget('shell-source', command, t.expression, t.value, true, null, reachability, word);
+      }
       return;
     }
     const proof = options.sourceSearchProof && options.sourceSearchProof[t.value];
@@ -856,18 +1086,18 @@ function createScanner(source, options = {}) {
     }
   }
 
-  function functionPreamble() {
+  function functionPreamble(exportedOnly = false) {
     const chunks = [];
     for (const [name, fn] of functions.entries()) {
-      if (poisonedFunctions.has(name) || !fn ||
+      if ((exportedOnly && !exportedFunctions.has(name)) || poisonedFunctions.has(name) || !fn ||
           !Number.isSafeInteger(fn.pos) || !Number.isSafeInteger(fn.end)) continue;
       chunks.push(source.slice(fn.pos, fn.end));
     }
     return chunks.join('\n');
   }
 
-  function scanNestedShellCode(code, reachability, bindings, origin) {
-    const preamble = functionPreamble();
+  function scanNestedShellCode(code, reachability, bindings, origin, nestedOptions = {}) {
+    const preamble = functionPreamble(nestedOptions.exportedOnlyFunctions === true);
     const combined = preamble ? preamble + '\n' + code : code;
     const codeOffset = preamble ? preamble.length + 1 : 0;
     const nested = scanDependencyTargets(combined, {
@@ -875,10 +1105,12 @@ function createScanner(source, options = {}) {
       sourceSearchProof: options.sourceSearchProof || {},
       inlineParent: origin,
       _poisonedFunctions: [...poisonedFunctions],
+      _exportedFunctions: [...exportedFunctions],
       _functionTableUnknown: functionTableUnknown,
       _commandResolutionUnknown: commandResolutionUnknown,
       _cwdUnknown: cwdUnknown,
       _posixMode: posixMode,
+      _bashEnvActive: bashEnvActive,
     });
     for (const assumption of nested.assumptions || []) assumptions.add(assumption);
     for (const rec of nested.targets) {
@@ -895,7 +1127,7 @@ function createScanner(source, options = {}) {
     }
   }
 
-  function parseShellOptionWords(words, command, reachability, bindings, node) {
+  function parseShellOptionWords(words, command, reachability, bindings, node, shellOptions = {}) {
     let i = 1;
     let endOptions = false;
     while (i < words.length) {
@@ -916,7 +1148,12 @@ function createScanner(source, options = {}) {
           addUnresolved('shell-inline-code', command, code.expression, 'dynamic -c code cannot be recursively scanned', reachability, codeWord);
           return;
         }
-        scanNestedShellCode(code.value, reachability, bindings, command + '-c');
+        if (command === 'bash' && (bashEnvActive || shellOptions.bashEnvPrefix === true)) {
+          addUnresolved('shell-inline-code', command, code.expression,
+            'BASH_ENV may execute unscanned startup code before bash -c', reachability, codeWord);
+          return;
+        }
+        scanNestedShellCode(code.value, reachability, bindings, command + '-c', { exportedOnlyFunctions: true });
         return;
       }
       if (!endOptions && w.resolved && /^-[a-zA-Z]+$/.test(w.value)) {
@@ -959,7 +1196,13 @@ function createScanner(source, options = {}) {
       if (!w.resolved) {
         addUnresolved('shell-script', command, w.expression, 'dynamic shell script target', reachability, words[i]);
       } else {
-        addTarget('shell-script', command, w.expression, w.value, true, null, reachability, words[i]);
+        const relative = !path.posix.isAbsolute(w.value) && !/^[A-Za-z]:[\\/]/.test(w.value);
+        if (cwdUnknown && relative) {
+          addUnresolved('shell-script', command, w.expression,
+            'relative shell script target after shell cwd change cannot be proven', reachability, words[i]);
+        } else {
+          addTarget('shell-script', command, w.expression, w.value, true, null, reachability, words[i]);
+        }
       }
       return;
     }
@@ -1193,6 +1436,7 @@ function createScanner(source, options = {}) {
   function scanEnv(words, reachability, bindings, node) {
     let i = 1;
     let endOptions = false;
+    let bashEnvPrefix = false;
     while (i < words.length) {
       const w = targetFromWord(words[i], source, bindings);
       const raw = w.expression || '';
@@ -1223,12 +1467,14 @@ function createScanner(source, options = {}) {
       }
       const assignmentText = w.resolved ? w.value : raw;
       if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(assignmentText)) {
+        if (/^BASH_ENV=/.test(assignmentText)) bashEnvPrefix = true;
         i++;
         continue;
       }
       break;
     }
-    if (i < words.length) processWords(words.slice(i), reachability, bindings, node, 'env', false, true);
+    if (i < words.length) processWords(words.slice(i), reachability, bindings, node,
+      'env', false, true, { bashEnvPrefix });
   }
 
   function scanCommandWrapper(words, reachability, bindings, node) {
@@ -1456,7 +1702,24 @@ function createScanner(source, options = {}) {
     return true;
   }
 
-  function processWords(words, reachability, bindings, node, origin, allowFunctionLookup = true, externalWrapper = false) {
+  function recordExportState(words, bindings) {
+    let functionMode = false;
+    for (let i = 1; i < words.length; i++) {
+      const w = targetFromWord(words[i], source, bindings);
+      if (!w.resolved) continue;
+      if (w.value === '--') continue;
+      if (w.value === '-f') { functionMode = true; continue; }
+      if (w.value.startsWith('-')) continue;
+      if (functionMode) {
+        const name = /^([A-Za-z_][A-Za-z0-9_]*)$/.exec(w.value);
+        if (name && functions.has(name[1]) && !poisonedFunctions.has(name[1])) exportedFunctions.add(name[1]);
+        continue;
+      }
+      if (/^BASH_ENV(?:=|$)/.test(w.value)) bashEnvActive = true;
+    }
+  }
+
+  function processWords(words, reachability, bindings, node, origin, allowFunctionLookup = true, externalWrapper = false, commandOptions = {}) {
     if (!words.length) return;
     const commandWord = targetFromWord(words[0], source, bindings);
     if (!commandWord.resolved) {
@@ -1485,20 +1748,52 @@ function createScanner(source, options = {}) {
       if (!functionStack.has(command)) {
         functionStack.add(command);
         const fn = functions.get(command);
-        scanNode(fn.body, reachability, bindings);
-        if (reachability === 'production') applyEffects(bindings, collectEffects(fn.body, new Map(functions), new Set([command])));
-        functionStack.delete(command);
+        const hasLocal = containsLiteralCommand(fn.body, new Set(['local']));
+        functionDepth++;
+        try {
+          scanNode(fn.body, reachability, bindings);
+          if (reachability === 'production') {
+            applyEffects(bindings, collectEffects(fn.body, new Map(functions), new Set([command])));
+            if (hasLocal) bindings.clear();
+          }
+        } finally {
+          functionDepth--;
+          functionStack.delete(command);
+        }
       }
       return;
     }
-    if ((functionTableUnknown || commandResolutionUnknown) && !SHELL_BUILTINS.has(command)) {
-      const unknownReason = commandResolutionUnknown ?
-        'shell command resolution state is unknown' :
-        'function table is unknown after code-loading command';
+    if ((functionTableUnknown && allowFunctionLookup) ||
+        (commandResolutionUnknown && !SHELL_BUILTINS.has(command))) {
+      const unknownReason = functionTableUnknown ?
+        'function table is unknown after code-loading command' :
+        'shell command resolution state is unknown';
       addUnresolved('command-name', command, commandWord.expression, unknownReason, reachability, words[0]);
       bindings.clear();
       scanDependencyShapeWithUnprovenCommand(command, words, reachability, bindings, node, unknownReason);
       return;
+    }
+    if (['trap', 'mapfile', 'readarray', 'let', 'readonly'].includes(command)) {
+      poisonUnsupported(command, command + ' is outside the supported scanner subset',
+        reachability, node, bindings, commandWord.expression);
+      return;
+    }
+    if (['declare', 'local', 'typeset'].includes(command)) {
+      const values = words.slice(1).map((word) => targetFromWord(word, source, bindings));
+      if (values.some((x) => x.resolved && x.value.startsWith('-'))) {
+        poisonUnsupported(command, command + ' with options is outside the supported scanner subset',
+          reachability, node, bindings, commandWord.expression);
+        return;
+      }
+    }
+    if (command === 'set') {
+      const values = words.slice(1).map((word) => targetFromWord(word, source, bindings));
+      const args = values.filter((x) => x.resolved).map((x) => x.value);
+      if (args.includes('-n') || args.some((x, index) => x === '-o' && args[index + 1] === 'posix')) {
+        poisonUnsupported('set', 'set -n / set -o posix is outside the supported scanner subset',
+          reachability, node, bindings, commandWord.expression);
+        return;
+      }
     }
     if (command === 'source' || command === '.') {
       resolveSourceLike(command, words[1], reachability, bindings, node);
@@ -1507,7 +1802,7 @@ function createScanner(source, options = {}) {
       return;
     }
     if (command === 'bash' || command === 'sh') {
-      parseShellOptionWords(words, command, reachability, bindings, node);
+      parseShellOptionWords(words, command, reachability, bindings, node, commandOptions);
       return;
     }
     if (command === 'node') {
@@ -1567,13 +1862,13 @@ function createScanner(source, options = {}) {
       applyEffects(bindings, writerEffects(command, words, bindings));
       return;
     }
-    if (['read', 'export', 'declare', 'local', 'typeset', 'readonly', 'unset',
-      'printf', 'getopts', 'wait'].includes(command)) {
+    if (command === 'export') {
+      recordExportState(words, bindings);
       applyEffects(bindings, writerEffects(command, words, bindings));
       return;
     }
-    if (command === 'let') {
-      applyEffects(bindings, letEffects(words));
+    if (['read', 'declare', 'local', 'typeset', 'unset', 'printf', 'getopts', 'wait'].includes(command)) {
+      applyEffects(bindings, writerEffects(command, words, bindings));
       return;
     }
     if (command === 'trap') {
@@ -1602,7 +1897,11 @@ function createScanner(source, options = {}) {
       clearKnownFunctions();
       return;
     }
-    if (['shift', 'shopt'].includes(command)) {
+    if (command === 'shift') {
+      invalidatePositionalParameters(bindings);
+      return;
+    }
+    if (command === 'shopt') {
       bindings.clear();
       clearKnownFunctions();
       return;
@@ -1708,6 +2007,19 @@ function createScanner(source, options = {}) {
 
   function scanSimpleCommand(command, reachability, bindings) {
     const assignments = (command.prefix || []).filter((x) => x && x.type === 'Assignment');
+    const syntaxWords = [
+      ...assignments.filter((x) => x.value).map((x) => x.value),
+      ...(command.name ? [command.name] : []),
+      ...(command.suffix || []),
+    ];
+    const unsupportedSyntax = syntaxWords.map((word) => unsupportedWordReason(word)).find(Boolean) ||
+      (command.redirects || []).map((redir) => redirectUnsupportedReason(redir)).find(Boolean);
+    if (unsupportedSyntax) {
+      poisonUnsupported('shell-word', unsupportedSyntax, reachability, command, bindings,
+        source.slice(command.pos, command.end));
+      return;
+    }
+    const bashEnvPrefix = assignments.some((assignment) => assignment.name === 'BASH_ENV');
     let assignmentValueUnsafe = false;
     for (const assignment of assignments) {
       if (!assignment.value) continue;
@@ -1732,7 +2044,8 @@ function createScanner(source, options = {}) {
     const words = [];
     if (command.name) words.push(command.name);
     for (const w of command.suffix || []) if (w && typeof w.text === 'string') words.push(w);
-    if (words.length) processWords(words, reachability, bindings, command);
+    if (words.length) processWords(words, reachability, bindings, command,
+      undefined, true, false, { bashEnvPrefix });
 
     if (!command.name && reachability === 'production') {
       for (const assignment of assignments) {
@@ -1781,21 +2094,37 @@ function createScanner(source, options = {}) {
     if (!node || typeof node !== 'object') return;
     switch (node.type) {
       case 'Script':
-      case 'CompoundList':
-        for (const statement of node.commands || []) scanNode(statement, reachability, bindings);
+      case 'CompoundList': {
+        let activeReachability = reachability;
+        for (const statement of node.commands || []) {
+          scanNode(statement, activeReachability, bindings);
+          if (activeReachability === 'production' && scopeTerminator(statement)) activeReachability = 'candidate';
+        }
         return;
+      }
       case 'Statement':
         if (node.background) {
           const innerState = cloneShellState();
           withShellState(innerState, () => {
-            scanNode(node.command, reachability, cloneBindings(bindings));
-            for (const redir of node.redirects || []) scanRedirectNested(redir, reachability, cloneBindings(bindings));
+            const innerBindings = cloneBindings(bindings);
+            scanNode(node.command, reachability, innerBindings);
+            for (const redir of node.redirects || []) {
+              const reason = redirectUnsupportedReason(redir);
+              if (reason) poisonUnsupported('redirect', reason, reachability, redir, innerBindings,
+                source.slice(redir.pos, redir.end));
+              else scanRedirectNested(redir, reachability, innerBindings);
+            }
           });
           poisonFunctionNames(functionNamesIn(node.command));
           return;
         }
         scanNode(node.command, reachability, bindings);
-        for (const redir of node.redirects || []) scanRedirectNested(redir, reachability, bindings);
+        for (const redir of node.redirects || []) {
+          const reason = redirectUnsupportedReason(redir);
+          if (reason) poisonUnsupported('redirect', reason, reachability, redir, bindings,
+            source.slice(redir.pos, redir.end));
+          else scanRedirectNested(redir, reachability, bindings);
+        }
         return;
       case 'Command':
         scanSimpleCommand(node, reachability, bindings);
@@ -1819,16 +2148,12 @@ function createScanner(source, options = {}) {
         scanIsolated(node.body, reachability, bindings);
         return;
       case 'Select':
-        addUnsupported('select', 'select', 'select command execution semantics are not modeled',
-          reachability, node);
-        bindings.clear();
-        clearFunctionProof();
+        poisonUnsupported('select', 'select command execution semantics are not modeled',
+          reachability, node, bindings, 'select');
         return;
       case 'Coproc':
-        addUnsupported('coproc', 'coproc', 'coproc command execution semantics are not modeled',
-          reachability, node);
-        bindings.clear();
-        clearFunctionProof();
+        poisonUnsupported('coproc', 'coproc command execution semantics are not modeled',
+          reachability, node, bindings, 'coproc');
         return;
       case 'Pipeline': {
         const commands = node.commands || [];
@@ -1854,11 +2179,21 @@ function createScanner(source, options = {}) {
         if (node.else) scanCandidateAndInvalidate(node.else, bindings);
         return;
       case 'Case': {
+        const caseReason = unsupportedWordReason(node.word);
+        if (caseReason) {
+          poisonUnsupported('case-word', caseReason, reachability, node.word, bindings, node.word.text);
+          return;
+        }
         scanWordNested(node.word, reachability, bindings);
         applyEffects(bindings, wordEffects(node.word));
         let patternIndex = 0;
         for (const item of node.items || []) {
           for (const pattern of item.pattern || []) {
+            const patternReason = unsupportedWordReason(pattern);
+            if (patternReason) {
+              poisonUnsupported('case-pattern', patternReason, reachability, pattern, bindings, pattern.text);
+              return;
+            }
             const first = patternIndex++ === 0;
             scanWordNested(pattern, first ? reachability : 'candidate',
               first ? bindings : new Map());
@@ -1874,6 +2209,11 @@ function createScanner(source, options = {}) {
         return;
       case 'For':
         for (const word of node.wordlist || []) {
+          const reason = unsupportedWordReason(word);
+          if (reason) {
+            poisonUnsupported('for-word', reason, reachability, word, bindings, word.text);
+            return;
+          }
           scanWordNested(word, reachability, bindings);
           applyEffects(bindings, wordEffects(word));
         }
@@ -1883,34 +2223,32 @@ function createScanner(source, options = {}) {
         return;
       case 'ArithmeticCommand':
         scanNestedAstExecutions(node, reachability, bindings);
-        applyEffects(bindings, arithmeticEffects(node));
+        poisonUnsupported('ArithmeticCommand', 'arithmetic command is outside the supported scanner subset',
+          reachability, node, bindings, 'ArithmeticCommand');
         return;
       case 'ArithmeticFor':
         scanNestedAstExecutions(node, reachability, bindings);
-        addUnsupported('ArithmeticFor', 'ArithmeticFor',
-          'arithmetic-for execution semantics are conservatively unresolved', reachability, node);
-        applyEffects(bindings, arithmeticEffects(node));
-        if (node.body) scanCandidateAndInvalidate(node.body, bindings);
+        poisonUnsupported('ArithmeticFor', 'arithmetic for-loop is outside the supported scanner subset',
+          reachability, node, bindings, 'ArithmeticFor');
+        if (node.body) scanNode(node.body, 'candidate', new Map());
         return;
       case 'TestCommand':
         scanNestedAstExecutions(node, reachability, bindings);
-        addUnsupported('TestCommand', 'TestCommand',
-          'test-command execution semantics are conservatively unresolved', reachability, node);
-        bindings.clear();
-        clearKnownFunctions();
+        if (testCommandHasAssignment(node)) {
+          poisonUnsupported('TestCommand', 'assignment inside [[ ... ]] is outside the supported scanner subset',
+            reachability, node, bindings, 'TestCommand');
+        }
         return;
       case 'ArithmeticGroup':
       case 'ArithmeticCommandExpansion':
-        applyEffects(bindings, arithmeticEffects(node));
+        poisonUnsupported(node.type, 'arithmetic construct is outside the supported scanner subset',
+          reachability, node, bindings, node.type);
         return;
       default:
         if (containsCommandBearingDescendant(node)) {
           const construct = typeof node.type === 'string' ? node.type : 'unknown';
-          addUnsupported(construct, construct,
-            'unmodeled command-bearing AST construct: ' + construct,
-            reachability, node);
-          bindings.clear();
-          clearKnownFunctions();
+          poisonUnsupported(construct, 'unmodeled command-bearing AST construct: ' + construct,
+            reachability, node, bindings, construct);
         }
         return;
     }

@@ -13,6 +13,12 @@
       "sha256": "b373ccd10e9deb63654289f73216eeefcaf0405d9ee24289aabf596b91b4c318"
     },
     {
+      "path": "guards/vendor/unbash/LICENSE",
+      "role": "unbash",
+      "bytes": 738,
+      "sha256": "a8715bd6ba5604134c8bfea951ebc2379ae9e71e78262275f7f87a50c845ae96"
+    },
+    {
       "path": "guards/vendor/unbash/ansi-c.js",
       "role": "unbash",
       "bytes": 4937,
@@ -37,12 +43,6 @@
       "sha256": "567be92e2a41b1de91d40801403688e2fb33618b76fb335a13380beb1693b712"
     },
     {
-      "path": "guards/vendor/unbash/LICENSE",
-      "role": "unbash",
-      "bytes": 738,
-      "sha256": "a8715bd6ba5604134c8bfea951ebc2379ae9e71e78262275f7f87a50c845ae96"
-    },
-    {
       "path": "guards/vendor/unbash/parser.js",
       "role": "unbash",
       "bytes": 57390,
@@ -59,6 +59,12 @@
       "role": "unbash",
       "bytes": 3514,
       "sha256": "0c774c79ca2c219929cc225dd9b288bff0fc44699d1d7c5586335ae22b4250d2"
+    },
+    {
+      "path": "scripts/private/p2-bash-ast-js/RESIDUALS.md",
+      "role": "adapter",
+      "bytes": 1313,
+      "sha256": "c35ed821e43e410e9301d4fc4555a0f2e7b6438f1c8a11f574d7e8ef986b3940"
     },
     {
       "path": "scripts/private/p2-bash-ast-js/adapter.cjs",
@@ -81,8 +87,8 @@
     {
       "path": "scripts/private/p2-bash-ast-js/target-rules.cjs",
       "role": "adapter",
-      "bytes": 75045,
-      "sha256": "e1ffd3f76e141fab1bcab85ed4ec70004acae8e43aa2c06acf00766e33630adc"
+      "bytes": 89578,
+      "sha256": "16e99b5116701b616910ca5d5a7307667c623cedee253020187d2c9bb0c04b08"
     }
   ]
 }

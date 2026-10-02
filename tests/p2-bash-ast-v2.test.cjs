@@ -18,6 +18,7 @@ const ADAPTER_ENTRY = path.join(ADAPTER_REL, 'adapter.cjs');
 const LOCK_REL = path.join(ADAPTER_REL, 'parser.lock.json');
 const FIXTURE = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'round1-real-shape.json');
 const GOLDEN = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'golden.json');
+const CORPUS_GOLDEN = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'corpus-golden.json');
 const V1_RECORDED = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'v1-projection-recorded.json');
 const V1_RECORDED_SHA256 = '3c87126b6d349241279021a121a884e3a3b27f8f98c3514d6207b9672c81ccc5';
 const V1_LIVE_SAMPLE_IDS = Object.freeze(["00001","00053","00105","00157","00209","00261","00314","00366","00418","00470","00522","00574","00626","00678","00730","00782","00835","00887","00939","00991","01043","01095","01147","01199","01251","01303","01356","01408","01460","01512","01564","01616"]);
@@ -60,6 +61,31 @@ function sha256(buf) {
 
 function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+function firstJsonDifference(expected, actual, at = '$') {
+  if (Object.is(expected, actual)) return null;
+  if (expected === null || actual === null || typeof expected !== 'object' || typeof actual !== 'object') {
+    return { path: at, expected, actual };
+  }
+  if (Array.isArray(expected) || Array.isArray(actual)) {
+    if (!Array.isArray(expected) || !Array.isArray(actual)) return { path: at, expected, actual };
+    if (expected.length !== actual.length) {
+      return { path: at + '.length', expected: expected.length, actual: actual.length };
+    }
+    for (let i = 0; i < expected.length; i++) {
+      const diff = firstJsonDifference(expected[i], actual[i], at + '[' + i + ']');
+      if (diff) return diff;
+    }
+    return null;
+  }
+  const expectedKeys = Object.keys(expected);
+  const actualKeys = Object.keys(actual);
+  if (!sameJson(expectedKeys, actualKeys)) return { path: at + '.keys', expected: expectedKeys, actual: actualKeys };
+  for (const key of expectedKeys) {
+    const diff = firstJsonDifference(expected[key], actual[key], at + '.' + key);
+    if (diff) return diff;
+  }
+  return null;
 }
 function goHeredoc(h, input) {
   return {
@@ -431,6 +457,45 @@ try {
   check('v1 field projection remains equal to recorded Go v1 fixture on all 1616 corpus entries',
     v1Agree === 1616 && v1Mismatches.length === 0,
     JSON.stringify({ v1Agree, mismatches: v1Mismatches }));
+
+  const corpusGoldenBytes = fs.readFileSync(CORPUS_GOLDEN);
+  const corpusGolden = JSON.parse(corpusGoldenBytes.toString('utf8'));
+  const corpusGoldenById = new Map(corpusGolden.entries.map((entry) => [entry.id, entry]));
+  const corpusScanMismatches = [];
+  const corpusScanCounts = { records: 0, resolved: 0, unresolved: 0, candidate: 0, unsupported: 0 };
+  for (const entry of golden.entries) {
+    const expected = corpusGoldenById.get(entry.id);
+    const actual = adapter.scanDependencyTargets(entry.original);
+    for (const record of actual.targets) {
+      corpusScanCounts.records++;
+      if (Object.prototype.hasOwnProperty.call(corpusScanCounts, record.status)) corpusScanCounts[record.status]++;
+      if (record.kind === 'unsupported-construct') corpusScanCounts.unsupported++;
+    }
+    const metadataOk = !!expected && expected.kind === entry.kind &&
+      expected.originalSha256 === entry.originalSha256;
+    const diff = expected ? firstJsonDifference(expected.output, actual) :
+      { path: '$.entry', expected: 'present', actual: 'missing' };
+    if ((!metadataOk || diff) && corpusScanMismatches.length < 20) {
+      corpusScanMismatches.push({ id: entry.id, metadataOk, diff });
+    }
+  }
+  const corpusGoldenIds = new Set(corpusGolden.entries.map((entry) => entry.id));
+  const corpusExtraIds = corpusGolden.entries.filter((entry) =>
+    !golden.entries.some((sourceEntry) => sourceEntry.id === entry.id)).map((entry) => entry.id);
+  const parserLockSha256 = sha256(fs.readFileSync(path.join(ROOT, LOCK_REL)));
+  check('R16a-fix5 complete dependency-scan output equals reviewed 1616-entry corpus golden',
+    corpusGolden.schema === 'axmem-p2-bash-target-corpus-golden/v1' &&
+      corpusGolden.sourceGolden.corpusSha256 === golden.corpusSha256 &&
+      corpusGolden.sourceGolden.entryCount === 1616 &&
+      corpusGolden.scanner.parserLockSha256 === parserLockSha256 &&
+      corpusGolden.entries.length === 1616 && corpusGoldenIds.size === 1616 &&
+      corpusExtraIds.length === 0 && corpusScanMismatches.length === 0 &&
+      sameJson(corpusScanCounts, corpusGolden.counts),
+    JSON.stringify({
+      parserLockSha256, expectedParserLockSha256: corpusGolden.scanner.parserLockSha256,
+      counts: corpusScanCounts, expectedCounts: corpusGolden.counts,
+      extraIds: corpusExtraIds, mismatches: corpusScanMismatches,
+    }));
 
   const liveSampleResult = runFixedLiveV1Sample(GO_V1_EXE, golden, v1FixtureById);
   if (liveSampleResult.failed) {
@@ -1037,7 +1102,7 @@ try {
     '4g pipeline multi ctl','6 read -p','6b read -r','6c read -d','6e read -pX fused',
     'bg assign','bg source','subshell assign ctl',
   ]);
-  tagRound4('x-o', ['4c time assign','posix special prefix']);
+  tagRound4('x-o', ['4c time assign']);
   tagRound4('edge-a', ['3d arith cmdsub','3f arith-for cmdsub','3g test cmd cmdsub']);
   tagRound4('poison-f', [
     '5 subshell fn','5b pipeline fn','5d cmdsub fn',
@@ -1052,8 +1117,7 @@ try {
   ]);
   tagRound4('edge-x', ['7e command eval','eval f','bash -c exported f','time fn call','bang fn call']);
   tagRound4('source-unknown-f', ['source defines f']);
-  tagRound4('trap-edge', ['trap code']);
-  tagRound4('mapfile-edge', ['mapfile -C']);
+  tagRound4('unsupported', ['posix special prefix','trap code','mapfile -C']);
   tagRound4('cwd-unresolved', ['cd relative']);
   tagRound4('command-resolution-unresolved', ['alias','hash -p']);
   tagRound4('terminating-arm', ['exit-terminated arm with source (corpus shape)']);
@@ -1085,10 +1149,9 @@ try {
       case 'source-unknown-f':
         return prod.some((x) => x.status === 'unresolved' &&
           x.expression === 'f' && /function table is unknown/.test(x.reason || ''));
-      case 'trap-edge':
-        return prod.some((x) => x.status === 'resolved' && x.target === './trap.cjs');
-      case 'mapfile-edge':
-        return prod.some((x) => x.status === 'resolved' && x.target === './cb.cjs');
+      case 'unsupported':
+        return prod.some((x) => x.kind === 'unsupported-construct' &&
+          x.status === 'unresolved' && x.code === adapter.ERROR_CODES.UNSUPPORTED);
       case 'cwd-unresolved':
         return prod.some((x) => x.status === 'unresolved' &&
           (x.expression === './x.cjs' || x.expression === 'node') &&
@@ -1243,11 +1306,12 @@ try {
   const terminatingNormal = adapter.scanDependencyTargets(terminatingSynthetic);
   const terminatingMutant = adapter.scanDependencyTargets(terminatingSynthetic,
     { disableTerminatingArms: true });
-  check('R16a-fix4 terminating-arm clause has a red mutation control',
+  check('R16a-fix5 terminating-arm clause has a red mutation control',
     (terminatingNormal.assumptions || []).includes('no-exit-function') &&
       terminatingNormal.targets.some((x) => x.status === 'resolved' && x.target === '/g/x.cjs') &&
-      terminatingMutant.targets.some((x) => x.reachability === 'production' &&
-        x.expression === '"$G/x.cjs"' && x.status === 'unresolved'),
+      !terminatingMutant.targets.some((x) => x.reachability === 'production' &&
+        x.status === 'resolved' && x.target === '/g/x.cjs') &&
+      terminatingMutant.targets.some((x) => x.reachability === 'production' && x.status === 'unresolved'),
     JSON.stringify({ normal: terminatingNormal, mutant: terminatingMutant }));
 
   const productionTargets = [
@@ -1270,19 +1334,286 @@ try {
       x.reachability === 'production' && x.expression === expression);
     const mutantTarget = mutant.targets.find((x) =>
       x.reachability === 'production' && x.expression === expression);
+    const mutantUnresolved = mutant.targets.filter((x) =>
+      x.reachability === 'production' && x.status === 'unresolved');
+    const mutantBreaks = !mutantTarget || mutantTarget.status !== 'resolved' ||
+      mutantTarget.target !== expectedTarget;
     return {
       rel, expression, expectedTarget, mutationMustBreak,
-      normalTarget, mutantTarget, assumptions: normal.assumptions,
+      normalTarget, mutantTarget, mutantUnresolved, assumptions: normal.assumptions,
       ok: !!normalTarget && normalTarget.status === 'resolved' &&
         normalTarget.target === expectedTarget &&
-        (!mutationMustBreak || (!!mutantTarget && mutantTarget.status === 'unresolved' &&
-          mutantTarget.target === null)),
+        (!mutationMustBreak || (mutantBreaks && mutantUnresolved.length > 0)),
     };
   });
-  check('R16a-fix4 six reviewed production resolved targets stay 6/6 and three terminating-arm mutations turn red',
+  check('R16a-fix5 six reviewed production resolved targets stay 6/6 and three terminating-arm mutations turn red',
     productionTargets.every((row) => row.ok) &&
       productionTargets.filter((row) => row.mutationMustBreak).length === 3,
     JSON.stringify(productionTargets));
+
+  function r5Resolved(scan, expression, expectedTarget) {
+    const hit = scan.targets.find((x) => x.reachability === 'production' && x.expression === expression);
+    return !!hit && hit.status === 'resolved' && hit.target === expectedTarget;
+  }
+  function r5Unresolved(scan, predicate) {
+    return scan.targets.some((x) => x.reachability === 'production' &&
+      x.status === 'unresolved' && predicate(x));
+  }
+  function r5Unsupported(scan, construct) {
+    return r5Unresolved(scan, (x) => x.kind === 'unsupported-construct' &&
+      (!construct || x.construct === construct || x.command === construct));
+  }
+
+  const r5NestedContinue = adapter.scanDependencyTargets(
+    'G=/g; if true; then source ./defs.sh; while true; do continue; done; exit 0; fi; node "$G/x.cjs"');
+  check('R16a-fix5 arm-local continue inside one loop preserves terminating-arm proof (k=1,n=1)',
+    (r5NestedContinue.assumptions || []).includes('no-exit-function') &&
+      r5Resolved(r5NestedContinue, '"$G/x.cjs"', '/g/x.cjs'),
+    JSON.stringify(r5NestedContinue));
+
+  const r5TopContinue = adapter.scanDependencyTargets(
+    'G=/g; if true; then source ./defs.sh; continue; exit 0; fi; node "$G/x.cjs"');
+  check('R16a-fix5 top-level continue escapes the arm and disables its terminating-arm proof (k=0,n=1)',
+    !(r5TopContinue.assumptions || []).includes('no-exit-function') &&
+      !r5Resolved(r5TopContinue, '"$G/x.cjs"', '/g/x.cjs'),
+    JSON.stringify(r5TopContinue));
+
+  const r5ContinueTwo = adapter.scanDependencyTargets(
+    'G=/g; if true; then source ./defs.sh; while true; do continue 2; done; exit 0; fi; node "$G/x.cjs"');
+  check('R16a-fix5 continue 2 escapes a one-loop arm and disables terminating-arm proof (k=1,n=2)',
+    !(r5ContinueTwo.assumptions || []).includes('no-exit-function') &&
+      !r5Resolved(r5ContinueTwo, '"$G/x.cjs"', '/g/x.cjs'),
+    JSON.stringify(r5ContinueTwo));
+
+  const r5ContinueDynamic = adapter.scanDependencyTargets(
+    'G=/g; if true; then source ./defs.sh; while true; do continue "$x"; done; exit 0; fi; node "$G/x.cjs"');
+  check('R16a-fix5 dynamic continue level is infinity and disables terminating-arm proof',
+    !(r5ContinueDynamic.assumptions || []).includes('no-exit-function') &&
+      !r5Resolved(r5ContinueDynamic, '"$G/x.cjs"', '/g/x.cjs'),
+    JSON.stringify(r5ContinueDynamic));
+
+  const r5FunctionBreak = adapter.scanDependencyTargets(
+    'f(){ break; }; G=/g; if true; then source ./defs.sh; exit 0; fi; node "$G/x.cjs"');
+  check('R16a-fix5 function-body top-level break disables all file control-flow shortcuts',
+    !(r5FunctionBreak.assumptions || []).includes('no-exit-function') &&
+      !r5Resolved(r5FunctionBreak, '"$G/x.cjs"', '/g/x.cjs'),
+    JSON.stringify(r5FunctionBreak));
+
+  for (const [label, tail] of [
+    ['background exit', 'exit &'],
+    ['exec without command operand', 'exec'],
+    ['exec with redirects but no command operand', 'exec >/dev/null'],
+  ]) {
+    const scan = adapter.scanDependencyTargets(
+      'G=/g; if true; then source ./defs.sh; ' + tail + '; fi; node "$G/x.cjs"');
+    check('R16a-fix5 ' + label + ' is not a terminating arm',
+      !(scan.assumptions || []).includes('no-exit-function') &&
+        !r5Resolved(scan, '"$G/x.cjs"', '/g/x.cjs'),
+      JSON.stringify(scan));
+  }
+
+  for (const terminator of ['exit 0 >/dev/null', 'exec node ./x.cjs >/dev/null']) {
+    const scan = adapter.scanDependencyTargets(
+      'G=/g; if true; then source ./defs.sh; ' + terminator + '; fi; node "$G/x.cjs"');
+    check('R16a-fix5 redirected terminal command does not prove arm termination: ' + terminator,
+      !(scan.assumptions || []).includes('no-exit-function') &&
+        !r5Resolved(scan, '"$G/x.cjs"', '/g/x.cjs'),
+      JSON.stringify(scan));
+  }
+
+  const r5ShortcutDisablers = [
+    ['enable', 'enable -n true'],
+    ['shopt extdebug', 'shopt -s extdebug'],
+    ['shopt execfail', 'shopt -s execfail'],
+    ['set -T', 'set -T'],
+    ['set -o functrace', 'set -o functrace'],
+    ['function exit', 'exit(){ :; }'],
+    ['function exec', 'exec(){ :; }'],
+    ['function return', 'return(){ :; }'],
+  ].map(([label, extra]) => {
+    const src = extra.includes('(){') ?
+      extra + '; G=/g; if true; then source ./defs.sh; exit 0; fi; node "$G/x.cjs"' :
+      'G=/g; if true; then source ./defs.sh; exit 0; fi; ' + extra + '; node "$G/x.cjs"';
+    const scan = adapter.scanDependencyTargets(src);
+    return { label, ok: !(scan.assumptions || []).includes('no-exit-function'), scan };
+  });
+  check('R16a-fix5 enable/extdebug/execfail/functrace and exit-exec-return functions disable shortcuts file-wide',
+    r5ShortcutDisablers.every((row) => row.ok), JSON.stringify(r5ShortcutDisablers));
+
+  const r5SourceBuiltin = adapter.scanDependencyTargets('source ./defs.sh; printf hi');
+  check('R16a-fix5 source makes later builtin command names unresolved too',
+    r5Unresolved(r5SourceBuiltin, (x) => x.kind === 'command-name' && x.expression === 'printf' &&
+      /function table is unknown/.test(x.reason || '')),
+    JSON.stringify(r5SourceBuiltin));
+
+  const r5Getopts = adapter.scanDependencyTargets(
+    'OPTIND=1; OPTARG=./arg.cjs; X=./safe.cjs; getopts a X -a; node "$OPTIND"; node "$OPTARG"; node "$X"');
+  check('R16a-fix5 getopts invalidates OPTIND OPTARG and its name operand',
+    ['"$OPTIND"', '"$OPTARG"', '"$X"'].every((expr) =>
+      r5Unresolved(r5Getopts, (x) => x.kind === 'node-script' && x.expression === expr)),
+    JSON.stringify(r5Getopts));
+
+  const r5ReadReply = adapter.scanDependencyTargets('REPLY=./safe.cjs; read; node "$REPLY"');
+  const r5Shift = adapter.scanDependencyTargets('shift; node "$1"', { bindings: { '1': './safe.cjs' } });
+  check('R16a-fix5 read without names invalidates REPLY and shift invalidates positional parameters',
+    r5Unresolved(r5ReadReply, (x) => x.kind === 'node-script' && x.expression === '"$REPLY"') &&
+      r5Unresolved(r5Shift, (x) => x.kind === 'node-script' && x.expression === '"$1"'),
+    JSON.stringify({ read: r5ReadReply, shift: r5Shift }));
+
+  const r5TrapPlain = adapter.scanDependencyTargets("X=./safe.cjs; trap 'X=./o.cjs' DEBUG; node \"$X\"");
+  const r5TrapDash = adapter.scanDependencyTargets("trap -- 'node ./x.cjs' EXIT");
+  check('R16a-fix5 every trap form including trap -- is UNSUPPORTED and poisons state',
+    r5Unsupported(r5TrapPlain, 'trap') && r5Unsupported(r5TrapDash, 'trap') &&
+      !r5Resolved(r5TrapPlain, '"$X"', './safe.cjs'),
+    JSON.stringify({ plain: r5TrapPlain, dash: r5TrapDash }));
+
+  const r5Mapfile = adapter.scanDependencyTargets("mapfile -C'node ./cb.cjs' -c 1 arr <<< line");
+  const r5Readarray = adapter.scanDependencyTargets("readarray -C'node ./cb.cjs' -c 1 arr <<< line");
+  check('R16a-fix5 mapfile/readarray including fused -C callback syntax are UNSUPPORTED',
+    r5Unsupported(r5Mapfile, 'mapfile') && r5Unsupported(r5Readarray, 'readarray'),
+    JSON.stringify({ mapfile: r5Mapfile, readarray: r5Readarray }));
+
+  const r5Declarations = [
+    ['declare', 'declare -n R=X'],
+    ['local', 'f(){ local -a A; }; f'],
+    ['typeset', 'typeset -A A'],
+    ['declare-other-option', 'declare -x X'],
+  ].map(([label, src]) => ({ label, scan: adapter.scanDependencyTargets(src) }));
+  check('R16a-fix5 declare/local/typeset with -n/-a/-A or other options are UNSUPPORTED',
+    r5Declarations.every((row) => r5Unsupported(row.scan,
+      row.label === 'declare-other-option' ? 'declare' : row.label)),
+    JSON.stringify(r5Declarations));
+
+  const r5Let = adapter.scanDependencyTargets('X=./safe.cjs; let X=1; node "$X"');
+  check('R16a-fix5 let is UNSUPPORTED and poisons later bindings',
+    r5Unsupported(r5Let, 'let') && !r5Resolved(r5Let, '"$X"', './safe.cjs'),
+    JSON.stringify(r5Let));
+
+  const r5ArithmeticCommand = adapter.scanDependencyTargets('X=./safe.cjs; ((X=1)); node "$X"');
+  check('R16a-fix5 arithmetic command is UNSUPPORTED and poisons later bindings',
+    r5Unsupported(r5ArithmeticCommand, 'ArithmeticCommand') &&
+      !r5Resolved(r5ArithmeticCommand, '"$X"', './safe.cjs'),
+    JSON.stringify(r5ArithmeticCommand));
+
+  const r5ArithmeticWord = adapter.scanDependencyTargets('X=./safe.cjs; : $((X=1)); node "$X"');
+  check('R16a-fix5 any word containing arithmetic expansion is UNSUPPORTED',
+    r5Unsupported(r5ArithmeticWord, 'shell-word') &&
+      !r5Resolved(r5ArithmeticWord, '"$X"', './safe.cjs'),
+    JSON.stringify(r5ArithmeticWord));
+
+  const r5ParameterAssign = [
+    adapter.scanDependencyTargets('X=./safe.cjs; : ${X:=./o.cjs}; node "$X"'),
+    adapter.scanDependencyTargets('X=./safe.cjs; : ${X=./o.cjs}; node "$X"'),
+  ];
+  check('R16a-fix5 parameter assignment expansions ${X:=...} and ${X=...} are UNSUPPORTED',
+    r5ParameterAssign.every((scan) => r5Unsupported(scan, 'shell-word') &&
+      !r5Resolved(scan, '"$X"', './safe.cjs')),
+    JSON.stringify(r5ParameterAssign));
+
+  const r5TestAssign = adapter.scanDependencyTargets('X=./safe.cjs; [[ 0 -eq X=1 ]]; node "$X"');
+  check('R16a-fix5 assignment inside [[ ... ]] is UNSUPPORTED',
+    r5Unsupported(r5TestAssign, 'TestCommand') &&
+      !r5Resolved(r5TestAssign, '"$X"', './safe.cjs'),
+    JSON.stringify(r5TestAssign));
+
+  const r5ArrayAssign = adapter.scanDependencyTargets('X=./safe.cjs; : "${A[X=1]}"; node "$X"');
+  check('R16a-fix5 assignment inside an array subscript is UNSUPPORTED',
+    r5Unsupported(r5ArrayAssign, 'shell-word') &&
+      !r5Resolved(r5ArrayAssign, '"$X"', './safe.cjs'),
+    JSON.stringify(r5ArrayAssign));
+
+  const r5FdAlloc = adapter.scanDependencyTargets('X=./safe.cjs; : {X}>/dev/null; node "$X"');
+  check('R16a-fix5 file-descriptor allocation {X}> is UNSUPPORTED',
+    r5Unsupported(r5FdAlloc, 'shell-word') &&
+      !r5Resolved(r5FdAlloc, '"$X"', './safe.cjs'),
+    JSON.stringify(r5FdAlloc));
+
+  const r5CompoundRedirect = adapter.scanDependencyTargets(
+    'X=./safe.cjs; if true; then :; fi > /dev/null$((X=1)); node "$X"');
+  check('R16a-fix5 compound-command redirect words apply the same UNSUPPORTED fail-closed rule',
+    r5Unsupported(r5CompoundRedirect, 'redirect') &&
+      !r5Resolved(r5CompoundRedirect, '"$X"', './safe.cjs'),
+    JSON.stringify(r5CompoundRedirect));
+
+  const r5BackgroundAssignment = adapter.scanDependencyTargets(
+    'X=./safe.cjs; X=./o.cjs & wait; node "$X"');
+  check('R16a-fix5 background plain assignments stay isolated from the parent shell',
+    r5Resolved(r5BackgroundAssignment, '"$X"', './safe.cjs'),
+    JSON.stringify(r5BackgroundAssignment));
+
+  const r5ForVariable = adapter.scanDependencyTargets(
+    'X=./safe.cjs; for X in ./o.cjs; do :; done; node "$X"');
+  check('R16a-fix5 for-in loop variable is treated as written',
+    r5Unresolved(r5ForVariable, (x) => x.kind === 'node-script' && x.expression === '"$X"'),
+    JSON.stringify(r5ForVariable));
+
+  const r5LocalScope = adapter.scanDependencyTargets(
+    'X=./safe.cjs; f(){ local Y=1; }; f; node "$X"');
+  check('R16a-fix5 function calls containing local clear caller binding proof on return',
+    r5Unresolved(r5LocalScope, (x) => x.kind === 'node-script' && x.expression === '"$X"'),
+    JSON.stringify(r5LocalScope));
+
+  const r5CwdCases = [
+    ['source', 'cd /elsewhere; source ./x.sh', 'shell-source'],
+    ['bash', 'cd /elsewhere; bash ./x.sh', 'shell-script'],
+    ['node', 'cd /elsewhere; node ./x.cjs', 'node-script'],
+  ].map(([label, src, kind]) => ({ label, kind, scan: adapter.scanDependencyTargets(src) }));
+  check('R16a-fix5 cd makes later relative source/bash/node targets unresolved',
+    r5CwdCases.every((row) => r5Unresolved(row.scan,
+      (x) => x.kind === row.kind && /cwd|relative/.test(x.reason || ''))),
+    JSON.stringify(r5CwdCases));
+
+  const r5BashUnexported = adapter.scanDependencyTargets('f(){ node ./x.cjs; }; bash -c f');
+  const r5BashExported = adapter.scanDependencyTargets('f(){ node ./x.cjs; }; export -f f; bash -c f');
+  check('R16a-fix5 bash -c sees only functions exported with export -f',
+    !r5BashUnexported.targets.some((x) => x.reachability === 'production' &&
+      x.status === 'resolved' && x.target === './x.cjs') &&
+      r5BashExported.targets.some((x) => x.reachability === 'production' &&
+        x.status === 'resolved' && x.target === './x.cjs'),
+    JSON.stringify({ unexported: r5BashUnexported, exported: r5BashExported }));
+
+  const r5BashEnv = [
+    adapter.scanDependencyTargets('export BASH_ENV=./env.sh; bash -c "node ./x.cjs"'),
+    adapter.scanDependencyTargets('BASH_ENV=./env.sh bash -c "node ./x.cjs"'),
+    adapter.scanDependencyTargets('env BASH_ENV=./env.sh bash -c "node ./x.cjs"'),
+  ];
+  check('R16a-fix5 BASH_ENV export or command prefix makes bash -c unresolved',
+    r5BashEnv.every((scan) => r5Unresolved(scan,
+      (x) => x.kind === 'shell-inline-code' && /BASH_ENV/.test(x.reason || ''))),
+    JSON.stringify(r5BashEnv));
+
+  const r5Reachability = [
+    ['exit', adapter.scanDependencyTargets('exit 0; node ./never-exit.cjs'), './never-exit.cjs'],
+    ['exec', adapter.scanDependencyTargets('exec node ./real.cjs; node ./never-exec.cjs'), './never-exec.cjs'],
+    ['return', adapter.scanDependencyTargets('f(){ return; node ./never-return.cjs; }; f'), './never-return.cjs'],
+  ];
+  check('R16a-fix5 definite exit/exec and function return demote later same-scope dependency edges to candidate',
+    r5Reachability.every(([, scan, targetValue]) =>
+      scan.targets.some((x) => x.target === targetValue && x.status === 'candidate' &&
+        x.reachability === 'candidate')),
+    JSON.stringify(r5Reachability));
+
+  const r5ShellState = [
+    ['set', adapter.scanDependencyTargets('X=./safe.cjs; set -n; node "$X"')],
+    ['set', adapter.scanDependencyTargets('X=./safe.cjs; set -o posix; node "$X"')],
+    ['readonly', adapter.scanDependencyTargets('X=./safe.cjs; readonly X; node "$X"')],
+  ];
+  check('R16a-fix5 set -n set -o posix and readonly are UNSUPPORTED and poison state',
+    r5ShellState.every(([construct, scan]) => r5Unsupported(scan, construct) &&
+      !r5Resolved(scan, '"$X"', './safe.cjs')),
+    JSON.stringify(r5ShellState));
+
+  const r5ExternalBuiltin = [
+    adapter.scanDependencyTargets('env source ./x.sh'),
+    adapter.scanDependencyTargets('exec source ./x.sh'),
+  ];
+  const r5Pwd = adapter.scanDependencyTargets('pwd; node ./x.cjs');
+  check('R16a-fix5 external wrappers still refuse shell builtins while pwd remains supported',
+    r5ExternalBuiltin.every((scan) => r5Unresolved(scan,
+      (x) => x.kind === 'external-wrapper-command' && /PATH 可执行文件未证明/.test(x.reason || ''))) &&
+      !r5Pwd.targets.some((x) => x.kind === 'unsupported-construct' && x.expression === 'pwd') &&
+      r5Resolved(r5Pwd, './x.cjs', './x.cjs'),
+    JSON.stringify({ wrappers: r5ExternalBuiltin, pwd: r5Pwd }));
   const envelopeVersionMutant = JSON.parse(JSON.stringify(success));
   envelopeVersionMutant.protocolVersion++;
   expectCode(
