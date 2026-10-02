@@ -1,0 +1,511 @@
+{
+  "schema": "axmem-r16a-fix-round4-defense-cases/v1",
+  "groups": [
+    {
+      "group": 1,
+      "source": {
+        "file": "cases1.json",
+        "bytes": 3741,
+        "sha256": "9284c63d034ead92253fe2077ea3cc6f80cce5996cd4303de75009b9cb66ff1d"
+      },
+      "cases": [
+        {
+          "id": "1 if-source",
+          "src": "X=./safe.cjs; if true; then source ./set.sh; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "1b andor-source",
+          "src": "X=./safe.cjs; true && . ./set.sh; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "1c while-source",
+          "src": "X=./safe.cjs; while false; do source ./set.sh; done; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "1d top-source ctl",
+          "src": "X=./safe.cjs; source ./set.sh; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "1e if-assign ctl",
+          "src": "X=./safe.cjs; if true; then X=./o.cjs; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "1f fn-source in branch",
+          "src": "f(){ source ./set.sh; }; X=./safe.cjs; if true; then f; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "1g brace-source in branch",
+          "src": "X=./safe.cjs; if true; then { source ./set.sh; }; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "2 dyn-cmd read in branch",
+          "src": "CMD=read; X=./safe.cjs; if true; then \"$CMD\" X <<< ./outside.cjs; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "2b dyn-cmd top-level",
+          "src": "CMD=read; X=./safe.cjs; \"$CMD\" X <<< ./outside.cjs; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "2c unknown dyn top-level",
+          "src": "X=./safe.cjs; $Y X; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "2d dyn-cmd andor",
+          "src": "CMD=read; X=./safe.cjs; true && \"$CMD\" X <<< ./o.cjs; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "2e builtin dyn in branch",
+          "src": "X=./safe.cjs; if true; then builtin \"$C\" X <<< ./o.cjs; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "3 arith",
+          "src": "X=./safe.cjs; ((X=1)); node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "3b let",
+          "src": "X=./safe.cjs; let X=1; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "3c arith in if clause",
+          "src": "X=./safe.cjs; if ((X=1)); then :; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "3d arith cmdsub",
+          "src": "(( $(node ./a.cjs) ))",
+          "expectation": "edge-a"
+        },
+        {
+          "id": "3e arith-for",
+          "src": "X=./safe.cjs; for ((X=0; X<1; X++)); do :; done; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "3f arith-for cmdsub",
+          "src": "for ((i=0; i<$(node ./a.cjs); i++)); do node ./b.cjs; done",
+          "expectation": "edge-a"
+        },
+        {
+          "id": "3g test cmd cmdsub",
+          "src": "[[ -f $(node ./a.cjs) ]]",
+          "expectation": "edge-a"
+        },
+        {
+          "id": "3h arith expansion assign",
+          "src": "X=./safe.cjs; : $((X=1)); node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "3i param default assign",
+          "src": "unset X; : ${X:=./o.cjs}; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "3j param default assign over binding",
+          "src": "X=./safe.cjs; : ${X:=./o.cjs}; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "4 time read",
+          "src": "X=./safe.cjs; time read X <<< ./outside.cjs; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "4b bang read",
+          "src": "X=./safe.cjs; ! read X <<< ./outside.cjs; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "4c time assign",
+          "src": "X=./safe.cjs; time X=./o.cjs; node \"$X\"",
+          "expectation": "x-o"
+        },
+        {
+          "id": "4d time source",
+          "src": "X=./safe.cjs; time source ./set.sh; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "4e bang fn",
+          "src": "f(){ X=./o.cjs; }; X=./safe.cjs; ! f; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "4f lastpipe",
+          "src": "shopt -s lastpipe; X=./safe.cjs; echo ./o.cjs | read X; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "4g pipeline multi ctl",
+          "src": "X=./safe.cjs; read X <<< ./o.cjs | cat; node \"$X\"",
+          "expectation": "x-safe"
+        },
+        {
+          "id": "5 subshell fn",
+          "src": "f(){ node ./real.cjs; }; (f(){ :; }); f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "5b pipeline fn",
+          "src": "f(){ node ./real.cjs; }; echo | f(){ :; }; f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "5c subshell fn define new",
+          "src": "(g(){ node ./g.cjs; }); g",
+          "expectation": "poison-g"
+        },
+        {
+          "id": "5d cmdsub fn",
+          "src": "f(){ node ./real.cjs; }; x=$(f(){ :; }); f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "6 read -p",
+          "src": "X=./safe.cjs; read -p X Y <<< ok; node \"$X\"",
+          "expectation": "x-safe"
+        },
+        {
+          "id": "6b read -r",
+          "src": "X=./safe.cjs; read -r Y <<< ok; node \"$X\"",
+          "expectation": "x-safe"
+        },
+        {
+          "id": "6c read -d",
+          "src": "X=./safe.cjs; read -d X Y <<< ok; node \"$X\"",
+          "expectation": "x-safe"
+        },
+        {
+          "id": "6d read -a",
+          "src": "X=./safe.cjs; read -a X <<< ok; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "6e read -pX fused",
+          "src": "X=./safe.cjs; read -pX Y <<< ok; node \"$X\"",
+          "expectation": "x-safe"
+        },
+        {
+          "id": "7 env eval",
+          "src": "env eval 'node ./x.cjs'",
+          "expectation": "external-wrapper-builtin"
+        },
+        {
+          "id": "7b env source",
+          "src": "env source ./x.sh",
+          "expectation": "external-wrapper-builtin"
+        },
+        {
+          "id": "7c nohup eval",
+          "src": "nohup eval 'node ./x.cjs'",
+          "expectation": "external-wrapper-builtin"
+        },
+        {
+          "id": "7d exec eval",
+          "src": "exec eval 'node ./x.cjs'",
+          "expectation": "external-wrapper-builtin"
+        },
+        {
+          "id": "7e command eval",
+          "src": "command eval 'node ./x.cjs'",
+          "expectation": "edge-x"
+        },
+        {
+          "id": "7f env command node",
+          "src": "env command node ./x.cjs",
+          "expectation": "external-wrapper-builtin"
+        },
+        {
+          "id": "7g timeout eval",
+          "src": "timeout 5 eval 'node ./x.cjs'",
+          "expectation": "external-wrapper-builtin"
+        },
+        {
+          "id": "7h env exec",
+          "src": "env exec node ./x.cjs",
+          "expectation": "external-wrapper-builtin"
+        }
+      ]
+    },
+    {
+      "group": 2,
+      "source": {
+        "file": "cases2.json",
+        "bytes": 2166,
+        "sha256": "a37bfedf44a1b0fdd1b90ae80bb8cbb5413f5c7fda4cadcf7821ed8f1bacd541"
+      },
+      "cases": [
+        {
+          "id": "bg assign",
+          "src": "X=./safe.cjs; X=./o.cjs & wait; node \"$X\"",
+          "expectation": "x-safe"
+        },
+        {
+          "id": "bg source",
+          "src": "X=./safe.cjs; source ./set.sh & wait; node \"$X\"",
+          "expectation": "x-safe"
+        },
+        {
+          "id": "nameref",
+          "src": "X=./safe.cjs; declare -n R=X; R=./o.cjs; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "read -aX",
+          "src": "X=./safe.cjs; read -aX <<< ./o.cjs; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "printf -vX",
+          "src": "X=./safe.cjs; printf -vX %s ./o.cjs; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "empty default",
+          "src": "X=; : ${X:=./o.cjs}; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "command read in branch",
+          "src": "X=./safe.cjs; if true; then command read X <<< ./o.cjs; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "builtin read in branch",
+          "src": "X=./safe.cjs; if true; then builtin read X <<< ./o.cjs; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "command read top",
+          "src": "X=./safe.cjs; command read X <<< ./o.cjs; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "let in branch",
+          "src": "X=./safe.cjs; if true; then let X=1; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "arith in branch",
+          "src": "X=./safe.cjs; if true; then ((X=1)); fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "fn defined+called in branch",
+          "src": "X=./safe.cjs; if true; then f(){ X=./o.cjs; }; f; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "fn redefined in branch",
+          "src": "f(){ :; }; X=./safe.cjs; if true; then f(){ X=./o.cjs; }; fi; f; node \"$X\"",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "fn redefined in branch node",
+          "src": "f(){ node ./first.cjs; }; if false; then f(){ node ./second.cjs; }; fi; f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "wait -p",
+          "src": "X=./safe.cjs; wait -n -p X; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "posix special prefix",
+          "src": "set -o posix; X=./safe.cjs; X=./o.cjs :; node \"$X\"",
+          "expectation": "x-o"
+        },
+        {
+          "id": "case pattern arith",
+          "src": "X=./safe.cjs; case a in z|$((X=2))) :;; esac; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "trap code",
+          "src": "trap 'node ./trap.cjs' EXIT",
+          "expectation": "trap-edge"
+        },
+        {
+          "id": "mapfile -C",
+          "src": "mapfile -C 'node ./cb.cjs' -c 1 arr < f",
+          "expectation": "mapfile-edge"
+        },
+        {
+          "id": "time only in branch",
+          "src": "X=./safe.cjs; if true; then time read X <<< ./o.cjs; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "top dyn fn call",
+          "src": "f(){ X=./o.cjs; }; X=./safe.cjs; F=f; \"$F\"; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "subshell assign ctl",
+          "src": "X=./safe.cjs; (X=./o.cjs); node \"$X\"",
+          "expectation": "x-safe"
+        },
+        {
+          "id": "cd relative",
+          "src": "cd /elsewhere; node ./x.cjs",
+          "expectation": "cwd-unresolved"
+        },
+        {
+          "id": "alias",
+          "src": "shopt -s expand_aliases; alias node=true\nnode ./x.cjs",
+          "expectation": "command-resolution-unresolved"
+        },
+        {
+          "id": "hash -p",
+          "src": "hash -p /tmp/evil node; node ./x.cjs",
+          "expectation": "command-resolution-unresolved"
+        }
+      ]
+    },
+    {
+      "group": 3,
+      "source": {
+        "file": "cases3.json",
+        "bytes": 595,
+        "sha256": "24ae94d5ec742d3ac6f86c138703046788a3903c0f58fc82ffbce7ad43047b8b"
+      },
+      "cases": [
+        {
+          "id": "eval f",
+          "src": "f(){ node ./x.cjs; }; eval f",
+          "expectation": "edge-x"
+        },
+        {
+          "id": "bash -c exported f",
+          "src": "f(){ node ./x.cjs; }; export -f f; bash -c f",
+          "expectation": "edge-x"
+        },
+        {
+          "id": "eval defines f",
+          "src": "eval 'f(){ node ./x.cjs; }'; f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "source defines f",
+          "src": "source ./def.sh; f",
+          "expectation": "source-unknown-f"
+        },
+        {
+          "id": "bang subshell fn",
+          "src": "f(){ node ./real.cjs; }; ! (f(){ :; }); f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "time fn call",
+          "src": "f(){ node ./x.cjs; }; time f",
+          "expectation": "edge-x"
+        },
+        {
+          "id": "bang fn call",
+          "src": "f(){ node ./x.cjs; }; ! f",
+          "expectation": "edge-x"
+        },
+        {
+          "id": "bg fn redefine",
+          "src": "f(){ node ./real.cjs; }; f(){ :; } & f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "unset -f",
+          "src": "f(){ node ./x.cjs; }; unset -f f; f",
+          "expectation": "poison-f"
+        }
+      ]
+    },
+    {
+      "group": 4,
+      "source": {
+        "file": "cases4.json",
+        "bytes": 511,
+        "sha256": "89f600eb3e225c6ea3435f31cf8a4d68ef9a42b99a4d7fe0c1b7f21091c8c852"
+      },
+      "cases": [
+        {
+          "id": "fn redefined in taken branch",
+          "src": "f(){ node ./first.cjs; }; if true; then f(){ node ./second.cjs; }; fi; f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "fn defined only in branch then called",
+          "src": "if true; then f(){ node ./second.cjs; }; fi; f",
+          "expectation": "poison-f"
+        },
+        {
+          "id": "exit-terminated arm with source (corpus shape)",
+          "src": "G=/g; if [ \"$1\" = --self-test ]; then . ./lib.sh; exit $?; fi; exec node \"$G/x.cjs\"",
+          "expectation": "terminating-arm"
+        },
+        {
+          "id": "non-terminated arm with source",
+          "src": "G=/g; if [ \"$1\" = --self-test ]; then . ./lib.sh; fi; exec node \"$G/x.cjs\"",
+          "expectation": "nonterminating-arm"
+        }
+      ]
+    },
+    {
+      "group": 5,
+      "source": {
+        "file": "cases5.json",
+        "bytes": 696,
+        "sha256": "dd8709df299a4026f122a9a5ca9930ebedcb5f7fd4b9615df3189ed5b016307a"
+      },
+      "cases": [
+        {
+          "id": "arith-for in branch",
+          "src": "X=./safe.cjs; if true; then for ((X=0;X<1;X++)); do :; done; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "select top",
+          "src": "X=./safe.cjs; select X in ./o.cjs; do break; done; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "select in branch",
+          "src": "X=./safe.cjs; if true; then select X in ./o.cjs; do break; done; fi; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "coproc name",
+          "src": "X=./safe.cjs; coproc X { cat; }; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "redirect arith write",
+          "src": "X=./safe.cjs; echo hi > /dev/null$((X=3)); node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "for wordlist arith",
+          "src": "X=./safe.cjs; for i in $((X=3)); do :; done; node \"$X\"",
+          "expectation": "x-not-safe"
+        },
+        {
+          "id": "until loop source",
+          "src": "X=./safe.cjs; until true; do source ./set.sh; done; node \"$X\"",
+          "expectation": "x-not-safe"
+        }
+      ]
+    }
+  ],
+  "expectationSchema": "round4-case-expectation/v1"
+}

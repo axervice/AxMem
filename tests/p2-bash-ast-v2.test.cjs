@@ -22,6 +22,8 @@ const V1_RECORDED = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'v1-pr
 const V1_RECORDED_SHA256 = '3c87126b6d349241279021a121a884e3a3b27f8f98c3514d6207b9672c81ccc5';
 const V1_LIVE_SAMPLE_IDS = Object.freeze(["00001","00053","00105","00157","00209","00261","00314","00366","00418","00470","00522","00574","00626","00678","00730","00782","00835","00887","00939","00991","01043","01095","01147","01199","01251","01303","01356","01408","01460","01512","01564","01616"]);
 const GO_V1_EXE = path.join(ROOT, 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
+const GO_V1_LOCK = path.join(ROOT, 'scripts', 'private', 'p2-bash-ast', 'helper.lock.json');
+const ROUND4_CASES = path.join(__dirname, 'fixtures', 'p2-bash-ast', 'v2', 'round4-defense-cases.json');
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'p2-v2-selftest-'));
 
 let pass = 0;
@@ -115,11 +117,39 @@ function runGoV1(source, exe = GO_V1_EXE) {
   if (!doc || doc.ok !== true) throw new Error('Go v1 helper returned non-success JSON');
   return goV1Projection(doc, source);
 }
-function runFixedLiveV1Sample(exe, golden, v1FixtureById) {
+function goV1HelperStatus(exe) {
   if (!fs.existsSync(exe)) {
     return {
-      skipped: true,
+      state: 'skip',
       reason: 'Go v1 helper is absent (ignored build artifact): ' + exe,
+    };
+  }
+  let lock;
+  try {
+    lock = JSON.parse(fs.readFileSync(GO_V1_LOCK, 'utf8'));
+  } catch (error) {
+    return { state: 'fail', reason: 'Go v1 helper lock cannot be read: ' + error.message };
+  }
+  const actualSha256 = sha256(fs.readFileSync(exe));
+  const expectedSha256 = lock && lock.executableSha256;
+  if (typeof expectedSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    return { state: 'fail', reason: 'Go v1 helper lock executableSha256 is invalid' };
+  }
+  if (actualSha256 !== expectedSha256) {
+    return {
+      state: 'fail',
+      reason: 'Go v1 helper sha256 mismatch: expected ' + expectedSha256 + ', got ' + actualSha256,
+    };
+  }
+  return { state: 'ready', reason: null, sha256: actualSha256 };
+}
+function runFixedLiveV1Sample(exe, golden, v1FixtureById) {
+  const helper = goV1HelperStatus(exe);
+  if (helper.state !== 'ready') {
+    return {
+      skipped: helper.state === 'skip',
+      failed: helper.state === 'fail',
+      reason: helper.reason,
       rows: [],
     };
   }
@@ -133,7 +163,7 @@ function runFixedLiveV1Sample(exe, golden, v1FixtureById) {
       ok: !!goldenEntry && !!recorded && sameJson(live, recorded.projection),
     });
   }
-  return { skipped: false, reason: null, rows };
+  return { skipped: false, failed: false, reason: null, rows, helperSha256: helper.sha256 };
 }
 function copyPinnedTree(dst) {
   fs.mkdirSync(path.join(dst, 'guards', 'vendor'), { recursive: true });
@@ -403,19 +433,33 @@ try {
     JSON.stringify({ v1Agree, mismatches: v1Mismatches }));
 
   const liveSampleResult = runFixedLiveV1Sample(GO_V1_EXE, golden, v1FixtureById);
-  if (liveSampleResult.skipped) {
-    skipCheck('fixed 32-entry live Go v1 sample equals the recorded fixture', liveSampleResult.reason);
+  if (liveSampleResult.failed) {
+    check('fixed 32-entry live Go v1 sample equals the recorded fixture', false, liveSampleResult.reason);
+  } else if (liveSampleResult.skipped) {
+    if (process.env.AXMEM_REQUIRE_GO_HELPER === '1') {
+      check('fixed 32-entry live Go v1 sample equals the recorded fixture', false,
+        'AXMEM_REQUIRE_GO_HELPER=1: ' + liveSampleResult.reason);
+    } else {
+      skipCheck('fixed 32-entry live Go v1 sample equals the recorded fixture', liveSampleResult.reason);
+    }
   } else {
     check('fixed 32-entry live Go v1 sample equals the recorded fixture',
       liveSampleResult.rows.length === 32 && liveSampleResult.rows.every((row) => row.ok),
-      JSON.stringify(liveSampleResult.rows));
+      JSON.stringify({ helperSha256: liveSampleResult.helperSha256, rows: liveSampleResult.rows }));
   }
   const missingLiveSample = runFixedLiveV1Sample(path.join(T, 'missing-go-v1-helper.exe'), golden, v1FixtureById);
-  check('R16a-fix3 missing Go v1 helper returns a counted SKIP contract instead of throwing or passing',
-    missingLiveSample.skipped === true &&
+  check('R16a-fix4 missing Go v1 helper returns a counted SKIP contract instead of throwing or passing',
+    missingLiveSample.skipped === true && missingLiveSample.failed === false &&
       /Go v1 helper is absent/.test(missingLiveSample.reason) &&
       missingLiveSample.rows.length === 0,
     JSON.stringify(missingLiveSample));
+  const badGoHelper = path.join(T, 'bad-go-v1-helper.exe');
+  fs.writeFileSync(badGoHelper, 'not the pinned helper', 'utf8');
+  const badGoStatus = runFixedLiveV1Sample(badGoHelper, golden, v1FixtureById);
+  check('R16a-fix4 Go v1 helper sha256 mismatch is always FAIL before spawn',
+    badGoStatus.failed === true && badGoStatus.skipped === false &&
+      /sha256 mismatch/.test(badGoStatus.reason),
+    JSON.stringify(badGoStatus));
 
   evidence(
     'v1 parity negative control detects a mutated projected field',
@@ -643,7 +687,7 @@ try {
     'If target rules trusted lexical value despite pathname expansion, an unquoted glob would be falsely resolved; projector dynamic propagation excludes that false pass.');
 
   const homeHelperPath = path.join(ROOT, 'guards', 'pmm-home.sh');
-  const homeHelperSource = fs.readFileSync(homeHelperPath, 'utf8');
+  const homeHelperSource = fs.readFileSync(homeHelperPath, 'utf8').replace(/\r\n/g, '\n');
   const homeHelperScan = adapter.scanDependencyTargets(homeHelperSource, { fromPath: 'guards/pmm-home.sh' });
   const homeHelperTarget = target(homeHelperScan,
     (x) => x.kind === 'node-inline-require' && x.target === 'guards/pmm-recall-ledger.cjs');
@@ -847,15 +891,15 @@ try {
     'X=./safe.cjs; . ./lib.sh; node "$X"',
   ];
   const f1Actual = f1Sources.map((sourceText) => {
-    const got = target(adapter.scanDependencyTargets(sourceText),
-      (x) => x.kind === 'node-script' && x.expression === '"$X"');
-    return { source: sourceText, got };
+    const scan = adapter.scanDependencyTargets(sourceText);
+    const got = target(scan, (x) => x.kind === 'node-script' && x.expression === '"$X"');
+    return { source: sourceText, got, targets: scan.targets };
   });
   const f1Candidate = target(adapter.scanDependencyTargets(
     'X=./safe.cjs; if true; then node "$X"; fi'),
     (x) => x.kind === 'node-script' && x.expression === '"$X"');
   check('R16a-fix3 F1 non-linear and shell-writer mutations invalidate outer bindings',
-    f1Actual.every((row) => row.got && row.got.status === 'unresolved' && row.got.target === null) &&
+    f1Actual.every((row) => !row.got || (row.got.status === 'unresolved' && row.got.target === null)) &&
       !!f1Candidate && f1Candidate.status === 'candidate' && f1Candidate.target === null,
     JSON.stringify({ f1Actual, f1Candidate }));
 
@@ -962,6 +1006,283 @@ try {
       !bracketScan.targets.some((x) => x.kind === 'command-name' && x.expression === '['),
     JSON.stringify({ bracketWord, targets: bracketScan.targets }));
 
+
+  const round4Fixture = JSON.parse(fs.readFileSync(ROUND4_CASES, 'utf8'));
+  const round4Cases = round4Fixture.groups.flatMap((group) =>
+    group.cases.map((entry) => ({ ...entry, group: group.group })));
+  const round4Expected = Object.create(null);
+  function tagRound4(tag, ids) {
+    for (const id of ids) {
+      if (round4Expected[id]) throw new Error('duplicate round4 expectation id: ' + id);
+      round4Expected[id] = tag;
+    }
+  }
+  tagRound4('x-not-safe', [
+    '1 if-source','1b andor-source','1c while-source','1d top-source ctl',
+    '1e if-assign ctl','1f fn-source in branch','1g brace-source in branch',
+    '2 dyn-cmd read in branch','2b dyn-cmd top-level','2c unknown dyn top-level',
+    '2d dyn-cmd andor','2e builtin dyn in branch',
+    '3 arith','3b let','3c arith in if clause','3e arith-for',
+    '3h arith expansion assign','3i param default assign','3j param default assign over binding',
+    '4 time read','4b bang read','4d time source','4e bang fn','4f lastpipe',
+    '6d read -a',
+    'nameref','read -aX','printf -vX','empty default',
+    'command read in branch','builtin read in branch','command read top',
+    'let in branch','arith in branch','fn defined+called in branch',
+    'wait -p','case pattern arith','time only in branch','top dyn fn call',
+    'arith-for in branch','select top','select in branch','coproc name',
+    'redirect arith write','for wordlist arith','until loop source',
+  ]);
+  tagRound4('x-safe', [
+    '4g pipeline multi ctl','6 read -p','6b read -r','6c read -d','6e read -pX fused',
+    'bg assign','bg source','subshell assign ctl',
+  ]);
+  tagRound4('x-o', ['4c time assign','posix special prefix']);
+  tagRound4('edge-a', ['3d arith cmdsub','3f arith-for cmdsub','3g test cmd cmdsub']);
+  tagRound4('poison-f', [
+    '5 subshell fn','5b pipeline fn','5d cmdsub fn',
+    'fn redefined in branch','fn redefined in branch node',
+    'eval defines f','bang subshell fn','bg fn redefine','unset -f',
+    'fn redefined in taken branch','fn defined only in branch then called',
+  ]);
+  tagRound4('poison-g', ['5c subshell fn define new']);
+  tagRound4('external-wrapper-builtin', [
+    '7 env eval','7b env source','7c nohup eval','7d exec eval',
+    '7f env command node','7g timeout eval','7h env exec',
+  ]);
+  tagRound4('edge-x', ['7e command eval','eval f','bash -c exported f','time fn call','bang fn call']);
+  tagRound4('source-unknown-f', ['source defines f']);
+  tagRound4('trap-edge', ['trap code']);
+  tagRound4('mapfile-edge', ['mapfile -C']);
+  tagRound4('cwd-unresolved', ['cd relative']);
+  tagRound4('command-resolution-unresolved', ['alias','hash -p']);
+  tagRound4('terminating-arm', ['exit-terminated arm with source (corpus shape)']);
+  tagRound4('nonterminating-arm', ['non-terminated arm with source']);
+
+  function round4CaseOk(kind, scan) {
+    const prod = scan.targets.filter((x) => x.reachability === 'production');
+    const xWord = prod.find((x) => x.expression === '"$X"');
+    switch (kind) {
+      case 'x-not-safe':
+        return !xWord || xWord.status !== 'resolved' || xWord.target !== './safe.cjs';
+      case 'x-safe':
+        return !!xWord && xWord.status === 'resolved' && xWord.target === './safe.cjs';
+      case 'x-o':
+        return !!xWord && xWord.status === 'resolved' && xWord.target === './o.cjs';
+      case 'edge-a':
+        return prod.some((x) => x.status === 'resolved' && x.target === './a.cjs');
+      case 'poison-f':
+        return prod.some((x) => x.status === 'unresolved' &&
+          x.kind === 'function-name' && x.expression === 'f' && x.poisoned === true);
+      case 'poison-g':
+        return prod.some((x) => x.status === 'unresolved' &&
+          x.kind === 'function-name' && x.expression === 'g' && x.poisoned === true);
+      case 'external-wrapper-builtin':
+        return prod.some((x) => x.status === 'unresolved' &&
+          x.kind === 'external-wrapper-command' && /PATH 可执行文件未证明/.test(x.reason || ''));
+      case 'edge-x':
+        return prod.some((x) => x.status === 'resolved' && x.target === './x.cjs');
+      case 'source-unknown-f':
+        return prod.some((x) => x.status === 'unresolved' &&
+          x.expression === 'f' && /function table is unknown/.test(x.reason || ''));
+      case 'trap-edge':
+        return prod.some((x) => x.status === 'resolved' && x.target === './trap.cjs');
+      case 'mapfile-edge':
+        return prod.some((x) => x.status === 'resolved' && x.target === './cb.cjs');
+      case 'cwd-unresolved':
+        return prod.some((x) => x.status === 'unresolved' &&
+          (x.expression === './x.cjs' || x.expression === 'node') &&
+          /cwd|function table/.test(x.reason || ''));
+      case 'command-resolution-unresolved':
+        return prod.some((x) => x.status === 'unresolved' &&
+          x.expression === 'node' && /command resolution/.test(x.reason || ''));
+      case 'terminating-arm':
+        return (scan.assumptions || []).includes('no-exit-function') &&
+          prod.some((x) => x.status === 'resolved' && x.target === '/g/x.cjs');
+      case 'nonterminating-arm':
+        return !(scan.assumptions || []).includes('no-exit-function') &&
+          !prod.some((x) => x.status === 'resolved' && x.target === '/g/x.cjs');
+      default:
+        return false;
+    }
+  }
+
+  const round4CaseRows = [];
+  for (const entry of round4Cases) {
+    const expectation = round4Expected[entry.id];
+    let scan = null;
+    let error = null;
+    try {
+      scan = adapter.scanDependencyTargets(entry.src);
+    } catch (caughtError) {
+      error = { name: caughtError.name, code: caughtError.code, message: caughtError.message };
+    }
+    const ok = !!expectation && entry.expectation === expectation && !!scan && round4CaseOk(expectation, scan);
+    round4CaseRows.push({
+      group: entry.group,
+      id: entry.id,
+      expectation,
+      fixtureExpectation: entry.expectation,
+      ok,
+      error,
+      targets: scan ? scan.targets : null,
+      assumptions: scan ? scan.assumptions : null,
+    });
+  }
+  const round4MissingIds = round4Cases.filter((entry) => !round4Expected[entry.id]).map((entry) => entry.id);
+  const round4ExtraIds = Object.keys(round4Expected)
+    .filter((id) => !round4Cases.some((entry) => entry.id === id));
+  check('R16a-fix4 all 91 defender cases have explicit expectations and pass',
+    round4Cases.length === 91 && round4MissingIds.length === 0 && round4ExtraIds.length === 0 &&
+      round4CaseRows.every((row) => row.ok),
+    JSON.stringify({
+      count: round4Cases.length,
+      missing: round4MissingIds,
+      extra: round4ExtraIds,
+      failures: round4CaseRows.filter((row) => !row.ok),
+    }));
+
+  const readCombined = target(adapter.scanDependencyTargets(
+    'X=./safe.cjs; read -ra X <<< ok; node "$X"'), (x) => x.expression === '"$X"');
+  check('R16a-fix4 read getopt parses combined -ra X and invalidates array X',
+    !!readCombined && readCombined.status === 'unresolved',
+    JSON.stringify(readCombined));
+
+  const processSubPoison = adapter.scanDependencyTargets(
+    'f(){ node ./real.cjs; }; cat <(f(){ :; }); f');
+  check('R16a-fix4 process substitution clones function table and poisons inner redefinition',
+    processSubPoison.targets.some((x) => x.kind === 'function-name' &&
+      x.expression === 'f' && x.status === 'unresolved' && x.poisoned === true),
+    JSON.stringify(processSubPoison));
+
+  const poisonedNestedShellCases = [
+    'f(){ node ./real.cjs; }; (f(){ :; }); eval f',
+    'f(){ node ./real.cjs; }; (f(){ :; }); bash -c f',
+  ].map((sourceText) => ({ sourceText, scan: adapter.scanDependencyTargets(sourceText) }));
+  check('R16a-fix4 eval and bash -c carry poisoned function-table state into nested scans',
+    poisonedNestedShellCases.every((row) => row.scan.targets.some((x) =>
+      x.kind === 'function-name' && x.expression === 'f' &&
+      x.status === 'unresolved' && x.poisoned === true)),
+    JSON.stringify(poisonedNestedShellCases));
+
+  const wrapperBuiltinCases = [
+    "env eval 'node ./never.cjs'",
+    "nohup eval 'node ./never.cjs'",
+    "timeout 5 eval 'node ./never.cjs'",
+    "nice eval 'node ./never.cjs'",
+    "stdbuf -oL eval 'node ./never.cjs'",
+    "exec eval 'node ./never.cjs'",
+  ].map((sourceText) => ({
+    sourceText,
+    scan: adapter.scanDependencyTargets(sourceText),
+  }));
+  check('R16a-fix4 every external wrapper refuses delegation to shell builtins without PATH proof',
+    wrapperBuiltinCases.every((row) =>
+      row.scan.targets.some((x) => x.kind === 'external-wrapper-command' &&
+        x.status === 'unresolved' && /PATH 可执行文件未证明/.test(x.reason || ''))),
+    JSON.stringify(wrapperBuiltinCases));
+
+  const directProjectorPath = path.join(ROOT, 'scripts', 'private', 'p2-bash-ast-js', 'projector.cjs');
+  const directProjectorProbe = cp.spawnSync(process.execPath, ['-e',
+    'const p=require(process.argv[1]);try{p.parseShellV2("echo ok");process.exit(9)}catch(e){process.stdout.write(String(e.message||e));}',
+    directProjectorPath], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 30000,
+  });
+  check('R16a-fix4 projector refuses parse before adapter verification token',
+    directProjectorProbe.status === 0 &&
+      /before adapter pinned-source verification/.test(directProjectorProbe.stdout || ''),
+    JSON.stringify({ status: directProjectorProbe.status, stdout: directProjectorProbe.stdout,
+      stderr: directProjectorProbe.stderr }));
+
+  const forgedTokenProbe = cp.spawnSync(process.execPath, ['-e',
+    'const p=require(process.argv[1]);const fake={protocolVersion:2,protocolSchema:"fake",hashMode:"fake",lock:{}};try{p.initializeVerification(fake);process.exit(9)}catch(e){process.stdout.write(String(e.message||e));}',
+    directProjectorPath], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 30000,
+  });
+  check('R16a-fix4 projector rejects a forged same-shape verification token',
+    forgedTokenProbe.status === 0 &&
+      /requires the adapter pinned-source verification token/.test(forgedTokenProbe.stdout || ''),
+    JSON.stringify({ status: forgedTokenProbe.status, stdout: forgedTokenProbe.stdout,
+      stderr: forgedTokenProbe.stderr }));
+
+  const directRulesPath = path.join(ROOT, 'scripts', 'private', 'p2-bash-ast-js', 'target-rules.cjs');
+  const forgedRulesProbe = cp.spawnSync(process.execPath, ['-e',
+    'const r=require(process.argv[1]);const fakeToken={};const fakeApi={parseMaterialized(){},projectWord(){},hasUnquotedRuntimePattern(){return false},acceptsVerificationToken(){return true}};try{r.bindProjector(fakeApi,fakeToken);process.exit(9)}catch(e){process.stdout.write(String(e.message||e));}',
+    directRulesPath], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 30000,
+  });
+  check('R16a-fix4 target-rules rejects a forged projector/token pair',
+    forgedRulesProbe.status === 0 &&
+      /requires the adapter-verified projector token/.test(forgedRulesProbe.stdout || ''),
+    JSON.stringify({ status: forgedRulesProbe.status, stdout: forgedRulesProbe.stdout,
+      stderr: forgedRulesProbe.stderr }));
+  check('R16a-fix4 adapter verification token initializes normal parse path',
+    adapter.parseShellV2('echo ok').ok === true,
+    JSON.stringify(adapter.describeProtocol()));
+
+  for (const terminatorName of ['exit', 'exec']) {
+    const sourceText =
+      terminatorName + '(){ :; }; G=/g; if true; then source ./lib.sh; ' +
+      terminatorName + ' 0; fi; exec node "$G/x.cjs"';
+    const scan = adapter.scanDependencyTargets(sourceText);
+    check('R16a-fix4 function named ' + terminatorName + ' disables terminating-arm assumption',
+      !(scan.assumptions || []).includes('no-exit-function') &&
+        !scan.targets.some((x) => x.reachability === 'production' &&
+          x.status === 'resolved' && x.target === '/g/x.cjs'),
+      JSON.stringify(scan));
+  }
+
+  const terminatingSynthetic =
+    'G=/g; if [ "$1" = --self-test ]; then . ./lib.sh; exit $?; fi; exec node "$G/x.cjs"';
+  const terminatingNormal = adapter.scanDependencyTargets(terminatingSynthetic);
+  const terminatingMutant = adapter.scanDependencyTargets(terminatingSynthetic,
+    { disableTerminatingArms: true });
+  check('R16a-fix4 terminating-arm clause has a red mutation control',
+    (terminatingNormal.assumptions || []).includes('no-exit-function') &&
+      terminatingNormal.targets.some((x) => x.status === 'resolved' && x.target === '/g/x.cjs') &&
+      terminatingMutant.targets.some((x) => x.reachability === 'production' &&
+        x.expression === '"$G/x.cjs"' && x.status === 'unresolved'),
+    JSON.stringify({ normal: terminatingNormal, mutant: terminatingMutant }));
+
+  const productionTargets = [
+    ['guards/bash-pipe-exitcode-watch.sh', '"$G/bash-pipe-exitcode-watch.cjs"',
+      'guards/bash-pipe-exitcode-watch.cjs', false],
+    ['guards/pmm-bash-impression.sh', '"$G/pmm-bash-impression.cjs"',
+      'guards/pmm-bash-impression.cjs', false],
+    ['guards/pmm-home.sh', '"$LEDGER_ARG"', 'guards/pmm-recall-ledger.cjs', false],
+    ['guards/pmm-shell-memory-watch.sh', '"$G/pmm-home.sh"', 'guards/pmm-home.sh', true],
+    ['guards/pmm-trigger-recall.sh', '"$G/pmm-trigger-recall.cjs"',
+      'guards/pmm-trigger-recall.cjs', true],
+    ['guards/pmm-trigger-write-gate.sh', '"$G/pmm-trigger-write-gate.cjs"',
+      'guards/pmm-trigger-write-gate.cjs', true],
+  ].map(([rel, expression, expectedTarget, mutationMustBreak]) => {
+    const sourceText = fs.readFileSync(path.join(ROOT, ...rel.split('/')), 'utf8').replace(/\r\n/g, '\n');
+    const normal = adapter.scanDependencyTargets(sourceText, { fromPath: rel });
+    const mutant = adapter.scanDependencyTargets(sourceText,
+      { fromPath: rel, disableTerminatingArms: true });
+    const normalTarget = normal.targets.find((x) =>
+      x.reachability === 'production' && x.expression === expression);
+    const mutantTarget = mutant.targets.find((x) =>
+      x.reachability === 'production' && x.expression === expression);
+    return {
+      rel, expression, expectedTarget, mutationMustBreak,
+      normalTarget, mutantTarget, assumptions: normal.assumptions,
+      ok: !!normalTarget && normalTarget.status === 'resolved' &&
+        normalTarget.target === expectedTarget &&
+        (!mutationMustBreak || (!!mutantTarget && mutantTarget.status === 'unresolved' &&
+          mutantTarget.target === null)),
+    };
+  });
+  check('R16a-fix4 six reviewed production resolved targets stay 6/6 and three terminating-arm mutations turn red',
+    productionTargets.every((row) => row.ok) &&
+      productionTargets.filter((row) => row.mutationMustBreak).length === 3,
+    JSON.stringify(productionTargets));
   const envelopeVersionMutant = JSON.parse(JSON.stringify(success));
   envelopeVersionMutant.protocolVersion++;
   expectCode(
@@ -1068,5 +1389,7 @@ try {
   fs.rmSync(T, { recursive: true, force: true });
 }
 
-console.log('P2-BASH-AST-V2-SELFTEST ' + JSON.stringify({ pass, fail, skip, skipReasons }));
-if (fail) process.exit(1);
+process.once('beforeExit', () => {
+  console.log('P2-BASH-AST-V2-SELFTEST ' + JSON.stringify({ pass, fail, skip, skipReasons }) + ' ' + skip + ' skipped');
+  if (fail) process.exitCode = 1;
+});

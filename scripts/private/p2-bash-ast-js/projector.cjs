@@ -11,6 +11,32 @@ const {
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 const PARSER = require(path.join(ROOT, 'guards', 'vendor', 'unbash', 'parser.js'));
 
+let verificationToken = null;
+
+function initializeVerification(token) {
+  const adapter = require('./adapter.cjs');
+  const accepts = adapter && adapter.__acceptPinnedVerificationToken;
+  if (typeof accepts !== 'function' || !accepts(token)) {
+    throw new TypeError('projector requires the adapter pinned-source verification token');
+  }
+  if (verificationToken && verificationToken !== token) {
+    throw new TypeError('projector verification token is already bound');
+  }
+  verificationToken = token;
+  return token;
+}
+
+function requireVerification() {
+  if (!verificationToken) {
+    throw new TypeError('projector cannot parse/project before adapter pinned-source verification');
+  }
+}
+
+function acceptsVerificationToken(token) {
+  return !!verificationToken && token === verificationToken;
+}
+
+
 function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
@@ -107,7 +133,7 @@ function sourceSlice(source, start, end) {
   return source.slice(start, end);
 }
 
-function projectWord(word, source) {
+function projectWord(word, source) {  requireVerification();
   if (!isWord(word)) hard(ERROR_CODES.SCHEMA, 'unbash word lacks source span');
   const spelling = sourceSlice(source, word.pos, word.end);
   if (spelling !== word.text) hard(ERROR_CODES.SCHEMA, 'unbash word source does not match input span');
@@ -233,7 +259,7 @@ function projectCompoundStatementRedirections(statement, source) {
   };
 }
 
-function parseMaterialized(source) {
+function parseMaterialized(source) {  requireVerification();
   let ast;
   try {
     ast = materialize(PARSER.parse(source));
@@ -262,7 +288,7 @@ function projectCommands(ast, source) {
   return commands;
 }
 
-function parseShellV2(input) {
+function parseShellV2(input) {  requireVerification();
   if (!(typeof input === 'string' || Buffer.isBuffer(input))) {
     hard(ERROR_CODES.INPUT_TYPE, 'v2 Bash source must be a string or Buffer');
   }
@@ -327,7 +353,7 @@ function redirectionV1(redirect) {
   };
 }
 
-function projectV1Fields(input) {
+function projectV1Fields(input) {  requireVerification();
   if (!(typeof input === 'string' || Buffer.isBuffer(input))) {
     hard(ERROR_CODES.INPUT_TYPE, 'v1 projection source must be a string or Buffer');
   }
@@ -382,6 +408,8 @@ function projectV1Fields(input) {
 }
 
 module.exports = {
+  initializeVerification,
+  acceptsVerificationToken,
   hasUnquotedRuntimePattern,
   expansionKinds,
   parseMaterialized,

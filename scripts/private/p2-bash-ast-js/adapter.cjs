@@ -169,9 +169,17 @@ function verifyPinnedSources(options = {}) {
 }
 
 const PIN_VERIFICATION = verifyPinnedSources();
+const VERIFIED_PIN_TOKENS = new WeakSet([PIN_VERIFICATION]);
+Object.defineProperty(module.exports, '__acceptPinnedVerificationToken', {
+  configurable: true,
+  enumerable: false,
+  value(token) { return VERIFIED_PIN_TOKENS.has(token); },
+});
 const projector = require('./projector.cjs');
+projector.initializeVerification(PIN_VERIFICATION);
 const targetRules = require('./target-rules.cjs');
-targetRules.bindProjector(projector);
+targetRules.bindProjector(projector, PIN_VERIFICATION);
+delete module.exports.__acceptPinnedVerificationToken;
 
 function parseShellV2(source) { return projector.parseShellV2(source); }
 function projectV1Fields(source) { return projector.projectV1Fields(source); }
