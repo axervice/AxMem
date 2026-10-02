@@ -26,6 +26,8 @@ const T = fs.mkdtempSync(path.join(os.tmpdir(), 'p2-v2-selftest-'));
 
 let pass = 0;
 let fail = 0;
+let skip = 0;
+const skipReasons = [];
 function check(name, ok, detail) {
   if (ok) {
     console.log('PASS ' + name);
@@ -34,6 +36,11 @@ function check(name, ok, detail) {
     console.log('FAIL ' + name + (detail ? ' :: ' + detail : ''));
     fail++;
   }
+}
+function skipCheck(name, reason) {
+  console.log('SKIP ' + name + ' :: ' + reason);
+  skip++;
+  skipReasons.push({ name, reason });
 }
 function evidence(assertion, expected, actual, falsePassGuard) {
   console.log('EVIDENCE ' + JSON.stringify({ assertion, expected, actual, falsePassGuard }));
@@ -92,8 +99,8 @@ function goV1Projection(doc, source) {
     })),
   };
 }
-function runGoV1(source) {
-  const result = cp.spawnSync(GO_V1_EXE, [], {
+function runGoV1(source, exe = GO_V1_EXE) {
+  const result = cp.spawnSync(exe, [], {
     input: Buffer.from(source, 'utf8'),
     encoding: 'utf8',
     windowsHide: true,
@@ -107,6 +114,26 @@ function runGoV1(source) {
   const doc = JSON.parse(String(result.stdout || '').trim());
   if (!doc || doc.ok !== true) throw new Error('Go v1 helper returned non-success JSON');
   return goV1Projection(doc, source);
+}
+function runFixedLiveV1Sample(exe, golden, v1FixtureById) {
+  if (!fs.existsSync(exe)) {
+    return {
+      skipped: true,
+      reason: 'Go v1 helper is absent (ignored build artifact): ' + exe,
+      rows: [],
+    };
+  }
+  const rows = [];
+  for (const id of V1_LIVE_SAMPLE_IDS) {
+    const goldenEntry = golden.entries.find((entry) => entry.id === id);
+    const recorded = v1FixtureById.get(id);
+    const live = goldenEntry ? runGoV1(goldenEntry.original, exe) : null;
+    rows.push({
+      id,
+      ok: !!goldenEntry && !!recorded && sameJson(live, recorded.projection),
+    });
+  }
+  return { skipped: false, reason: null, rows };
 }
 function copyPinnedTree(dst) {
   fs.mkdirSync(path.join(dst, 'guards', 'vendor'), { recursive: true });
@@ -375,20 +402,20 @@ try {
     v1Agree === 1616 && v1Mismatches.length === 0,
     JSON.stringify({ v1Agree, mismatches: v1Mismatches }));
 
-  if (!fs.existsSync(GO_V1_EXE)) throw new Error('Go v1 helper is required for the fixed 32-entry live parity sample');
-  const liveSample = [];
-  for (const id of V1_LIVE_SAMPLE_IDS) {
-    const goldenEntry = golden.entries.find((entry) => entry.id === id);
-    const recorded = v1FixtureById.get(id);
-    const live = goldenEntry ? runGoV1(goldenEntry.original) : null;
-    liveSample.push({
-      id,
-      ok: !!goldenEntry && !!recorded && sameJson(live, recorded.projection),
-    });
+  const liveSampleResult = runFixedLiveV1Sample(GO_V1_EXE, golden, v1FixtureById);
+  if (liveSampleResult.skipped) {
+    skipCheck('fixed 32-entry live Go v1 sample equals the recorded fixture', liveSampleResult.reason);
+  } else {
+    check('fixed 32-entry live Go v1 sample equals the recorded fixture',
+      liveSampleResult.rows.length === 32 && liveSampleResult.rows.every((row) => row.ok),
+      JSON.stringify(liveSampleResult.rows));
   }
-  check('fixed 32-entry live Go v1 sample equals the recorded fixture',
-    liveSample.length === 32 && liveSample.every((row) => row.ok),
-    JSON.stringify(liveSample));
+  const missingLiveSample = runFixedLiveV1Sample(path.join(T, 'missing-go-v1-helper.exe'), golden, v1FixtureById);
+  check('R16a-fix3 missing Go v1 helper returns a counted SKIP contract instead of throwing or passing',
+    missingLiveSample.skipped === true &&
+      /Go v1 helper is absent/.test(missingLiveSample.reason) &&
+      missingLiveSample.rows.length === 0,
+    JSON.stringify(missingLiveSample));
 
   evidence(
     'v1 parity negative control detects a mutated projected field',
@@ -797,6 +824,144 @@ try {
     !!forTarget && forTarget.status === 'candidate' && forTarget.reachability === 'candidate',
     JSON.stringify(forTarget));
 
+  const f1Sources = [
+    'X=./safe.cjs; if true; then X=./outside.cjs; fi; node "$X"',
+    'X=./safe.cjs; while false; do X=./outside.cjs; done; node "$X"',
+    'X=./safe.cjs; for X in a; do :; done; node "$X"',
+    'X=./safe.cjs; case x in a) X=./outside.cjs;; esac; node "$X"',
+    'X=./safe.cjs; true && X=./outside.cjs; node "$X"',
+    'X=./safe.cjs; false || X=./outside.cjs; node "$X"',
+    'X=./safe.cjs; f(){ X=./outside.cjs; }; f; node "$X"',
+    'X=./safe.cjs; eval "X=./outside.cjs"; node "$X"',
+    'X=./safe.cjs; read X; node "$X"',
+    'X=./safe.cjs; export X=./outside.cjs; node "$X"',
+    'X=./safe.cjs; declare X=./outside.cjs; node "$X"',
+    'X=./safe.cjs; local X=./outside.cjs; node "$X"',
+    'X=./safe.cjs; typeset X=./outside.cjs; node "$X"',
+    'X=./safe.cjs; readonly X=./outside.cjs; node "$X"',
+    'X=./safe.cjs; unset X; node "$X"',
+    'X=./safe.cjs; printf -v X %s ./outside.cjs; node "$X"',
+    'X=./safe.cjs; mapfile X; node "$X"',
+    'X=./safe.cjs; getopts ab X; node "$X"',
+    'X=./safe.cjs; source ./lib.sh; node "$X"',
+    'X=./safe.cjs; . ./lib.sh; node "$X"',
+  ];
+  const f1Actual = f1Sources.map((sourceText) => {
+    const got = target(adapter.scanDependencyTargets(sourceText),
+      (x) => x.kind === 'node-script' && x.expression === '"$X"');
+    return { source: sourceText, got };
+  });
+  const f1Candidate = target(adapter.scanDependencyTargets(
+    'X=./safe.cjs; if true; then node "$X"; fi'),
+    (x) => x.kind === 'node-script' && x.expression === '"$X"');
+  check('R16a-fix3 F1 non-linear and shell-writer mutations invalidate outer bindings',
+    f1Actual.every((row) => row.got && row.got.status === 'unresolved' && row.got.target === null) &&
+      !!f1Candidate && f1Candidate.status === 'candidate' && f1Candidate.target === null,
+    JSON.stringify({ f1Actual, f1Candidate }));
+
+  const f2Direct = target(adapter.scanDependencyTargets(
+    'cat <<EOF\n$(node ./heredoc.cjs)\nEOF\n'),
+    (x) => x.kind === 'node-script' && x.expression === './heredoc.cjs');
+  const f2Statement = target(adapter.scanDependencyTargets(
+    '{ cat; } <<EOF\n$(node ./heredoc-stmt.cjs)\nEOF\n'),
+    (x) => x.kind === 'node-script' && x.expression === './heredoc-stmt.cjs');
+  check('R16a-fix3 F2 unquoted heredoc command substitutions are scanned at Command and Statement redirects',
+    !!f2Direct && f2Direct.status === 'resolved' &&
+      !!f2Statement && f2Statement.status === 'resolved',
+    JSON.stringify({ f2Direct, f2Statement }));
+
+  const f3Scan = adapter.scanDependencyTargets(
+    'case x in "$(node ./case-first.cjs)") :;; "$(node ./case-next.cjs)") :;; esac');
+  const f3First = target(f3Scan, (x) => x.kind === 'node-script' && x.expression === './case-first.cjs');
+  const f3Next = target(f3Scan, (x) => x.kind === 'node-script' && x.expression === './case-next.cjs');
+  check('R16a-fix3 F3 case pattern command substitutions are scanned with first-pattern reachability',
+    !!f3First && f3First.status === 'resolved' && f3First.reachability === 'production' &&
+      !!f3Next && f3Next.status === 'candidate' && f3Next.reachability === 'candidate',
+    JSON.stringify({ f3First, f3Next }));
+
+  const f4QuotedEnv = target(adapter.scanDependencyTargets(
+    'env "A=1" node ./env-quoted.cjs'), (x) => x.kind === 'node-script');
+  const f4QuotedEnvSingle = target(adapter.scanDependencyTargets(
+    "env 'A=1' node ./env-single.cjs"), (x) => x.kind === 'node-script');
+  check('R16a-fix3 F4 env recognizes resolved quoted NAME=value assignments',
+    !!f4QuotedEnv && f4QuotedEnv.target === './env-quoted.cjs' &&
+      !!f4QuotedEnvSingle && f4QuotedEnvSingle.target === './env-single.cjs',
+    JSON.stringify({ f4QuotedEnv, f4QuotedEnvSingle }));
+
+  const f5DashDash = target(adapter.scanDependencyTargets(
+    'eval -- "node ./eval-dashdash.cjs"'), (x) => x.kind === 'node-script');
+  const f5BadOption = target(adapter.scanDependencyTargets(
+    'eval -x "node ./eval-bad.cjs"'),
+    (x) => x.kind === 'unsupported-construct' && x.construct === 'eval');
+  check('R16a-fix3 F5 eval skips one leading -- and refuses other leading options',
+    !!f5DashDash && f5DashDash.status === 'resolved' && f5DashDash.target === './eval-dashdash.cjs' &&
+      !!f5BadOption && f5BadOption.status === 'unresolved' && f5BadOption.code === adapter.ERROR_CODES.UNSUPPORTED,
+    JSON.stringify({ f5DashDash, f5BadOption }));
+
+  const f6Scan = adapter.scanDependencyTargets(
+    'node --import ./pre.mjs --loader=./loader.mjs ./main.cjs');
+  const f6Import = target(f6Scan, (x) => x.kind === 'node-option-module' && x.option === '--import');
+  const f6Loader = target(f6Scan, (x) => x.kind === 'node-option-module' && x.option === '--loader');
+  const f6Dynamic = target(adapter.scanDependencyTargets(
+    'node --import "$X" ./main.cjs'),
+    (x) => x.kind === 'node-option-module' && x.option === '--import');
+  check('R16a-fix3 F6 node --import/--loader option modules are dependency targets',
+    !!f6Import && f6Import.status === 'resolved' && f6Import.target === './pre.mjs' &&
+      !!f6Loader && f6Loader.status === 'resolved' && f6Loader.target === './loader.mjs' &&
+      !!f6Dynamic && f6Dynamic.status === 'unresolved',
+    JSON.stringify({ f6Import, f6Loader, f6Dynamic }));
+
+  const f7BeforeDefinition = adapter.scanDependencyTargets('f; f(){ node ./later.cjs; }');
+  const f7BranchDefinition = adapter.scanDependencyTargets(
+    'if false; then f(){ node ./inside.cjs; }; fi; f');
+  const f7BeforeProd = f7BeforeDefinition.targets.some(
+    (x) => x.expression === './later.cjs' && x.reachability === 'production');
+  const f7BranchProd = f7BranchDefinition.targets.some(
+    (x) => x.expression === './inside.cjs' && x.reachability === 'production');
+  check('R16a-fix3 F7 function definitions are registered in reachable source order',
+    !f7BeforeProd && !f7BranchProd,
+    JSON.stringify({ before: f7BeforeDefinition.targets, branch: f7BranchDefinition.targets }));
+
+  const f8Delegated = [
+    'node(){ :; }; command node ./command-real.cjs',
+    'node(){ :; }; env node ./env-real.cjs',
+    'node(){ :; }; exec node ./exec-real.cjs',
+    'node(){ :; }; nohup node ./nohup-real.cjs',
+    'node(){ :; }; nice node ./nice-real.cjs',
+    'node(){ :; }; timeout 1 node ./timeout-real.cjs',
+    'node(){ :; }; stdbuf -oL node ./stdbuf-real.cjs',
+  ].map((sourceText) => ({
+    source: sourceText,
+    got: target(adapter.scanDependencyTargets(sourceText), (x) => x.kind === 'node-script'),
+  }));
+  const f8Builtin = adapter.scanDependencyTargets('builtin node ./not-a-builtin.cjs');
+  check('R16a-fix3 F8 delegated wrappers bypass the shell function table and builtin rejects non-builtins',
+    f8Delegated.every((row) => row.got && row.got.status === 'resolved') &&
+      !f8Builtin.targets.some((x) => x.expression === './not-a-builtin.cjs'),
+    JSON.stringify({ f8Delegated, builtin: f8Builtin.targets }));
+
+  const f9SyntheticFiles = [{
+    file: 'guards/synthetic-path-join-projector.cjs',
+    text: "require(path.join(__dirname, '..', 'scripts', 'private', 'p2-bash-ast-js', 'projector.cjs'));",
+  }, {
+    file: 'guards/synthetic-path-join-target-rules.cjs',
+    text: "require(path.join(__dirname, '..', 'scripts', 'private', 'p2-bash-ast-js', 'target-rules.cjs'));",
+  }];
+  const f9PathJoinSynthetic = repositoryPrivateEntryViolations(ROOT, f9SyntheticFiles);
+  const f9LegacyRe = /require\s*\(\s*(['"])([^'"]*(?:projector|target-rules)\.cjs)\1\s*\)/g;
+  const f9LegacyHits = f9SyntheticFiles.flatMap((item) =>
+    [...item.text.matchAll(f9LegacyRe)].map((match) => ({ file: item.file, target: match[2] })));
+  check('R16a-fix3 F9 repository entry check catches constructed projector/target-rules paths',
+    f9PathJoinSynthetic.length === 2 && f9LegacyHits.length === 0,
+    JSON.stringify({ fixed: f9PathJoinSynthetic, legacy: f9LegacyHits }));
+
+  const bracketWord = adapter.parseShellV2('[ -n "$X" ]').commands[0].words[0];
+  const bracketScan = adapter.scanDependencyTargets('[ -n "$X" ]');
+  check('R16a-fix3 standalone [ does not create a glob-derived command-name unresolved record',
+    bracketWord.source === '[' &&
+      !bracketScan.targets.some((x) => x.kind === 'command-name' && x.expression === '['),
+    JSON.stringify({ bracketWord, targets: bracketScan.targets }));
+
   const envelopeVersionMutant = JSON.parse(JSON.stringify(success));
   envelopeVersionMutant.protocolVersion++;
   expectCode(
@@ -871,13 +1036,13 @@ try {
       })(root, '');
     }
     const violations = [];
-    const re = /require\s*\(\s*(['"])([^'"]*(?:projector|target-rules)\.cjs)\1\s*\)/g;
+    const privateNameRe = /(?:projector|target-rules)\.cjs/g;
     for (const item of files) {
       if (item.file === 'scripts/private/p2-bash-ast-js/adapter.cjs' ||
           item.file.startsWith('tests/')) continue;
       let match;
-      while ((match = re.exec(item.text)) !== null) {
-        violations.push({ file: item.file, target: match[2] });
+      while ((match = privateNameRe.exec(item.text)) !== null) {
+        violations.push({ file: item.file, target: match[0] });
       }
     }
     return violations;
@@ -903,5 +1068,5 @@ try {
   fs.rmSync(T, { recursive: true, force: true });
 }
 
-console.log('P2-BASH-AST-V2-SELFTEST ' + JSON.stringify({ pass, fail }));
+console.log('P2-BASH-AST-V2-SELFTEST ' + JSON.stringify({ pass, fail, skip, skipReasons }));
 if (fail) process.exit(1);
