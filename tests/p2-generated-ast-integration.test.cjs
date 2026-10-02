@@ -26,6 +26,12 @@ const sharedExe = path.join(parserDir, ...A.EXE_REL.split('/'));
 const sharedLock = JSON.parse(fs.readFileSync(path.join(parserDir, 'helper.lock.json'), 'utf8'));
 const privateParserHelperAvailable = fs.existsSync(sharedExe);
 const privateParserSkipReason = 'generated-parser-helper-missing';
+const privateParserHelperRequired = process.env.AXMEM_REQUIRE_GO_HELPER === '1';
+const privateParserRequiredMissingReason = 'generated-parser-helper-required-missing';
+const unavailablePrivateParserCheck = (name) => {
+  if (privateParserHelperRequired) check(name, false, privateParserRequiredMissingReason);
+  else skipCheck(name, privateParserSkipReason);
+};
 const inspect = (text, marker = 'END', variable = 'tmp') =>
   F.inspectLiteralGeneratedArtifact('guards/gen.sh', Buffer.from(text), { marker, variable });
 const expectError = (name, text, code) => {
@@ -121,7 +127,7 @@ expectError('duplicate marker',
     'wrong stmt association',
     'duplicate marker',
   ];
-  for (const name of helperDependentParserChecks) skipCheck(name, privateParserSkipReason);
+  for (const name of helperDependentParserChecks) unavailablePrivateParserCheck(name);
 }
 
 const sourceLockSpecs = [
@@ -182,6 +188,18 @@ check('shared helper starts at locked hash', sharedBefore === sharedLock.executa
     runSandboxError(box, 'generated-parser-helper-hash');
   } finally { fs.rmSync(box.root, { recursive: true, force: true }); }
 }
+const sharedAfter = sha256(fs.readFileSync(sharedExe));
+check('shared helper unchanged after isolation negatives',
+  sharedAfter === sharedBefore && sharedAfter === sharedLock.executableSha256,
+  JSON.stringify({ before: sharedBefore, after: sharedAfter }));
+} else {
+  for (const name of [
+    'shared helper starts at locked hash',
+    'generated-parser-helper-hash',
+    'shared helper unchanged after isolation negatives',
+  ]) unavailablePrivateParserCheck(name);
+}
+
 {
   const badHelper = process.env.AXMEM_R6A_BAD_OUTPUT_HELPER;
   if (!badHelper || !fs.existsSync(badHelper)) {
@@ -202,18 +220,6 @@ check('shared helper starts at locked hash', sharedBefore === sharedLock.executa
   }
 }
 
-const sharedAfter = sha256(fs.readFileSync(sharedExe));
-check('shared helper unchanged after isolation negatives',
-  sharedAfter === sharedBefore && sharedAfter === sharedLock.executableSha256,
-  JSON.stringify({ before: sharedBefore, after: sharedAfter }));
-} else {
-  for (const name of [
-    'shared helper starts at locked hash',
-    'generated-parser-helper-hash',
-    'generated-parser-output-json',
-    'shared helper unchanged after isolation negatives',
-  ]) skipCheck(name, privateParserSkipReason);
-}
-
-console.log('SUMMARY ' + JSON.stringify({ pass, fail, skip, total: pass + fail + skip, skipReasons }));
+const summary = JSON.stringify({ pass, fail, skip, total: pass + fail + skip, skipReasons });
+console.log('SUMMARY ' + summary + (skip > 0 ? ' ' + skip + ' skipped' : ''));
 if (fail) process.exit(1);

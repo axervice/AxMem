@@ -36,6 +36,12 @@ function clone(x) { return JSON.parse(JSON.stringify(x)); }
 const privateParserHelperPath = path.join(__dirname, '..', 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
 const privateParserHelperAvailable = fs.existsSync(privateParserHelperPath);
 const privateParserSkipReason = 'generated-parser-helper-missing';
+const privateParserHelperRequired = process.env.AXMEM_REQUIRE_GO_HELPER === '1';
+const privateParserRequiredMissingReason = 'generated-parser-helper-required-missing';
+function unavailablePrivateParserCheck(name) {
+  if (privateParserHelperRequired) check(name, false, privateParserRequiredMissingReason);
+  else skipCheck(name, privateParserSkipReason);
+}
 function localHookIdentity(h) {
   return JSON.stringify([h.event, h.groupIndex, h.hookIndex, h.matcher === undefined ? null : h.matcher, h.command, h.timeout === undefined ? null : h.timeout]);
 }
@@ -2036,7 +2042,7 @@ try {
       'G1 generated content missing static dependency is rejected',
       'G1 artifact-verified evidence alone does not mark formal execution dependency closed',
     ];
-    for (const name of helperDependentChecks) skipCheck(name, privateParserSkipReason);
+    for (const name of helperDependentChecks) unavailablePrivateParserCheck(name);
   }
 
   const fixtureCommands = freeze.hooks.map((h) => h.command).join('\n');
@@ -2049,5 +2055,6 @@ try {
   try { fs.rmSync(T, { recursive: true, force: true }); } catch {}
 }
 
-console.log('P2-MACHINE-ACCEPTANCE ' + JSON.stringify({ pass, fail, skip, skipReasons }));
+const machineSummary = JSON.stringify({ pass, fail, skip, skipReasons });
+console.log('P2-MACHINE-ACCEPTANCE ' + machineSummary + (skip > 0 ? ' ' + skip + ' skipped' : ''));
 process.exit(fail ? 1 : 0);

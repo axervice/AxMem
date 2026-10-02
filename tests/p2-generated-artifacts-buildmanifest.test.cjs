@@ -21,6 +21,12 @@ function skipCheck(name, reason) {
 const privateParserHelperPath = path.join(__dirname, '..', 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
 const privateParserHelperAvailable = fs.existsSync(privateParserHelperPath);
 const privateParserSkipReason = 'generated-parser-helper-missing';
+const privateParserHelperRequired = process.env.AXMEM_REQUIRE_GO_HELPER === '1';
+const privateParserRequiredMissingReason = 'generated-parser-helper-required-missing';
+function unavailablePrivateParserCheck(name) {
+  if (privateParserHelperRequired) check(name, false, privateParserRequiredMissingReason);
+  else skipCheck(name, privateParserSkipReason);
+}
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 function git(root, args) {
   return cp.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -128,7 +134,7 @@ if (privateParserHelperAvailable) {
   } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
 } else {
   for (const name of ['verified record reaches manifest', 'manifest record is verifier output', 'verified hash bound to frozen generator']) {
-    skipCheck(name, privateParserSkipReason);
+    unavailablePrivateParserCheck(name);
   }
   const fx = makeFixture();
   try {
@@ -194,8 +200,9 @@ if (privateParserHelperAvailable) {
     inv.files.find((x) => x.path === 'generator.sh').unresolvedDependencies = [];
   }, 'dependency-unresolved-dynamic');
 } else {
-  skipCheck('generated evidence cannot waive unresolved dependency review', privateParserSkipReason);
+  unavailablePrivateParserCheck('generated evidence cannot waive unresolved dependency review');
 }
 
-console.log('SUMMARY ' + JSON.stringify({ pass, fail, skip, total: pass + fail + skip, skipReasons }));
+const summary = JSON.stringify({ pass, fail, skip, total: pass + fail + skip, skipReasons });
+console.log('SUMMARY ' + summary + (skip > 0 ? ' ' + skip + ' skipped' : ''));
 if (fail) process.exit(1);
