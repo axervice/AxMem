@@ -125,7 +125,7 @@ try {
   const r15eCaseInventory = JSON.parse(JSON.stringify(inventory));
   r15eCaseInventory.files.push(Object.assign({}, r15eCaseInventory.files[0], { path: 'guards/GATE.cjs' }));
   let r15eCaseInventoryErr = null;
-  try { freeze.validateInventory(r15eCaseInventory, freeze.flattenHooks(settings), '.claude'); }
+  try { freeze.validateInventory(r15eCaseInventory, freeze.flattenHooks(settings), live); }
   catch (e) { r15eCaseInventoryErr = e; }
   check('R15e H15 inventory files reject paths that differ only by case',
     r15eCaseInventoryErr && r15eCaseInventoryErr.code === 'bad-inventory'
@@ -293,6 +293,31 @@ try {
     r15eQuotedEnvWhitespaceErr && r15eQuotedEnvWhitespaceErr.code === 'bad-inventory'
       && r15eQuotedEnvWhitespaceErr.detail && r15eQuotedEnvWhitespaceErr.detail.reason === 'inner-command-does-not-match-outer',
     JSON.stringify({ code: r15eQuotedEnvWhitespaceErr && r15eQuotedEnvWhitespaceErr.code, detail: r15eQuotedEnvWhitespaceErr && r15eQuotedEnvWhitespaceErr.detail }));
+
+  const r15eNonBlankWhitespaceCases = [
+    ['LF', '\n'], ['CR', '\r'], ['VT', '\v'], ['FF', '\f'], ['NEL', '\u0085'], ['NBSP', '\u00a0'], ['LINE-SEPARATOR', '\u2028'],
+  ];
+  for (const [name, ws] of r15eNonBlankWhitespaceCases) {
+    let err = null;
+    try {
+      freeze.normalizeRuntimeHealthProbe({
+        command: 'node' + ws + '"C:/Users/jax-x/.claude/x.cjs" || exit 0',
+        runtimeHealthProbe: { version: 1, innerCommand: 'node "C:/Users/jax-x/.claude/x.cjs"', reliable: true, notes: 'R15e v2.15 non-blank whitespace negative' },
+      }, 'R15e-v2.15/non-blank-' + name);
+    } catch (e) { err = e; }
+    check('R15e v2.15 rejects unquoted non-blank whitespace: ' + name,
+      err && err.code === 'bad-inventory' && err.detail && err.detail.reason === 'unquoted-non-blank-whitespace',
+      JSON.stringify({ code: err && err.code, detail: err && err.detail }));
+  }
+  let r15eBlankWhitespaceErr = null;
+  try {
+    freeze.normalizeRuntimeHealthProbe({
+      command: '\t node\t "C:/Users/jax-x/.claude/x.cjs"\t ||\t exit\t 0 ',
+      runtimeHealthProbe: { version: 1, innerCommand: ' node\t"C:/Users/jax-x/.claude/x.cjs" ', reliable: true, notes: 'R15e v2.15 bash blanks positive' },
+    }, 'R15e-v2.15/blanks');
+  } catch (e) { r15eBlankWhitespaceErr = e; }
+  check('R15e v2.15 still collapses unquoted space and tab bash blanks',
+    !r15eBlankWhitespaceErr, JSON.stringify(r15eBlankWhitespaceErr && { code: r15eBlankWhitespaceErr.code, detail: r15eBlankWhitespaceErr.detail }));
 
   let c2UnsupportedMatcherErr = null;
   try { freeze.flattenHooks({ hooks: { UserPromptSubmit: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo never' }] }] } }); }

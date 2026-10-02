@@ -412,37 +412,42 @@ function findBash() {
 
 function bashInterpreterProvenance() {
   const executable = findBash();
-  let resolved = executable;
-  if (path.win32.isAbsolute(executable) || path.posix.isAbsolute(executable)) {
-    try { resolved = fs.realpathSync.native(executable); }
-    catch { resolved = path.resolve(executable); }
-  } else {
-    const probe = cp.spawnSync(executable, ['-lc', 'printf "%s\\n" "$BASH"'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
+  const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-equiv-bash-provenance-'));
+  try {
+    const env = isolatedEnv(sandboxHome, null);
+    let resolved = executable;
+    if (path.win32.isAbsolute(executable) || path.posix.isAbsolute(executable)) {
+      try { resolved = fs.realpathSync.native(executable); }
+      catch { resolved = path.resolve(executable); }
+    } else {
+      const probe = spawnSyncSandboxed(executable, ['--noprofile', '--norc', '-c', 'printf "%s\\n" "$BASH"'], {
+        cwd: sandboxHome, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
+      });
+      const candidate = String(probe.stdout || '').split(/\r?\n/).find((x) => x.trim());
+      if (probe.error || probe.signal || probe.status !== 0 || !candidate
+          || (!path.win32.isAbsolute(candidate.trim()) && !path.posix.isAbsolute(candidate.trim()))) {
+        throw new EquivInfrastructureError('bash-provenance-failed', 'cannot resolve bash interpreter path', {
+          executable, status: probe.status, signal: probe.signal || null,
+          cause: probe.error ? String(probe.error.message || probe.error) : String(probe.stderr || '').trim(),
+        });
+      }
+      resolved = candidate.trim();
+    }
+    const version = spawnSyncSandboxed(executable, ['--version'], {
+      cwd: sandboxHome, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
     });
-    const candidate = String(probe.stdout || '').split(/\r?\n/).find((x) => x.trim());
-    if (probe.error || probe.signal || probe.status !== 0 || !candidate
-        || (!path.win32.isAbsolute(candidate.trim()) && !path.posix.isAbsolute(candidate.trim()))) {
-      throw new EquivInfrastructureError('bash-provenance-failed', 'cannot resolve bash interpreter path', {
-        executable, status: probe.status, signal: probe.signal || null,
-        cause: probe.error ? String(probe.error.message || probe.error) : String(probe.stderr || '').trim(),
+    const versionFirstLine = String(version.stdout || '').split(/\r?\n/).find((x) => x.trim()) || '';
+    if (version.error || version.signal || version.status !== 0 || !versionFirstLine) {
+      throw new EquivInfrastructureError('bash-provenance-failed', 'cannot record bash --version provenance', {
+        executable, resolvedPath: resolved, status: version.status, signal: version.signal || null,
+        cause: version.error ? String(version.error.message || version.error) : String(version.stderr || '').trim(),
       });
     }
-    resolved = candidate.trim();
+    return { path: posix(resolved), versionFirstLine: versionFirstLine.trim() };
+  } finally {
+    try { fs.rmSync(sandboxHome, { recursive: true, force: true }); } catch {}
   }
-  const version = cp.spawnSync(executable, ['--version'], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000,
-  });
-  const versionFirstLine = String(version.stdout || '').split(/\r?\n/).find((x) => x.trim()) || '';
-  if (version.error || version.signal || version.status !== 0 || !versionFirstLine) {
-    throw new EquivInfrastructureError('bash-provenance-failed', 'cannot record bash --version provenance', {
-      executable, resolvedPath: resolved, status: version.status, signal: version.signal || null,
-      cause: version.error ? String(version.error.message || version.error) : String(version.stderr || '').trim(),
-    });
-  }
-  return { path: posix(resolved), versionFirstLine: versionFirstLine.trim() };
 }
-
 const GIT_LOCAL_ENV_VARS_STATIC = [
   'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT',
   'GIT_OBJECT_DIRECTORY', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE',
@@ -811,7 +816,9 @@ function validateInventoryBinding(freeze, axmemRepoRoot, settingsHooks, sourceRe
 
   let validated;
   const liveRelativePath = safeRel(freeze.source.liveRelativePath);
-  try { validated = freezeTool.validateInventory(inv, settingsHooks, liveRelativePath); }
+  if (!sourceRepoRoot) throw new EquivInfrastructureError('freeze-source-repo-missing', 'source repository root is required for inventory entry binding');
+  const liveRoot = path.join(path.resolve(sourceRepoRoot), ...liveRelativePath.split('/'));
+  try { validated = freezeTool.validateInventory(inv, settingsHooks, liveRoot); }
   catch (e) { throw new EquivInfrastructureError('freeze-inventory-validation-failed', 'p2-freeze validateInventory rejected the pinned inventory', { commit: freeze.inventoryCommit, path: rel, freezeCode: e && e.code ? String(e.code) : null, cause: String(e && e.message || e), freezeDetail: e && e.detail ? e.detail : null }); }
   const invByIdentity = validated.inventoryHooks;
   const fields = ['disposition', 'files', 'implementation', 'notes', 'externalDependencies', 'businessExitCodes', 'runtimeHealthProbe'];
@@ -907,6 +914,12 @@ function preflightHookSources(freeze, h, sandboxSource, env, logicalId, timeoutM
     const entryInfo = freezeTool.reviewedInnerCommandInfo(h.runtimeHealthProbe.innerCommand, logicalId);
     entryRel = freezeTool.entryRelativeToLiveRoot(entryInfo.entryPath, sourceRoot, logicalId);
     entrySourceType = entryInfo.interpreter === 'node' ? 'js' : 'shell';
+    if (!new Set(h.files.map(safeRel)).has(entryRel)) {
+      throw new EquivInfrastructureError('hook-source-entry-binding-invalid', 'reviewed hook entry must be declared in this hook files[] at execution preflight', {
+        logicalId, entryPath: entryInfo.entryPath, entryRelativePath: entryRel,
+        files: h.files.map(safeRel), reason: 'inner-command-entry-not-in-files',
+      });
+    }
   } catch (e) {
     throw new EquivInfrastructureError('hook-source-entry-binding-invalid', 'cannot bind reviewed hook entry for source preflight', { logicalId, cause: String(e && e.message || e), detail: e && e.detail ? e.detail : null });
   }

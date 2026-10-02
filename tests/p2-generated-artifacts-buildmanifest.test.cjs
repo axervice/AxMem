@@ -7,11 +7,20 @@ const cp = require('child_process');
 const crypto = require('crypto');
 const F = require('../scripts/p2-freeze.cjs');
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
+const skipReasons = {};
 function check(name, ok, detail = '') {
   console.log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? ' :: ' + detail : ''));
   ok ? pass++ : fail++;
 }
+function skipCheck(name, reason) {
+  console.log('SKIP ' + name + ' :: ' + reason);
+  skip++;
+  skipReasons[reason] = (skipReasons[reason] || 0) + 1;
+}
+const privateParserHelperPath = path.join(__dirname, '..', 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
+const privateParserHelperAvailable = fs.existsSync(privateParserHelperPath);
+const privateParserSkipReason = 'generated-parser-helper-missing';
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 function git(root, args) {
   return cp.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -30,7 +39,19 @@ const generatorText = [
 
 function makeBaseInventory() {
   const generator = Buffer.from(generatorText);
-  const actual = F.inspectLiteralGeneratedArtifact('generator.sh', generator, { variable: 'tmp', marker: 'GEN_EOF' });
+  const body = Buffer.from('console.log("ok");\n');
+  const callExpression = 'node "$tmp"';
+  const generatedRecord = {
+    version: 1,
+    id: 'generated-main',
+    generatorPath: 'generator.sh',
+    generatorSha256: sha256(generator),
+    heredoc: {
+      variable: 'tmp', marker: 'GEN_EOF', startLine: 3, endLine: 5,
+      bodyBytes: body.length, bodySha256: sha256(body), bodyEndsWithLf: true,
+    },
+    call: { line: 6, expression: callExpression, lineSha256: sha256(Buffer.from(callExpression, 'utf8')) },
+  };
   return {
     version: 1,
     settingsJson: 'settings.json',
@@ -54,15 +75,7 @@ function makeBaseInventory() {
     externalDependencies: [],
     auditEvidence: ['synthetic R9 generated-artifact buildManifest fixture'],
     allowedDifferences: [],
-    generatedArtifacts: [{
-      version: 1,
-      id: 'generated-main',
-      generatorPath: 'generator.sh',
-      generatorSha256: actual.generatorSha256,
-      heredoc: { ...actual.heredoc },
-      call: { ...actual.call },
-      untrustedClaim: 'must-not-survive-normalization',
-    }],
+    generatedArtifacts: [{ ...generatedRecord, untrustedClaim: 'must-not-survive-normalization' }],
   };
 }
 
@@ -103,7 +116,7 @@ function expectError(name, mutate, code) {
   check(name, got === code, 'got=' + got);
 }
 
-{
+if (privateParserHelperAvailable) {
   const fx = makeFixture();
   try {
     const m = runBuild(fx);
@@ -111,6 +124,17 @@ function expectError(name, mutate, code) {
     check('verified record reaches manifest', Array.isArray(g) && g.length === 1 && g[0].id === 'generated-main');
     check('manifest record is verifier output', g[0].status === 'artifact-verified' && g[0].executionClosed === false && !Object.prototype.hasOwnProperty.call(g[0], 'untrustedClaim'));
     check('verified hash bound to frozen generator', g[0].generatorSha256 === sha256(fs.readFileSync(path.join(fx.live, 'generator.sh'))));
+    check('existing manifest schema unchanged', m.schema === 'axmem-p2-freeze/v1' && Array.isArray(m.sourceFiles) && Array.isArray(m.hooks));
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+} else {
+  for (const name of ['verified record reaches manifest', 'manifest record is verifier output', 'verified hash bound to frozen generator']) {
+    skipCheck(name, privateParserSkipReason);
+  }
+  const fx = makeFixture();
+  try {
+    const inv = structuredClone(fx.inventory);
+    inv.generatedArtifacts = [];
+    const m = runBuild(fx, inv);
     check('existing manifest schema unchanged', m.schema === 'axmem-p2-freeze/v1' && Array.isArray(m.sourceFiles) && Array.isArray(m.hooks));
   } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
 }
@@ -165,9 +189,13 @@ expectError('bad record field type rejected', (inv) => {
   inv.generatedArtifacts[0].heredoc.bodyBytes = '17';
 }, 'generated-artifact-bad-record');
 
-expectError('generated evidence cannot waive unresolved dependency review', (inv) => {
-  inv.files.find((x) => x.path === 'generator.sh').unresolvedDependencies = [];
-}, 'dependency-unresolved-dynamic');
+if (privateParserHelperAvailable) {
+  expectError('generated evidence cannot waive unresolved dependency review', (inv) => {
+    inv.files.find((x) => x.path === 'generator.sh').unresolvedDependencies = [];
+  }, 'dependency-unresolved-dynamic');
+} else {
+  skipCheck('generated evidence cannot waive unresolved dependency review', privateParserSkipReason);
+}
 
-console.log('SUMMARY ' + JSON.stringify({ pass, fail, total: pass + fail }));
+console.log('SUMMARY ' + JSON.stringify({ pass, fail, skip, total: pass + fail + skip, skipReasons }));
 if (fail) process.exit(1);

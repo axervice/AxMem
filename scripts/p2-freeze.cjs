@@ -725,28 +725,38 @@ function normalizeBusinessExitContract(h, label) {
   return { businessExitCodes: codes };
 }
 
-function normalizeCommandWhitespace(value) {
+function normalizeCommandWhitespace(value, label, field = 'runtimeHealthProbe.innerCommand') {
   const input = String(value === undefined || value === null ? '' : value);
   let out = '';
   let quoted = false;
   let pendingSpace = false;
+  let offset = 0;
   for (const ch of input) {
     if (ch === '"') {
       if (!quoted && pendingSpace && out) out += ' ';
       pendingSpace = false;
       out += ch;
       quoted = !quoted;
+      offset += ch.length;
       continue;
     }
-    if (!quoted && /\s/.test(ch)) {
+    if (!quoted && (ch === ' ' || ch === '\t')) {
       if (out) pendingSpace = true;
+      offset += ch.length;
       continue;
+    }
+    if (!quoted && (/\s/u.test(ch) || /\p{White_Space}/u.test(ch))) {
+      throw new FreezeError('bad-inventory', String(label || 'hook') + ' contains non-blank whitespace outside double quotes', {
+        field, label: String(label || 'hook'), reason: 'unquoted-non-blank-whitespace',
+        offset, codePoint: 'U+' + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0'),
+      });
     }
     if (!quoted && pendingSpace) {
       out += ' ';
       pendingSpace = false;
     }
     out += ch;
+    offset += ch.length;
   }
   return out;
 }
@@ -758,8 +768,8 @@ const REVIEWED_INNER_ENV_WORD_RE = /^[A-Za-z0-9._/:-]+$/;
 const REVIEWED_INNER_QUOTED_RE = /^"[^"$\x60\\]*"$/;
 const REVIEWED_INNER_SHELL_SYNTAX_RE = /(?:\|\||&&|[;|&(){}!\x60#<]|\$\()/;
 
-function reviewedInnerTokens(command) {
-  const input = normalizeCommandWhitespace(command);
+function reviewedInnerTokens(command, label) {
+  const input = normalizeCommandWhitespace(command, label, 'runtimeHealthProbe.innerCommand');
   const tokens = [];
   let token = '';
   let quoted = false;
@@ -798,7 +808,7 @@ function reviewedInnerSyntaxError(label, input, tokenIndex, token, reason) {
 }
 
 function validateReviewedInnerSimpleCommand(command, label) {
-  const parsed = reviewedInnerTokens(command);
+  const parsed = reviewedInnerTokens(command, label);
   const tokens = parsed.tokens;
   if (parsed.error) {
     reviewedInnerSyntaxError(label, parsed.input, parsed.error.tokenIndex, parsed.error.token, parsed.error.reason);
@@ -884,30 +894,8 @@ function entryRelativeToLiveRoot(entryPath, liveRoot, label) {
   return safeRelativeFile(target.slice(root.length + 1));
 }
 
-function entryRelativeToDeclaredLiveRoot(entryPath, liveRelativePath, label) {
-  if (typeof liveRelativePath !== 'string' || !liveRelativePath.trim()) {
-    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe entry binding requires freeze.source.liveRelativePath', {
-      field: 'runtimeHealthProbe.innerCommand', label, entryPath, reason: 'entry-live-root-missing',
-    });
-  }
-  const declared = safeRelativeFile(posix(liveRelativePath));
-  const target = normalizePortableBindingPath(entryPath);
-  const absolute = /^[A-Za-z]:\//.test(target) || target.startsWith('/');
-  const fold = process.platform === 'win32' ? (x) => x.toLowerCase() : (x) => x;
-  const marker = '/' + declared + '/';
-  const markerIndex = absolute ? fold(target).lastIndexOf(fold(marker)) : -1;
-  if (!target || markerIndex < 0) {
-    throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe entry path must be inside the declared live root', {
-      field: 'runtimeHealthProbe.innerCommand', label, entryPath, liveRelativePath: declared, reason: 'entry-path-outside-live-root',
-    });
-  }
-  const entryRel = safeRelativeFile(target.slice(markerIndex + marker.length));
-  const derivedLiveRoot = target.slice(0, markerIndex + 1 + declared.length);
-  return { entryRel, derivedLiveRoot };
-}
-
-function reviewedInnerCommandForOuter(command) {
-  const outer = normalizeCommandWhitespace(command);
+function reviewedInnerCommandForOuter(command, label) {
+  const outer = normalizeCommandWhitespace(command, label, 'command');
   let match = /^(.*\S)\s+\|\|\s+exit\s+0$/.exec(outer);
   let kind = null;
   let inner = outer;
@@ -922,7 +910,7 @@ function reviewedInnerCommandForOuter(command) {
     }
   }
   if (kind) {
-    const nested = reviewedInnerCommandForOuter(inner);
+    const nested = reviewedInnerCommandForOuter(inner, label);
     if (nested.kind) return { outer, inner, kind, multipleTails: true };
   }
   return { outer, inner, kind, multipleTails: false };
@@ -936,8 +924,8 @@ function normalizeRuntimeHealthProbe(h, label) {
   if (typeof p.innerCommand !== 'string' || !p.innerCommand.trim()) {
     throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand must be a non-empty reviewed command');
   }
-  const relation = reviewedInnerCommandForOuter(h.command);
-  const reviewedInner = normalizeCommandWhitespace(p.innerCommand);
+  const relation = reviewedInnerCommandForOuter(h.command, label);
+  const reviewedInner = normalizeCommandWhitespace(p.innerCommand, label, 'runtimeHealthProbe.innerCommand');
   if (!relation.outer) {
     throw new FreezeError('bad-inventory', label + ' runtimeHealthProbe.innerCommand requires a non-empty outer command', {
       field: 'runtimeHealthProbe.innerCommand', label, outerCommand: relation.outer, expectedInnerCommand: relation.inner,
@@ -969,7 +957,7 @@ function normalizeRuntimeHealthProbe(h, label) {
   return { version: 1, innerCommand: p.innerCommand, reliable: p.reliable, notes: p.notes.trim() };
 }
 
-function validateInventory(inv, liveHooks, liveRelativePath) {
+function validateInventory(inv, liveHooks, liveRoot) {
   if (!inv || inv.version !== 1) throw new FreezeError('bad-inventory', 'inventory.version must be 1');
   if (!Array.isArray(inv.hooks) || !Array.isArray(inv.files)) throw new FreezeError('bad-inventory', 'inventory hooks/files must be arrays');
 
@@ -1059,12 +1047,12 @@ function validateInventory(inv, liveHooks, liveRelativePath) {
   }
   for (const check of entryBindingChecks) {
     const entryInfo = reviewedInnerCommandInfo(check.hook.runtimeHealthProbe.innerCommand, check.label);
-    const binding = entryRelativeToDeclaredLiveRoot(entryInfo.entryPath, liveRelativePath, check.label);
-    if (!check.hook.files.includes(binding.entryRel)) {
+    const entryRel = entryRelativeToLiveRoot(entryInfo.entryPath, liveRoot, check.label);
+    if (!check.hook.files.includes(entryRel)) {
       throw new FreezeError('bad-inventory', check.label + ' runtimeHealthProbe entry path must be declared in this hook files[]', {
         field: 'runtimeHealthProbe.innerCommand', label: check.label, entryPath: entryInfo.entryPath,
-        liveRelativePath: safeRelativeFile(posix(liveRelativePath)), derivedLiveRoot: binding.derivedLiveRoot,
-        entryRelativePath: binding.entryRel, files: check.hook.files.slice(), reason: 'inner-command-entry-not-in-files',
+        liveRoot: normalizePortableBindingPath(path.resolve(liveRoot)),
+        entryRelativePath: entryRel, files: check.hook.files.slice(), reason: 'inner-command-entry-not-in-files',
       });
     }
   }
@@ -1124,7 +1112,7 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
     throw new FreezeError('settings-mirror-mismatch', 'live settings hooks do not exactly match tracked mirror: ' + settingsMirrorRel);
   }
   const settingsHookIdentitySha256 = hookIdentitySha256(liveHooks);
-  const { fileMap, inventoryHooks, externalMap, generatedArtifacts } = validateInventory(inv, liveHooks, relLive);
+  const { fileMap, inventoryHooks, externalMap, generatedArtifacts } = validateInventory(inv, liveHooks, live);
   if (!fileMap.has(settingsMirrorRel)) throw new FreezeError('bad-inventory', 'settingsMirror must also appear in files[] so its commit blob is frozen: ' + settingsMirrorRel);
 
   const blobs = new Map();

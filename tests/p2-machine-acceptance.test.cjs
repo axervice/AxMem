@@ -15,10 +15,16 @@ if (process.argv[2] !== '--self-test') {
   process.exit(1);
 }
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skip = 0;
+const skipReasons = {};
 function check(name, ok, detail) {
   if (ok) { console.log('PASS ' + name); pass++; }
   else { console.log('FAIL ' + name + (detail ? ' :: ' + detail : '')); fail++; }
+}
+function skipCheck(name, reason) {
+  console.log('SKIP ' + name + ' :: ' + reason);
+  skip++;
+  skipReasons[reason] = (skipReasons[reason] || 0) + 1;
 }
 function git(cwd, args, options = {}) {
   const root = path.resolve(cwd);
@@ -27,6 +33,9 @@ function git(cwd, args, options = {}) {
 }
 function sha256(b) { return crypto.createHash('sha256').update(b).digest('hex'); }
 function clone(x) { return JSON.parse(JSON.stringify(x)); }
+const privateParserHelperPath = path.join(__dirname, '..', 'scripts', 'private', 'p2-bash-ast', 'bin', 'p2-bash-ast.exe');
+const privateParserHelperAvailable = fs.existsSync(privateParserHelperPath);
+const privateParserSkipReason = 'generated-parser-helper-missing';
 function localHookIdentity(h) {
   return JSON.stringify([h.event, h.groupIndex, h.hookIndex, h.matcher === undefined ? null : h.matcher, h.command, h.timeout === undefined ? null : h.timeout]);
 }
@@ -92,7 +101,7 @@ try {
   const r15eEntryRel = 'guards/r15e-entry-binding.sh';
   const r15eEntryAbs = path.join(live, ...r15eEntryRel.split('/'));
   const r15eEntryMarker = path.join(T, 'r15e-entry-binding.marker');
-  fs.writeFileSync(r15eEntryAbs, '#!/usr/bin/env bash\nif false; then printf x > /tmp/r15e-entry-never; fi\nprintf ran > "' + r15eEntryMarker.replace(/\\/g, '/') + '"\n');
+  fs.writeFileSync(r15eEntryAbs, '#!/usr/bin/env bash\nprintf ran > "' + r15eEntryMarker.replace(/\\/g, '/') + '"\n');
   const r15eHelperRel = 'guards/r15e-entry-helper.sh';
   const r15eHelperAbs = path.join(live, ...r15eHelperRel.split('/'));
   fs.writeFileSync(r15eHelperAbs, '#!/usr/bin/env bash\nprintf helper\n');
@@ -105,6 +114,11 @@ try {
   const r15eBadAwaitRel = 'guards/r15e-bad-await.cjs';
   const r15eBadAwaitAbs = path.join(live, ...r15eBadAwaitRel.split('/'));
   fs.writeFileSync(r15eBadAwaitAbs, 'await 1;\n');
+  const r15eNestedRel = 'nested/.claude/guards/hook.cjs';
+  const r15eNestedAbs = path.join(live, ...r15eNestedRel.split('/'));
+  const r15eNestedMarker = path.join(T, 'r15e-nested-entry.marker');
+  fs.mkdirSync(path.dirname(r15eNestedAbs), { recursive: true });
+  fs.writeFileSync(r15eNestedAbs, "'use strict';\nrequire('fs').writeFileSync(" + JSON.stringify(r15eNestedMarker) + ", 'nested-ran');\n");
   git(repo, ['init', '-q']);
   git(repo, ['add', '.claude']);
   git(repo, ['-c', 'user.name=P2 Machine', '-c', 'user.email=p2@example.invalid', 'commit', '-qm', 'fixture']);
@@ -229,6 +243,41 @@ try {
       && typeof r15eBashProvenance.versionFirstLine === 'string'
       && /bash/i.test(r15eBashProvenance.versionFirstLine),
     JSON.stringify(r15eBashProvenance));
+
+  const r15eProvHome = path.join(T, 'r15e-provenance-parent-home');
+  fs.mkdirSync(r15eProvHome, { recursive: true });
+  const r15eProvProfileMarker = path.join(T, 'r15e-provenance-profile.marker');
+  const r15eProvEnvMarker = path.join(T, 'r15e-provenance-bash-env.marker');
+  const shellPath = (p) => {
+    const s = String(p).replace(/\\/g, '/');
+    const m = /^([A-Za-z]):\/(.*)$/.exec(s);
+    return m ? '/' + m[1].toLowerCase() + '/' + m[2] : s;
+  };
+  fs.writeFileSync(path.join(r15eProvHome, '.bash_profile'), 'printf profile > "' + shellPath(r15eProvProfileMarker) + '"\n');
+  const r15eProvEnvScript = path.join(T, 'r15e-provenance-bash-env.sh');
+  fs.writeFileSync(r15eProvEnvScript, 'printf env > "' + shellPath(r15eProvEnvMarker) + '"\n');
+  const r15eProvKeys = ['AXMEM_EQUIV_BASH', 'BASH_ENV', 'HOME', 'USERPROFILE', 'PATH'];
+  const r15eProvSaved = new Map(r15eProvKeys.map((k) => [k, process.env[k]]));
+  let r15eProvErr = null;
+  try {
+    process.env.AXMEM_EQUIV_BASH = 'bash';
+    process.env.BASH_ENV = shellPath(r15eProvEnvScript);
+    process.env.HOME = r15eProvHome;
+    process.env.USERPROFILE = r15eProvHome;
+    if (process.platform === 'win32') {
+      const gitUsr = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'usr', 'bin');
+      if (fs.existsSync(gitUsr)) process.env.PATH = gitUsr + path.delimiter + String(process.env.PATH || '');
+    }
+    try { runner.runFreezeReport({ freeze, fixture, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live }); }
+    catch (e) { r15eProvErr = e; }
+  } finally {
+    for (const [k, v] of r15eProvSaved.entries()) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+  check('R15e v2.15 bash provenance uses isolated non-login shell without parent profile or BASH_ENV side effects',
+    !fs.existsSync(r15eProvProfileMarker) && !fs.existsSync(r15eProvEnvMarker),
+    JSON.stringify({ error: r15eProvErr && { code: r15eProvErr.code, message: r15eProvErr.message }, profileMarker: fs.existsSync(r15eProvProfileMarker), bashEnvMarker: fs.existsSync(r15eProvEnvMarker) }));
 
   // R15e path-case sweep: FREEZE sourceFiles must also be unique under case folding.
   const r15eCaseFoldFreeze = clone(freeze);
@@ -737,10 +786,76 @@ try {
   const r15eEntryFreeze = bindFreeze(r15eEntryRaw, 'r15e-entry-binding');
   let r15eEntryErr = null;
   try { runner.runCase({ freeze: r15eEntryFreeze, group: focusedGroup, c: { id: 'r15e-entry-binding', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { r15eEntryErr = e; }
-  check('R15e F2 hook entry outside files[] is refused before execution',
-    r15eEntryErr && ['freeze-inventory-validation-failed', 'sandbox-literal-tmp'].includes(r15eEntryErr.code) && !fs.existsSync(r15eEntryMarker),
+  check('R15e F2 hook entry outside files[] is refused specifically by inventory entry binding before execution',
+    r15eEntryErr && r15eEntryErr.code === 'freeze-inventory-validation-failed'
+      && r15eEntryErr.detail && r15eEntryErr.detail.freezeCode === 'bad-inventory'
+      && r15eEntryErr.detail.freezeDetail && r15eEntryErr.detail.freezeDetail.reason === 'inner-command-entry-not-in-files'
+      && !fs.existsSync(r15eEntryMarker),
     JSON.stringify({ code: r15eEntryErr && r15eEntryErr.code, detail: r15eEntryErr && r15eEntryErr.detail, markerExists: fs.existsSync(r15eEntryMarker) }));
   try { fs.rmSync(r15eEntryMarker, { force: true }); } catch {}
+
+  const r15eWhitespaceRaw = clone(freeze);
+  const r15eWhitespaceHook = r15eWhitespaceRaw.hooks[4];
+  r15eWhitespaceHook.command = 'node\n"' + hookAbs.replace(/\\/g, '/') + '" || exit 0';
+  r15eWhitespaceHook.runtimeHealthProbe = {
+    version: 1, innerCommand: command, reliable: true, notes: 'R15e v2.15 newline command relation negative',
+  };
+  const r15eWhitespaceFreeze = bindFreeze(r15eWhitespaceRaw, 'r15e-v215-newline');
+  let r15eWhitespaceErr = null, r15eWhitespaceRun = null;
+  try { r15eWhitespaceRun = runner.runCase({ freeze: r15eWhitespaceFreeze, group: focusedGroup, c: { id: 'r15e-v215-newline', input: { prompt: 'deny' } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15eWhitespaceErr = e; }
+  check('R15e v2.15 runCase rejects unquoted newline as non-blank whitespace before false-health execution',
+    r15eWhitespaceErr && r15eWhitespaceErr.code === 'freeze-inventory-validation-failed'
+      && r15eWhitespaceErr.detail && r15eWhitespaceErr.detail.freezeDetail
+      && r15eWhitespaceErr.detail.freezeDetail.reason === 'unquoted-non-blank-whitespace',
+    JSON.stringify({ code: r15eWhitespaceErr && r15eWhitespaceErr.code, detail: r15eWhitespaceErr && r15eWhitespaceErr.detail, oldRun: r15eWhitespaceRun && { exitCode: r15eWhitespaceRun.exitCode, hookResults: r15eWhitespaceRun.hookResults } }));
+
+  const r15eForeignRaw = clone(freeze);
+  const r15eForeignHook = r15eForeignRaw.hooks.find((h) => h.event === 'PreCompact');
+  const r15eForeignPath = path.join(T, 'foreign', '.claude', 'guards', 'hook.cjs').replace(/\\/g, '/');
+  const r15eForeignCommand = 'node "' + r15eForeignPath + '"';
+  r15eForeignHook.command = r15eForeignCommand;
+  r15eForeignHook.files = [hookRel];
+  r15eForeignHook.runtimeHealthProbe = { version: 1, innerCommand: r15eForeignCommand, reliable: true, notes: 'R15e v2.15 foreign live-root negative' };
+  const r15eForeignFreeze = bindFreeze(r15eForeignRaw, 'r15e-v215-foreign-live-root');
+  let r15eForeignErr = null, r15eForeignRun = null;
+  try { r15eForeignRun = runner.runCase({ freeze: r15eForeignFreeze, group: focusedGroup, c: { id: 'r15e-v215-foreign-root', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15eForeignErr = e; }
+  check('R15e v2.15 inventory binding rejects foreign /.claude/ segment outside the absolute live root',
+    r15eForeignErr && r15eForeignErr.code === 'freeze-inventory-validation-failed'
+      && r15eForeignErr.detail && r15eForeignErr.detail.freezeDetail
+      && r15eForeignErr.detail.freezeDetail.reason === 'entry-path-outside-live-root',
+    JSON.stringify({ code: r15eForeignErr && r15eForeignErr.code, detail: r15eForeignErr && r15eForeignErr.detail, oldRun: r15eForeignRun && { exitCode: r15eForeignRun.exitCode, executedHooks: r15eForeignRun.executedHooks } }));
+
+  try { fs.rmSync(r15eNestedMarker, { force: true }); } catch {}
+  const r15eNestedRaw = clone(freeze);
+  const r15eNestedCommand = 'node "' + r15eNestedAbs.replace(/\\/g, '/') + '"';
+  r15eNestedRaw.hooks[4].command = r15eNestedCommand;
+  r15eNestedRaw.hooks[4].files = [hookRel];
+  r15eNestedRaw.hooks[4].runtimeHealthProbe = { version: 1, innerCommand: r15eNestedCommand, reliable: true, notes: 'R15e v2.15 nested live-root negative' };
+  r15eNestedRaw.sourceFiles.push({ path: r15eNestedRel, sha256: sha256(fs.readFileSync(r15eNestedAbs)), disposition: 'port', dependencies: [], unresolvedDependencies: [], notes: 'nested .claude executed-entry negative' });
+  const r15eNestedFreeze = bindFreeze(r15eNestedRaw, 'r15e-v215-nested-live-root');
+  let r15eNestedErr = null, r15eNestedRun = null;
+  try { r15eNestedRun = runner.runCase({ freeze: r15eNestedFreeze, group: focusedGroup, c: { id: 'r15e-v215-nested-root', input: {} }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); }
+  catch (e) { r15eNestedErr = e; }
+  check('R15e v2.15 nested .claude entry must be the exact relative path under the absolute live root and be in files[]',
+    r15eNestedErr && r15eNestedErr.code === 'freeze-inventory-validation-failed'
+      && r15eNestedErr.detail && r15eNestedErr.detail.freezeDetail
+      && r15eNestedErr.detail.freezeDetail.reason === 'inner-command-entry-not-in-files'
+      && !fs.existsSync(r15eNestedMarker),
+    JSON.stringify({ code: r15eNestedErr && r15eNestedErr.code, detail: r15eNestedErr && r15eNestedErr.detail, markerExists: fs.existsSync(r15eNestedMarker), oldRun: r15eNestedRun && { exitCode: r15eNestedRun.exitCode, executedHooks: r15eNestedRun.executedHooks } }));
+
+  const r15eExecCheckHome = fs.mkdtempSync(path.join(T, 'r15e-v215-exec-entry-'));
+  const r15eExecCheckEnv = runner.isolatedEnv(r15eExecCheckHome, null, { sourceRoot: live, axmemRepoRoot: repo });
+  let r15eExecCheckErr = null, r15eExecCheckResult = null;
+  try { r15eExecCheckResult = runner.preflightHookSources(r15eNestedFreeze, r15eNestedFreeze.hooks[4], live, r15eExecCheckEnv, 'r15e-v215-exec-entry', 5000, live); }
+  catch (e) { r15eExecCheckErr = e; }
+  check('R15e v2.15 execution preflight independently rechecks that the reviewed entry belongs to hook files[]',
+    r15eExecCheckErr && r15eExecCheckErr.code === 'hook-source-entry-binding-invalid'
+      && r15eExecCheckErr.detail && r15eExecCheckErr.detail.detail
+      && r15eExecCheckErr.detail.detail.reason === 'inner-command-entry-not-in-files',
+    JSON.stringify({ code: r15eExecCheckErr && r15eExecCheckErr.code, detail: r15eExecCheckErr && r15eExecCheckErr.detail, oldResult: r15eExecCheckResult }));
+  fs.rmSync(r15eExecCheckHome, { recursive: true, force: true });
 
   // R15e H3++: /tmp scanning is over every materialized source file, even outside every hook closure.
   const r15eOrphanRaw = clone(freeze);
@@ -815,6 +930,19 @@ try {
   const a6CandidateBytes = fs.readFileSync(path.join(a6CandidateRoot, ...a6InventoryRel.split('/')));
   const a6Inventory = JSON.parse(a6CandidateBytes.toString('utf8'));
   a6Inventory.generatedArtifacts = [];
+  const a6Repo = path.join(T, 'r15b-a6-real-inventory-repo');
+  const a6Live = path.join(a6Repo, '.claude');
+  const a6RootHook = a6Inventory.hooks.find((h) => (h.disposition === 'port' || h.disposition === 'replace') && h.runtimeHealthProbe && Array.isArray(h.files) && h.files.length > 0);
+  const a6RootEntry = freezeTool.reviewedInnerCommandInfo(a6RootHook.runtimeHealthProbe.innerCommand, 'r15e-a6-root-rewrite').entryPath.replace(/\\/g, '/');
+  const a6RootSuffix = '/' + a6RootHook.files[0].replace(/\\/g, '/');
+  if (!a6RootEntry.endsWith(a6RootSuffix)) throw new Error('A6 fixture cannot derive original live root from reviewed entry');
+  const a6OriginalLiveRoot = a6RootEntry.slice(0, -a6RootSuffix.length);
+  const a6FixtureLiveRoot = a6Live.replace(/\\/g, '/');
+  const a6RewriteRoot = (value) => typeof value === 'string' ? value.split(a6OriginalLiveRoot).join(a6FixtureLiveRoot) : value;
+  for (const h of a6Inventory.hooks) {
+    h.command = a6RewriteRoot(h.command);
+    if (h.runtimeHealthProbe) h.runtimeHealthProbe.innerCommand = a6RewriteRoot(h.runtimeHealthProbe.innerCommand);
+  }
   const a6AxmemRoot = path.join(T, 'r15d-a6-inventory-repo');
   const a6InventoryAbs = path.join(a6AxmemRoot, ...a6InventoryRel.split('/'));
   fs.mkdirSync(path.dirname(a6InventoryAbs), { recursive: true });
@@ -836,8 +964,6 @@ try {
       runtimeHealthProbe: runnable ? clone(h.runtimeHealthProbe) : null,
     };
   });
-  const a6Repo = path.join(T, 'r15b-a6-real-inventory-repo');
-  const a6Live = path.join(a6Repo, '.claude');
   const a6MirrorRel = a6Inventory.settingsMirror;
   const a6MirrorBytes = Buffer.from(JSON.stringify(settingsForHooks(a6Hooks), null, 2) + '\n');
   const a6SourceFiles = [];
@@ -1522,6 +1648,7 @@ try {
   check('resolved dependency must be explicitly declared', edgeErr === 'dependency-edge-missing', edgeErr);
 
 
+  if (privateParserHelperAvailable) {
   // ---- G1 generated-artifact evidence: temp git repos only; artifact-verified != execution-closed. ----
   const genRepo = path.join(T, 'generated-repo');
   const genLive = path.join(genRepo, '.claude');
@@ -1824,6 +1951,93 @@ try {
   } catch (e) { formalGeneratedErr = e.code; }
   check('G1 artifact-verified evidence alone does not mark formal execution dependency closed',
     formalGeneratedErr === 'dependency-unresolved-dynamic', formalGeneratedErr);
+  } else {
+    // These fail before generated-artifact parsing, so they remain real checks without the Go helper.
+    const noHelperRepo = path.join(T, 'generated-no-helper-early-rejects');
+    const noHelperLive = path.join(noHelperRepo, '.claude');
+    fs.mkdirSync(path.join(noHelperLive, 'guards'), { recursive: true });
+    const noHelperGenPath = 'guards/gen.sh';
+    const noHelperSource = '#!/usr/bin/env bash\nprintf ok\n';
+    fs.writeFileSync(path.join(noHelperLive, ...noHelperGenPath.split('/')), noHelperSource);
+    git(noHelperRepo, ['init', '-q']);
+    git(noHelperRepo, ['add', '.claude']);
+    git(noHelperRepo, ['-c', 'user.name=G1', '-c', 'user.email=g1@example.invalid', 'commit', '-qm', 'no-helper early reject fixture']);
+    const noHelperCommit = git(noHelperRepo, ['rev-parse', 'HEAD']).trim();
+    const noHelperBlob = fs.readFileSync(path.join(noHelperLive, ...noHelperGenPath.split('/')));
+    const noHelperMap = new Map([[noHelperGenPath, { path: noHelperGenPath, dependencies: [], unresolvedDependencies: [] }]]);
+    const noHelperBlobs = new Map([[noHelperGenPath, noHelperBlob]]);
+    const noHelperRecord = {
+      version: 1, id: 'no-helper-early-reject', generatorPath: noHelperGenPath, generatorSha256: sha256(noHelperBlob),
+      heredoc: {}, call: {},
+    };
+
+    let noHelperHashErr = '';
+    try {
+      const bad = clone(noHelperRecord); bad.generatorSha256 = '0'.repeat(64);
+      freezeTool.verifyGeneratedArtifactEvidence({
+        record: bad, fileMap: noHelperMap, repoRoot: noHelperRepo, commit: noHelperCommit, relLive: '.claude', blobs: noHelperBlobs,
+      });
+    } catch (e) { noHelperHashErr = e.code; }
+    check('G1 wrong generator source hash is rejected', noHelperHashErr === 'generated-generator-hash-mismatch', noHelperHashErr);
+
+    let noHelperEscapeErr = '';
+    try {
+      const bad = clone(noHelperRecord); bad.generatorPath = '../escape.sh';
+      freezeTool.verifyGeneratedArtifactEvidence({
+        record: bad, fileMap: noHelperMap, repoRoot: noHelperRepo, commit: noHelperCommit, relLive: '.claude', blobs: noHelperBlobs,
+      });
+    } catch (e) { noHelperEscapeErr = e.code; }
+    check('G1 generator path escape is rejected', noHelperEscapeErr === 'bad-file-path', noHelperEscapeErr);
+
+    const noHelperSyRepo = path.join(T, 'generated-no-helper-symlink');
+    fs.mkdirSync(path.join(noHelperSyRepo, '.claude', 'guards'), { recursive: true });
+    git(noHelperSyRepo, ['init', '-q']);
+    const noHelperSyTarget = 'guards/real.sh\n';
+    const noHelperSyOid = git(noHelperSyRepo, ['hash-object', '-w', '--stdin'], { input: noHelperSyTarget }).trim();
+    git(noHelperSyRepo, ['update-index', '--add', '--cacheinfo', '120000', noHelperSyOid, '.claude/guards/link.sh']);
+    git(noHelperSyRepo, ['-c', 'user.name=G1', '-c', 'user.email=g1@example.invalid', 'commit', '-qm', 'no-helper symlink fixture']);
+    const noHelperSyCommit = git(noHelperSyRepo, ['rev-parse', 'HEAD']).trim();
+    let noHelperSyErr = '';
+    try {
+      const bad = clone(noHelperRecord);
+      bad.generatorPath = 'guards/link.sh';
+      bad.generatorSha256 = sha256(Buffer.from(noHelperSyTarget));
+      freezeTool.verifyGeneratedArtifactEvidence({
+        record: bad,
+        fileMap: new Map([['guards/link.sh', { path: 'guards/link.sh', dependencies: [], unresolvedDependencies: [] }]]),
+        repoRoot: noHelperSyRepo, commit: noHelperSyCommit, relLive: '.claude',
+        blobs: new Map([['guards/link.sh', Buffer.from(noHelperSyTarget)]]),
+      });
+    } catch (e) { noHelperSyErr = e.code; }
+    check('G1 frozen generator symlink is rejected before artifact extraction', noHelperSyErr === 'generated-generator-symlink', noHelperSyErr);
+
+    const helperDependentChecks = [
+      'G1 literal heredoc artifact evidence verifies exact frozen bytes and generated-body dependency candidate',
+      'G1-R2 full verify rejects single-quoted literal redirect target',
+      'G1-R2 full verify rejects comment-only node call',
+      'G1-R2 full verify rejects generated-body-only node pseudo-call',
+      'G1-R2 full verify rejects node pseudo-call inside another heredoc',
+      'G1-R2 full verify rejects echo node argument',
+      'G1-R2 full verify rejects printf node argument',
+      'G1-R2 full verify rejects test node argument',
+      'G1-R2 full verify rejects assignment text containing node target',
+      'G1-R2 full verify rejects node text in redirection operand/argument position',
+      'G1-R6 full verify rejects cross-line quoted node text as non-call',
+      'G1-R2 full verify accepts supported command-position form: plain',
+      'G1-R2 full verify accepts supported command-position form: escaped-command',
+      'G1-R2 full verify accepts supported command-position form: backslash-newline',
+      'G1-R2 full verify accepts supported command-position form: pipeline',
+      'G1-R2 full verify accepts supported command-position form: command-substitution',
+      'G1 call anchor mismatch is rejected',
+      'G1 expanding/unquoted heredoc is rejected',
+      'G1 duplicate heredoc marker definition is rejected',
+      'G1 missing heredoc close marker is rejected',
+      'G1 generated body mutation is rejected even when generator hash field is refreshed',
+      'G1 generated content missing static dependency is rejected',
+      'G1 artifact-verified evidence alone does not mark formal execution dependency closed',
+    ];
+    for (const name of helperDependentChecks) skipCheck(name, privateParserSkipReason);
+  }
 
   const fixtureCommands = freeze.hooks.map((h) => h.command).join('\n');
   check('machine acceptance executes no network-capable fixture commands',
@@ -1835,5 +2049,5 @@ try {
   try { fs.rmSync(T, { recursive: true, force: true }); } catch {}
 }
 
-console.log('P2-MACHINE-ACCEPTANCE ' + JSON.stringify({ pass, fail }));
+console.log('P2-MACHINE-ACCEPTANCE ' + JSON.stringify({ pass, fail, skip, skipReasons }));
 process.exit(fail ? 1 : 0);
