@@ -110,11 +110,11 @@
   },
   "overlayBaselines": {
     "_comment": "MED-3 fix (review FAB-2026-09-25-w11-w12-review.md MED-3): drift-detection baseline for each entry in `overlays` above. Value is the git blob sha of `main`'s OWN tracked file at that same path (`git rev-parse main:<path>`) as of the moment the hand-curated overlay content under publish-overrides/ (or README.public.md etc.) was last reviewed against it. checkOverlayDrift() in scripts/publish-public.cjs recomputes this sha at the start of every export and dies (before archiving/committing anything) if it no longer matches -- the private source at that path moved since the overlay was last reviewed, so the overlay snapshot may now be stale. After reviewing the diff at that path and refreshing the overlay content if needed, re-baseline with: `node scripts/publish-public.cjs --update-overlay-baselines` (rewrites only this section of this manifest; does not run the rest of the export pipeline).",
-    "README.md": "2ab77c2948f213d8cad471180eefb0b09ae77c46",
+    "README.md": "62b4e4891403061a00d1e86d0656772b8eba33f4",
     "README.zh.md": "4925e5f26ae6e6c060bebef13088ed0657c0553f",
     "guards/guard-canary.sh": "ed7844bf4c759d1db7f4a0870c4cc7b8fc62bba7",
     "guards/specs/isolation-gate-contract.json": "a3a8b2025ee0a3c057927ad43f57d76586b6ac08",
-    "CHANGELOG.md": "58c0caca74a929075e50150f072814f3d2b4da79"
+    "CHANGELOG.md": "300fef6eb41537feac6c86bbb369f304cebd0e41"
   },
   "replacements": [
     "_comment: each {file, findFile, replaceFile} pair does an exact, literal, whole-substring find/replace of findFile's content with replaceFile's content inside the exported copy of `file`. required=true (default) fails the export loudly if findFile's exact text is not found -- this is the forcing function that catches upstream drift instead of silently missing it.",

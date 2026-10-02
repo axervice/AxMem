@@ -25,7 +25,7 @@ if [ "${1:-}" != "--self-test" ]; then
 fi
 
 ok=0
-total=2
+total=3
 lines=()
 check() { if [ "$2" -eq 0 ]; then ok=$((ok + 1)); lines+=("  ok   $1"); else lines+=("  FAIL $1"); fi; }
 
@@ -85,6 +85,52 @@ printf '%s' "$out" | grep -q 'self-isolating'
 check "guard actually fired (stderr announced self-isolating under a fresh temp home)" $?
 
 rm -rf "$FAKE_HOME" "$CHILD_TMPROOT"
+
+# A component that ignores TERM must still have a hard upper bound. The inner
+# selftest timeout is 2s and the TERM->KILL grace is 1s; the outer 60s timeout
+# is only a regression guard for the pre-fix behavior, which waited forever
+# after sending TERM. Build a tiny scheduler-only root so this proof exercises
+# bin/axmem's component loop without recursively running the whole repository.
+SCHED_ROOT="$(mktemp -d)"
+SCHED_HOME="$SCHED_ROOT/home"
+mkdir -p "$SCHED_ROOT/bin" "$SCHED_ROOT/lib" "$SCHED_ROOT/lifecycle" "$SCHED_ROOT/adapters" "$SCHED_HOME"
+cp "$ROOT/bin/axmem" "$SCHED_ROOT/bin/axmem"
+cat > "$SCHED_ROOT/lib/prelude.sh" <<'EOF'
+axmem_cfg() { printf '%s' "$2"; }
+: "${AXMEM_STATE_DIR:=$HOME/state}"
+mkdir -p "$AXMEM_STATE_DIR"
+EOF
+cat > "$SCHED_ROOT/lifecycle/restore.cjs" <<'EOF'
+process.exit(0);
+EOF
+cat > "$SCHED_ROOT/adapters/000-ignore-term.sh" <<'EOF'
+#!/usr/bin/env bash
+# --self-test
+trap '' TERM
+sleep 61
+echo ignore-term-finished
+EOF
+sched_out_file="$(mktemp)"
+sched_start="$(date +%s)"
+env HOME="$SCHED_HOME" USERPROFILE="$SCHED_HOME" PMM_HOME="$SCHED_HOME" \
+  AXMEM_HOME="$SCHED_HOME/.axmem" AXMEM_STATE_DIR="$SCHED_HOME/state" \
+  AXMEM_SELFTEST_ISOLATED=1 AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC=2 \
+  AXMEM_SELFTEST_COMPONENT_KILL_AFTER_SEC=1 \
+  timeout -k 2 60 bash "$SCHED_ROOT/bin/axmem" selftest >"$sched_out_file" 2>&1
+sched_rc=$?
+sched_elapsed=$(( $(date +%s) - sched_start ))
+sched_out="$(cat "$sched_out_file")"
+rm -f "$sched_out_file"
+sched_ok=1
+[ "$sched_rc" -eq 1 ] || sched_ok=0
+[ "$sched_elapsed" -lt 30 ] || sched_ok=0
+printf '%s' "$sched_out" | grep -q 'FAIL adapters/000-ignore-term.sh (timed out after 2s' || sched_ok=0
+printf '%s' "$sched_out" | grep -q 'timed out' || sched_ok=0
+check "TERM-ignoring component is forcibly ended after timeout+grace and reported FAIL" $((1 - sched_ok))
+# On the old scheduler the outer 60s guard returns while the fixture's 61s
+# sleep is finishing. Let that owned child retire naturally before cleanup.
+if [ "$sched_rc" -eq 124 ] || [ "$sched_rc" -eq 137 ]; then sleep 2; fi
+rm -rf "$SCHED_ROOT"
 
 printf '%s\n' "${lines[@]}"
 if [ "$ok" -eq "$total" ]; then

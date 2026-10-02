@@ -13,12 +13,7 @@ if (process.argv[2] !== '--self-test') {
 }
 
 const WINDOWS_MACHINE_CHECK_COUNT = 210;
-if (process.platform !== 'win32') {
-  const skipReasons = { 'windows-only-path-semantics': WINDOWS_MACHINE_CHECK_COUNT };
-  const machineSummary = JSON.stringify({ pass: 0, fail: 0, skip: WINDOWS_MACHINE_CHECK_COUNT, skipReasons });
-  console.log('P2-MACHINE-ACCEPTANCE ' + machineSummary + ' ' + WINDOWS_MACHINE_CHECK_COUNT + ' skipped');
-  process.exit(0);
-}
+const IS_WIN32 = process.platform === 'win32';
 
 const runner = require('../scripts/equiv-runner.cjs');
 const equiv = require('../scripts/equiv.cjs');
@@ -499,22 +494,38 @@ try {
   };
 
   const a1Sandbox = path.join(T, 'r15b-a1-sandbox', '.claude');
-  const liveLower = live.replace(/\\/g, '/').toLowerCase();
-  const rewrittenCase = runner.rewriteSourceRoot('node "' + liveLower + '/guards/hook.cjs"', live, a1Sandbox);
-  check('R15b A1 rewrites case-different spelling of the same source root', rewrittenCase.toLowerCase().includes(a1Sandbox.replace(/\\/g, '/').toLowerCase()) && !rewrittenCase.toLowerCase().includes(liveLower));
-  const msysLive = toMsys(live);
-  const rewrittenMsys = runner.rewriteSourceRoot('node "' + msysLive + '/guards/hook.cjs"', live, a1Sandbox);
-  check('R15b A1 rewrites /c/ source-root spelling', !rewrittenMsys.includes(msysLive) && /guards\/hook\.cjs/.test(rewrittenMsys.replace(/\\/g, '/')));
+  const caseRewriteName = 'R15b A1 rewrites case-different spelling of the same source root';
+  if (IS_WIN32) {
+    const liveLower = live.replace(/\\/g, '/').toLowerCase();
+    const rewrittenCase = runner.rewriteSourceRoot('node "' + liveLower + '/guards/hook.cjs"', live, a1Sandbox);
+    check(caseRewriteName, rewrittenCase.toLowerCase().includes(a1Sandbox.replace(/\\/g, '/').toLowerCase()) && !rewrittenCase.toLowerCase().includes(liveLower));
+  } else skipCheck(caseRewriteName, 'windows-only-filesystem-case-insensitive');
+
   let zeroRewriteErr = null;
   try { runner.rewriteSourceRoot('printf no-reviewed-root', live, a1Sandbox); } catch (e) { zeroRewriteErr = e; }
   check('R15b A1 rejects commands with zero source-root replacements', zeroRewriteErr && zeroRewriteErr.code === 'source-root-rewrite-zero' && zeroRewriteErr.detail && zeroRewriteErr.detail.sourceRoot === live, String(zeroRewriteErr && zeroRewriteErr.message));
-  const residualHealth = typeof runner.sourceRootResidual === 'function' && runner.sourceRootResidual('x ' + msysLive + '/guards/hook.cjs', live) === true;
-  check('R15b A1 independent residual detector recognizes /c/ spelling', residualHealth);
-  const cygLive = msysLive.replace(/^\/([A-Za-z])\//, '/cygdrive/$1/');
-  const rewrittenCyg = runner.rewriteSourceRoot('node "' + cygLive + '/guards/hook.cjs"', live, a1Sandbox);
-  check('R15b A1 rewrites /cygdrive/c/ source-root spelling', !rewrittenCyg.includes(cygLive) && /guards\/hook\.cjs/.test(rewrittenCyg.replace(/\\/g, '/')));
-  check('R15b A1 residual detector handles cygdrive and mixed slash spellings', runner.sourceRootResidual('x ' + cygLive.replace(/\//g, '//') + '/guards/hook.cjs', live) === true);
-  const a1Command = 'node "' + toMsys(a1Abs) + '"';
+
+  const msysRewriteName = 'R15b A1 rewrites /c/ source-root spelling';
+  const msysResidualName = 'R15b A1 independent residual detector recognizes /c/ spelling';
+  const cygRewriteName = 'R15b A1 rewrites /cygdrive/c/ source-root spelling';
+  const cygResidualName = 'R15b A1 residual detector handles cygdrive and mixed slash spellings';
+  if (IS_WIN32) {
+    const msysLive = toMsys(live);
+    const rewrittenMsys = runner.rewriteSourceRoot('node "' + msysLive + '/guards/hook.cjs"', live, a1Sandbox);
+    check(msysRewriteName, !rewrittenMsys.includes(msysLive) && /guards\/hook\.cjs/.test(rewrittenMsys.replace(/\\/g, '/')));
+    const residualHealth = typeof runner.sourceRootResidual === 'function' && runner.sourceRootResidual('x ' + msysLive + '/guards/hook.cjs', live) === true;
+    check(msysResidualName, residualHealth);
+    const cygLive = msysLive.replace(/^\/([A-Za-z])\//, '/cygdrive/$1/');
+    const rewrittenCyg = runner.rewriteSourceRoot('node "' + cygLive + '/guards/hook.cjs"', live, a1Sandbox);
+    check(cygRewriteName, !rewrittenCyg.includes(cygLive) && /guards\/hook\.cjs/.test(rewrittenCyg.replace(/\\/g, '/')));
+    check(cygResidualName, runner.sourceRootResidual('x ' + cygLive.replace(/\//g, '//') + '/guards/hook.cjs', live) === true);
+  } else {
+    skipCheck(msysRewriteName, 'windows-only-msys-path-semantics');
+    skipCheck(msysResidualName, 'windows-only-msys-path-semantics');
+    skipCheck(cygRewriteName, 'windows-only-cygdrive-path-semantics');
+    skipCheck(cygResidualName, 'windows-only-cygdrive-path-semantics');
+  }
+  const a1Command = 'node "' + (IS_WIN32 ? toMsys(a1Abs) : a1Abs.replace(/\\/g, '/')) + '"';
   const a1Freeze = bindSingle(4, 'a1-msys-marker', a1Command, [a1Rel]);
   const a1LiveMarker = path.join(path.dirname(a1Abs), 'r15b-a1.marker');
   try { fs.rmSync(a1LiveMarker, { force: true }); } catch {}
@@ -584,7 +595,7 @@ try {
   process.env.PIPE_GATE_FAKE = 'must-be-removed';
   process.env.HOME = r15dParentHome;
   process.env.USERPROFILE = r15dParentHome;
-  process.env.PATH = r15dFakeBin + ';' + String(parentEnvBefore.PATH || '');
+  process.env.PATH = r15dFakeBin + path.delimiter + String(parentEnvBefore.PATH || '');
   process.env.TEMP = a2LureRepo;
   process.env.TMP = a2LureRepo;
   const a2Command = 'node "' + a2Abs.replace(/\\/g, '/') + '"';
@@ -619,40 +630,41 @@ try {
     Array.isArray(a2Run.environmentScrubbedKeys) && r15dExpectedScrubbed.every((k) => a2Run.environmentScrubbedKeys.some((x) => x.toLowerCase() === k.toLowerCase())) && a2Run.environmentScrubbedKeys.every((x) => typeof x === 'string' && !/[\\/=:]/.test(x)),
     JSON.stringify(a2Run.environmentScrubbedKeys));
 
-  // R15e H1++: on win32, inherited environment names are read case-insensitively before copying into an ordinary object.
-  const r15eParentPathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path');
-  const r15eParentPath = r15eParentPathKey ? String(process.env[r15eParentPathKey] || '') : '';
-  const r15eCaseParentHome = path.join(T, 'r15e-case-parent-home');
-  fs.mkdirSync(r15eCaseParentHome, { recursive: true });
-  const r15eEnvCaseProbe = (pathKey, profileKey, label) => {
-    const probeHome = fs.mkdtempSync(path.join(T, 'r15e-env-case-' + label + '-'));
-    const childEnv = Object.assign({}, process.env);
-    for (const k of Object.keys(childEnv)) if (['path', 'userprofile', 'home'].includes(k.toLowerCase())) delete childEnv[k];
-    childEnv[pathKey] = r15eParentPath;
-    childEnv[profileKey] = r15eCaseParentHome;
-    childEnv.R15E_ENV_CASE_LEAK = path.join(r15eCaseParentHome, 'secret');
-    const childCode = [
-      'const r=require(' + JSON.stringify(path.join(__dirname, '..', 'scripts', 'equiv-runner.cjs')) + ');',
-      'const e=r.isolatedEnv(process.argv[1],null);',
-      'console.log(JSON.stringify({PATH:e.PATH,leak:Object.prototype.hasOwnProperty.call(e,"R15E_ENV_CASE_LEAK")?e.R15E_ENV_CASE_LEAK:null,pathKeys:Object.keys(e).filter(k=>k.toLowerCase()==="path")}));',
-    ].join('');
-    const rr = cp.spawnSync(process.execPath, ['-e', childCode, probeHome], { env: childEnv, encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
-    let value = null;
-    try { value = JSON.parse(String(rr.stdout || '').trim()); } catch {}
-    fs.rmSync(probeHome, { recursive: true, force: true });
-    return { status: rr.status, signal: rr.signal, stderr: String(rr.stderr || ''), value };
-  };
-  const r15eEnvUpper = r15eEnvCaseProbe('PATH', 'USERPROFILE', 'upper');
-  const r15eEnvMixed = r15eEnvCaseProbe('Path', 'UserProfile', 'mixed');
-  check('R15e H1++ win32 inherited Path/UserProfile spellings match PATH/USERPROFILE semantics',
-    process.platform !== 'win32' || (
+  // R15e H1++ is specifically about Win32's case-insensitive inherited environment names.
+  const r15eEnvCaseName = 'R15e H1++ win32 inherited Path/UserProfile spellings match PATH/USERPROFILE semantics';
+  if (IS_WIN32) {
+    const r15eParentPathKey = Object.keys(process.env).find((k) => k.toLowerCase() === 'path');
+    const r15eParentPath = r15eParentPathKey ? String(process.env[r15eParentPathKey] || '') : '';
+    const r15eCaseParentHome = path.join(T, 'r15e-case-parent-home');
+    fs.mkdirSync(r15eCaseParentHome, { recursive: true });
+    const r15eEnvCaseProbe = (pathKey, profileKey, label) => {
+      const probeHome = fs.mkdtempSync(path.join(T, 'r15e-env-case-' + label + '-'));
+      const childEnv = Object.assign({}, process.env);
+      for (const k of Object.keys(childEnv)) if (['path', 'userprofile', 'home'].includes(k.toLowerCase())) delete childEnv[k];
+      childEnv[pathKey] = r15eParentPath;
+      childEnv[profileKey] = r15eCaseParentHome;
+      childEnv.R15E_ENV_CASE_LEAK = path.join(r15eCaseParentHome, 'secret');
+      const childCode = [
+        'const r=require(' + JSON.stringify(path.join(__dirname, '..', 'scripts', 'equiv-runner.cjs')) + ');',
+        'const e=r.isolatedEnv(process.argv[1],null);',
+        'console.log(JSON.stringify({PATH:e.PATH,leak:Object.prototype.hasOwnProperty.call(e,"R15E_ENV_CASE_LEAK")?e.R15E_ENV_CASE_LEAK:null,pathKeys:Object.keys(e).filter(k=>k.toLowerCase()==="path")}));',
+      ].join('');
+      const rr = cp.spawnSync(process.execPath, ['-e', childCode, probeHome], { env: childEnv, encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+      let value = null;
+      try { value = JSON.parse(String(rr.stdout || '').trim()); } catch {}
+      fs.rmSync(probeHome, { recursive: true, force: true });
+      return { status: rr.status, signal: rr.signal, stderr: String(rr.stderr || ''), value };
+    };
+    const r15eEnvUpper = r15eEnvCaseProbe('PATH', 'USERPROFILE', 'upper');
+    const r15eEnvMixed = r15eEnvCaseProbe('Path', 'UserProfile', 'mixed');
+    check(r15eEnvCaseName,
       r15eEnvUpper.status === 0 && r15eEnvMixed.status === 0
-      && r15eEnvUpper.value && r15eEnvMixed.value
-      && r15eEnvUpper.value.PATH === r15eEnvMixed.value.PATH
-      && r15eEnvUpper.value.leak === null && r15eEnvMixed.value.leak === null
-      && r15eEnvUpper.value.pathKeys.length === 1 && r15eEnvMixed.value.pathKeys.length === 1
-    ),
-    JSON.stringify({ upper: r15eEnvUpper, mixed: r15eEnvMixed }));
+        && r15eEnvUpper.value && r15eEnvMixed.value
+        && r15eEnvUpper.value.PATH === r15eEnvMixed.value.PATH
+        && r15eEnvUpper.value.leak === null && r15eEnvMixed.value.leak === null
+        && r15eEnvUpper.value.pathKeys.length === 1 && r15eEnvMixed.value.pathKeys.length === 1,
+      JSON.stringify({ upper: r15eEnvUpper, mixed: r15eEnvMixed }));
+  } else skipCheck(r15eEnvCaseName, 'windows-only-env-name-case-insensitive');
 
   const r15dNodeRestoreKey = 'NODE_V8_COVERAGE';
   const r15dNodeRestoreBefore = process.env[r15dNodeRestoreKey];
@@ -685,21 +697,26 @@ try {
   const a3Freeze = bindSingle(4, 'a3-path-guard', a3Command, [a3Rel]);
   const a3WinRootBackslash = '\\Users\\axmem-r15d-outside.txt';
   const a3WinRootSlash = '/Users/axmem-r15d-outside.txt';
-  check('R15d S1 win32 treats single-backslash and single-slash root-relative spellings as absolute',
-    path.win32.isAbsolute(a3WinRootBackslash) && path.win32.isAbsolute(a3WinRootSlash),
-    JSON.stringify({ backslash: path.win32.resolve('C:\\sandbox', a3WinRootBackslash), slash: path.win32.resolve('C:\\sandbox', a3WinRootSlash) }));
+  const a3WinRootName = 'R15d S1 win32 treats single-backslash and single-slash root-relative spellings as absolute';
+  if (IS_WIN32) {
+    check(a3WinRootName,
+      path.win32.isAbsolute(a3WinRootBackslash) && path.win32.isAbsolute(a3WinRootSlash),
+      JSON.stringify({ backslash: path.win32.resolve('C:\\sandbox', a3WinRootBackslash), slash: path.win32.resolve('C:\\sandbox', a3WinRootSlash) }));
+  } else skipCheck(a3WinRootName, 'windows-only-path-semantics');
   const a3Cases = [
-    ['drive', path.join(T, 'outside-drive.txt')],
-    ['msys', toMsys(path.join(T, 'outside-msys.txt'))],
-    ['unc', '\\\\server\\share\\outside.txt'],
-    ['win-root-backslash', a3WinRootBackslash],
-    ['win-root-slash', a3WinRootSlash],
+    ['drive', path.join(T, 'outside-drive.txt'), null],
+    ['msys', IS_WIN32 ? toMsys(path.join(T, 'outside-msys.txt')) : null, 'windows-only-msys-path-semantics'],
+    ['unc', '\\\\server\\share\\outside.txt', 'windows-only-unc-path-semantics'],
+    ['win-root-backslash', a3WinRootBackslash, 'windows-only-backslash-path-semantics'],
+    ['win-root-slash', a3WinRootSlash, 'windows-only-path-semantics'],
   ];
-  for (const [kind, outside] of a3Cases) {
+  for (const [kind, outside, nonWinSkipReason] of a3Cases) {
+    const a3Name = 'R15b A3 rejects ' + kind + ' absolute payload path before any hook executes';
+    if (!IS_WIN32 && nonWinSkipReason) { skipCheck(a3Name, nonWinSkipReason); continue; }
     try { fs.rmSync(a3Marker, { force: true }); } catch {}
     let err = null;
     try { runner.runCase({ freeze: a3Freeze, group: focusedGroup, c: { id: 'a3-' + kind, input: { transcript_path: outside } }, repoRoot: repo, axmemRepoRoot: repo, sourceRoot: live, defaultTimeoutMs: 5000 }); } catch (e) { err = e; }
-    check('R15b A3 rejects ' + kind + ' absolute payload path before any hook executes', err && err.code === 'payload-path-outside-sandbox' && err.detail && err.detail.field === '$.transcript_path' && !fs.existsSync(a3Marker), String(err && err.message));
+    check(a3Name, err && err.code === 'payload-path-outside-sandbox' && err.detail && err.detail.field === '$.transcript_path' && !fs.existsSync(a3Marker), String(err && err.message));
     try { fs.rmSync(a3Marker, { force: true }); } catch {}
   }
 

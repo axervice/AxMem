@@ -266,8 +266,9 @@ npm run doctor
 
 `npm run selftest` runs `bin/axmem selftest`, which discovers and executes
 every component under `core/`, `lib/`, `adapters/**`, `lifecycle/*.cjs`, and
-`tests/` that declares its own `--self-test` (240s timeout per component,
-PASS/SKIP/FAIL reported per component and summarized at the end).
+`tests/` that declares its own `--self-test` (600s timeout per component by default;
+`AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC` overrides it, and `AXMEM_SELFTEST_COMPONENT_KILL_AFTER_SEC`
+controls the 30s TERM-to-KILL grace; PASS/SKIP/FAIL is reported per component and summarized at the end).
 
 Roadmap (Phase 1–3): single-command lifecycle (`install / init / doctor /
 restore`), versioned data contract + migrations, fixture-based CI matrix

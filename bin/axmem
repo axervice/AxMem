@@ -311,11 +311,19 @@ case "${1:-}" in
     _st_out="$(mktemp)"
     trap 'rm -f "$_st_out"' EXIT
     _component_timeout="${AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC:-600}"
+    _component_kill_after="${AXMEM_SELFTEST_COMPONENT_KILL_AFTER_SEC:-30}"
     case "$_component_timeout" in
       ''|*[!0-9]*) echo "axmem selftest: AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC must be a positive integer" >&2; exit 2 ;;
     esac
     if [ "$_component_timeout" -lt 1 ]; then
       echo "axmem selftest: AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC must be a positive integer" >&2
+      exit 2
+    fi
+    case "$_component_kill_after" in
+      ''|*[!0-9]*) echo "axmem selftest: AXMEM_SELFTEST_COMPONENT_KILL_AFTER_SEC must be a positive integer" >&2; exit 2 ;;
+    esac
+    if [ "$_component_kill_after" -lt 1 ]; then
+      echo "axmem selftest: AXMEM_SELFTEST_COMPONENT_KILL_AFTER_SEC must be a positive integer" >&2
       exit 2
     fi
     # [Opus H2, 2026-09-17] Previously took ONE before-snapshot and ONE
@@ -348,8 +356,8 @@ case "${1:-}" in
       count=$((count + 1))
       _rel="${_f#"$ROOT"/}"
       case "$_f" in
-        *.sh)  timeout "$_component_timeout" bash "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
-        *.cjs) timeout "$_component_timeout" node "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
+        *.sh)  timeout -k "$_component_kill_after" "$_component_timeout" bash "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
+        *.cjs) timeout -k "$_component_kill_after" "$_component_timeout" node "$_f" --self-test >"$_st_out" 2>&1; _src_rc=$? ;;
         *)     _src_rc=1; : > "$_st_out" ;;
       esac
       _summary="$(tail -n 1 "$_st_out")"
@@ -384,7 +392,9 @@ case "${1:-}" in
       if [ "$_src_rc" -ne 0 ]; then
         failcount=$((failcount + 1))
         rc=1
-        if [ "$_src_rc" -eq 124 ]; then
+        if [ "$_src_rc" -eq 137 ]; then
+          echo "  FAIL $_rel (timed out after ${_component_timeout}s (killed))"
+        elif [ "$_src_rc" -eq 124 ]; then
           echo "  FAIL $_rel (timed out after ${_component_timeout}s)"
         else
           echo "  FAIL $_rel (exit $_src_rc)"
