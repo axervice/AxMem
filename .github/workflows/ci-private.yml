@@ -12,8 +12,6 @@ jobs:
     env:
       AXMEM_REQUIRE_GO_HELPER: '1'
       AXMEM_SELFTEST_COMPONENT_TIMEOUT_SEC: '360'
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v4
 

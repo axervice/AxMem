@@ -7,6 +7,10 @@ const path = require('node:path');
 const cp = require('node:child_process');
 
 const uninstall = path.resolve(__dirname, '..', 'adapters', 'codex', 'uninstall-hooks.cjs');
+if (process.argv.length > 3 || (process.argv[2] && process.argv[2] !== '--self-test')) {
+  process.stderr.write('usage: codex-uninstall-hooks.test.cjs [--self-test]\n');
+  process.exit(2);
+}
 let passed = 0;
 let total = 0;
 

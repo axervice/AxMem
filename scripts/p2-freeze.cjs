@@ -1063,13 +1063,20 @@ function validateInventory(inv, liveHooks, liveRoot) {
   return { fileMap, inventoryHooks, externalMap, generatedArtifacts };
 }
 
+function assertRepoRelativePath(rel, code, message) {
+  if (!rel || rel === '.' || rel.startsWith('../') || path.posix.isAbsolute(rel) || path.win32.isAbsolute(rel)) {
+    throw new FreezeError(code, message);
+  }
+  return rel;
+}
+
 function buildManifest({ liveDir, inventoryPath, generatedAt }) {
   const live = path.resolve(liveDir);
   const repoRoot = String(git(live, ['rev-parse', '--show-toplevel'])).trim();
   const canonicalLive = fs.realpathSync.native(live);
   const canonicalRepoRoot = fs.realpathSync.native(path.resolve(repoRoot));
   const relLive = posix(path.relative(canonicalRepoRoot, canonicalLive));
-  if (!relLive || relLive === '.' || relLive.startsWith('../')) throw new FreezeError('bad-live-root', 'liveDir must be a tracked subdirectory of a git repository');
+  assertRepoRelativePath(relLive, 'bad-live-root', 'liveDir must be a tracked subdirectory of a git repository');
 
   const dirty = String(git(repoRoot, ['status', '--porcelain=v1', '--untracked-files=all', '--', relLive])).trim();
   if (dirty) throw new FreezeError('dirty-live-source', 'live source is not clean; formal freeze requires an empty patch bundle:\n' + dirty);
@@ -1091,9 +1098,7 @@ function buildManifest({ liveDir, inventoryPath, generatedAt }) {
     throw new FreezeError('bad-inventory', 'cannot resolve inventory path: ' + inventoryAbs + ': ' + e.message);
   }
   const inventoryRel = posix(path.relative(canonicalInventoryRepoRoot, canonicalInventoryAbs));
-  if (!inventoryRel || inventoryRel === '.' || inventoryRel.startsWith('../') || path.posix.isAbsolute(inventoryRel)) {
-    throw new FreezeError('bad-inventory', 'inventory path must be inside its repository: ' + inventoryAbs);
-  }
+  assertRepoRelativePath(inventoryRel, 'bad-inventory', 'inventory path must be inside its repository: ' + inventoryAbs);
   let inventoryBytes;
   try { inventoryBytes = fs.readFileSync(inventoryAbs); }
   catch (e) { throw new FreezeError('bad-inventory', 'cannot read inventory: ' + e.message); }
@@ -1259,7 +1264,7 @@ function parseArgs(argv) {
   return o;
 }
 
-module.exports = { FreezeError, flattenHooks, hookIdentity, validateInventory, normalizeGeneratedArtifacts, normalizeBusinessExitContract, normalizeRuntimeHealthProbe, reviewedInnerCommandInfo, entryRelativeToLiveRoot, analyzeDependencyReferences, inspectLiteralGeneratedArtifact, verifyGeneratedArtifactEvidence, detectLiteralDependencies, verifyDependencyClosure, buildManifest, generate, writeJsonAtomic, safeRelativeFile };
+module.exports = { FreezeError, flattenHooks, hookIdentity, validateInventory, normalizeGeneratedArtifacts, normalizeBusinessExitContract, normalizeRuntimeHealthProbe, reviewedInnerCommandInfo, entryRelativeToLiveRoot, analyzeDependencyReferences, inspectLiteralGeneratedArtifact, verifyGeneratedArtifactEvidence, detectLiteralDependencies, verifyDependencyClosure, assertRepoRelativePath, buildManifest, generate, writeJsonAtomic, safeRelativeFile };
 
 if (require.main === module) {
   try {

@@ -38,6 +38,13 @@ function sameNativeRealPath(a, b) {
   return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
 }
 
+{
+  let liveCode = '', inventoryCode = '';
+  try { F.assertRepoRelativePath('D:/outside/repo', 'bad-live-root', 'cross-volume live'); } catch (e) { liveCode = e && e.code || ''; }
+  try { F.assertRepoRelativePath('E:/outside/inventory.json', 'bad-inventory', 'cross-volume inventory'); } catch (e) { inventoryCode = e && e.code || ''; }
+  check('win32 cross-volume relative values fail with the intended live/inventory codes', liveCode === 'bad-live-root' && inventoryCode === 'bad-inventory', 'live=' + liveCode + ' inventory=' + inventoryCode);
+}
+
 const generatorText = [
   '#!/usr/bin/env bash',
   'tmp="$(mktemp)"',

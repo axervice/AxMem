@@ -148,6 +148,7 @@ README.zh.md
 retrieval/pmm-canary.sh
 retrieval/pmm-grep.sh
 retrieval/pmm-search.sh
+tests/codex-uninstall-hooks.test.cjs
 tests/doctor-quoted-path.sh
 tests/fresh-home-adapters.sh
 tests/full-env-isolation.sh
