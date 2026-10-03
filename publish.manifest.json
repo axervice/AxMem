@@ -89,6 +89,7 @@
     "tests/p2-generated-artifacts-buildmanifest.test.cjs",
     "tests/p2-freeze-equiv.test.cjs",
     "tests/p2-machine-acceptance.test.cjs",
+    "tests/p2-bash-ast-v2.test.cjs",
     "tests/fixtures/p2-equiv/**",
     "tests/fixtures/p2-bash-ast/**",
     "_comment_P2_FREEZE_TESTS: P2.0 private freeze/equivalence build fixtures and machine-acceptance tests depend on excluded scripts/** and are not free-tier runtime tests."

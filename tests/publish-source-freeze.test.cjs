@@ -148,6 +148,51 @@ console.log('== assertTargetInFrozenTreeAndKeepList: overlay/patch target must e
 }
 
 // ---------------------------------------------------------------------------------------------
+
+console.log('== public keep-set test require closure ==');
+{
+  const sourceOid = pp.resolveSourceOid('main');
+  const manifest = pp.readManifest(sourceOid);
+  const keep = pp.computeKeepList(sourceOid, manifest);
+  const keepSet = new Set(keep);
+  const keptTests = keep.filter((rel) => /^tests\/.*\.test\.cjs$/.test(rel)).sort();
+
+  function resolveKeptRelativeRequire(fromRel, spec) {
+    const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), spec));
+    const candidates = [
+      base,
+      base + '.js',
+      base + '.cjs',
+      base + '.mjs',
+      base + '.json',
+      base + '/index.js',
+      base + '/index.cjs',
+      base + '/index.mjs',
+      base + '/index.json',
+    ];
+    return candidates.find((candidate) => keepSet.has(candidate)) || null;
+  }
+
+  const unresolved = [];
+  const requireRe = /require\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
+  for (const testRel of keptTests) {
+    const source = pp.readFrozenBlob(sourceOid, testRel, 'kept test require-closure').toString('utf8');
+    let match;
+    while ((match = requireRe.exec(source)) !== null) {
+      const spec = match[2];
+      if (!spec.startsWith('.')) continue;
+      const resolved = resolveKeptRelativeRequire(testRel, spec);
+      if (!resolved) unresolved.push({ test: testRel, require: spec });
+    }
+  }
+
+  check('private-dependent p2 bash-ast v2 selftest is excluded from the public keep-set',
+    !keepSet.has('tests/p2-bash-ast-v2.test.cjs'));
+  check('every kept test file relative require resolves inside the public keep-set',
+    unresolved.length === 0);
+  if (unresolved.length) console.log('    unresolved kept-test requires: ' + JSON.stringify(unresolved));
+}
+
 console.log('== checkInputsClean: dirty publish input is refused; --allow-dirty-inputs still reads the COMMITTED blob ==');
 {
   const sourceOid = pp.resolveSourceOid('main');

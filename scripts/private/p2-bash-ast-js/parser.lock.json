@@ -1,0 +1,94 @@
+{
+  "schema": "axmem-p2-bash-ast-js-lock/v1",
+  "hashMode": "crlf-to-lf-bytes-v1",
+  "protocolVersion": 2,
+  "protocolSchema": "axmem-p2-bash-ast/v2",
+  "parserEntry": "guards/vendor/unbash/parser.js",
+  "acornEntry": "guards/vendor/acorn.js",
+  "files": [
+    {
+      "path": "guards/vendor/acorn.js",
+      "role": "acorn",
+      "bytes": 244682,
+      "sha256": "b373ccd10e9deb63654289f73216eeefcaf0405d9ee24289aabf596b91b4c318"
+    },
+    {
+      "path": "guards/vendor/unbash/LICENSE",
+      "role": "unbash",
+      "bytes": 738,
+      "sha256": "a8715bd6ba5604134c8bfea951ebc2379ae9e71e78262275f7f87a50c845ae96"
+    },
+    {
+      "path": "guards/vendor/unbash/ansi-c.js",
+      "role": "unbash",
+      "bytes": 4937,
+      "sha256": "858452443173369c348ac50d8e9461b5f07806c3fc381fec4bb5272b4141fb3d"
+    },
+    {
+      "path": "guards/vendor/unbash/arithmetic.js",
+      "role": "unbash",
+      "bytes": 18084,
+      "sha256": "ff0700dd13b920da3650b9b9143226623245b133ff783fb42ebd9d06bf396378"
+    },
+    {
+      "path": "guards/vendor/unbash/chars.js",
+      "role": "unbash",
+      "bytes": 1643,
+      "sha256": "816d634c328cfba26d3e52eac487a46e81623c8009553c91f706f70d1990d67c"
+    },
+    {
+      "path": "guards/vendor/unbash/lexer.js",
+      "role": "unbash",
+      "bytes": 150196,
+      "sha256": "567be92e2a41b1de91d40801403688e2fb33618b76fb335a13380beb1693b712"
+    },
+    {
+      "path": "guards/vendor/unbash/parser.js",
+      "role": "unbash",
+      "bytes": 57390,
+      "sha256": "44230040ce6e764a444256d20dfdcea2b4ad24762e4082205e6fc4104fdf9fdd"
+    },
+    {
+      "path": "guards/vendor/unbash/parts.js",
+      "role": "unbash",
+      "bytes": 4310,
+      "sha256": "3d5d26f6466104105b28f9060e281d0fd961c8ae632fb256d5ec71ac99dbb283"
+    },
+    {
+      "path": "guards/vendor/unbash/word.js",
+      "role": "unbash",
+      "bytes": 3514,
+      "sha256": "0c774c79ca2c219929cc225dd9b288bff0fc44699d1d7c5586335ae22b4250d2"
+    },
+    {
+      "path": "scripts/private/p2-bash-ast-js/RESIDUALS.md",
+      "role": "adapter",
+      "bytes": 1313,
+      "sha256": "c35ed821e43e410e9301d4fc4555a0f2e7b6438f1c8a11f574d7e8ef986b3940"
+    },
+    {
+      "path": "scripts/private/p2-bash-ast-js/adapter.cjs",
+      "role": "adapter",
+      "bytes": 7128,
+      "sha256": "3000117cb3c852a748235e6b45bf3c5e0d05ef6c4c30d0fac06958f8170030b8"
+    },
+    {
+      "path": "scripts/private/p2-bash-ast-js/projector.cjs",
+      "role": "adapter",
+      "bytes": 13787,
+      "sha256": "a639c6710a6775a00e515ff3e497758e22e0e53fbebeec9997300b5dac59b8ff"
+    },
+    {
+      "path": "scripts/private/p2-bash-ast-js/protocol.cjs",
+      "role": "adapter",
+      "bytes": 6455,
+      "sha256": "0bfdd948a495380a7e870cbaaf8d7b339127a3e6847c9f6de812bc4b3798aeab"
+    },
+    {
+      "path": "scripts/private/p2-bash-ast-js/target-rules.cjs",
+      "role": "adapter",
+      "bytes": 104096,
+      "sha256": "da4373d0afb5c97123ed687f67598b430bd60642211f86af40b9488c0210d0ea"
+    }
+  ]
+}
