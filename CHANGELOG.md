@@ -1,5 +1,11 @@
 # AxMem CHANGELOG
 
+## 2026-10-03 — Codex read-only PMM recall candidate (not installed)
+
+- **Candidate scope and synthetic evidence**: Added a bounded lexical selector, synchronous three-event Codex hook bridge, filtered task-spec lesson helper, synthetic tests, example hook definition, and adapter documentation in the isolated `codex/memory-bridge` worktree. The selector reuses bundled MiniSearch and has 31/31 synthetic tests; bridge 20/20; helper 19/19. PMM stays read-only; the R14 ban on raw original-prompt capture remains. The source is explicitly `C:/Users/jax-x/.claude/memory`.
+- **Windows candidate shape**: The three-hook example retains the quoted absolute-node `command` and adds `commandWindows`: bare `node` with quoted absolute script and memory-root placeholders, six-second timeout, and 4096 context limit. Node on PATH is an installation prerequisite. JSON validation does not prove shell execution.
+- **Acceptance boundary**: A fresh child receipt verifies delivery of one fully synthetic filtered task/lesson package only. It does not prove automatic hook delivery, hook installation or trust, Codex lifecycle delivery, or universal agent compliance. The actual-path hooks candidate remains documentation only. This candidate does not close R16, H13, freeze, or execution-equivalence gates.
+
 ## 2026-10-02 — R15e merge package: LF helper re-pin + Windows path/CI closure
 
 - **Helper lock re-pin**: the old executable SHA `4352c942…` was produced from a CRLF `main.go`, while committed/CI helper sources are LF-pinned. Rebuilt from the locked LF source with portable Go 1.26.1, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`, `GOOS=windows`, `GOARCH=amd64`, `-trimpath -buildvcs=false`; the reproducible LF executable SHA is `ce8b9c1e72511e1347b927387108ce0f57ac52acd92404c2c67d32c9882693e6`. Lock metadata and adapter expectation are re-pinned together.

@@ -1,0 +1,45 @@
+{
+  "description": "EXAMPLE ONLY. Do not install automatically. Replace each ABSOLUTE placeholder with an approved local path.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\ABSOLUTE\\PATH\\TO\\node.exe\" \"C:\\ABSOLUTE\\PATH\\TO\\AxMem\\adapters\\codex\\recall-context.cjs\" --memory-root \"C:\\ABSOLUTE\\PATH\\TO\\PMM\\memory\"",
+            "commandWindows": "node \"C:\\ABSOLUTE\\PATH\\TO\\AxMem\\adapters\\codex\\recall-context.cjs\" --memory-root \"C:\\ABSOLUTE\\PATH\\TO\\PMM\\memory\"",
+            "timeout": 6,
+            "additionalContextLimit": 4096
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\ABSOLUTE\\PATH\\TO\\node.exe\" \"C:\\ABSOLUTE\\PATH\\TO\\AxMem\\adapters\\codex\\recall-context.cjs\" --memory-root \"C:\\ABSOLUTE\\PATH\\TO\\PMM\\memory\"",
+            "commandWindows": "node \"C:\\ABSOLUTE\\PATH\\TO\\AxMem\\adapters\\codex\\recall-context.cjs\" --memory-root \"C:\\ABSOLUTE\\PATH\\TO\\PMM\\memory\"",
+            "timeout": 6,
+            "additionalContextLimit": 4096
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:\\ABSOLUTE\\PATH\\TO\\node.exe\" \"C:\\ABSOLUTE\\PATH\\TO\\AxMem\\adapters\\codex\\recall-context.cjs\" --memory-root \"C:\\ABSOLUTE\\PATH\\TO\\PMM\\memory\"",
+            "commandWindows": "node \"C:\\ABSOLUTE\\PATH\\TO\\AxMem\\adapters\\codex\\recall-context.cjs\" --memory-root \"C:\\ABSOLUTE\\PATH\\TO\\PMM\\memory\"",
+            "timeout": 6,
+            "additionalContextLimit": 4096
+          }
+        ]
+      }
+    ]
+  }
+}
