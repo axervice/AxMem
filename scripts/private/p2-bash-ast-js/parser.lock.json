@@ -87,8 +87,8 @@
     {
       "path": "scripts/private/p2-bash-ast-js/target-rules.cjs",
       "role": "adapter",
-      "bytes": 100820,
-      "sha256": "69e53b9c69811e62f0db9ba12028d6f9f3cab074e8067a71c568808b39e5da6e"
+      "bytes": 104096,
+      "sha256": "da4373d0afb5c97123ed687f67598b430bd60642211f86af40b9488c0210d0ea"
     }
   ]
 }

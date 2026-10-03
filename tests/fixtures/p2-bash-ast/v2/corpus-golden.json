@@ -7,7 +7,7 @@
   },
   "scanner": {
     "schema": "axmem-p2-bash-target-scan/v1",
-    "parserLockSha256": "f3ef4ecc98ed3fe3dc84323d55e63ca57a091417edc622acfd083ca0d337b063"
+    "parserLockSha256": "57411152688bb82dbea1223725ef536b51e4c4f9f37fe2e6fae77bbbf6103d31"
   },
   "counts": {
     "records": 1206,

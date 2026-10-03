@@ -1464,10 +1464,10 @@ try {
     ['guards/pmm-home.sh', '"$LEDGER_ARG"', 'guards/pmm-recall-ledger.cjs', false],
     ['guards/pmm-shell-memory-watch.sh', '"$G/pmm-home.sh"', 'guards/pmm-home.sh', true],
     ['guards/pmm-trigger-recall.sh', '"$G/pmm-trigger-recall.cjs"',
-      'guards/pmm-trigger-recall.cjs', true],
+      'guards/pmm-trigger-recall.cjs', true, 53448, 839, 'exec node "$G/pmm-trigger-recall.cjs"'],
     ['guards/pmm-trigger-write-gate.sh', '"$G/pmm-trigger-write-gate.cjs"',
-      'guards/pmm-trigger-write-gate.cjs', true],
-  ].map(([rel, expression, expectedTarget, mutationMustBreak]) => {
+      'guards/pmm-trigger-write-gate.cjs', true, 8276, 142, 'exec node "$G/pmm-trigger-write-gate.cjs"'],
+  ].map(([rel, expression, expectedTarget, mutationMustBreak, sourceSpan = null, sourceLine = null, sourceStatement = null]) => {
     const corpusRow = pinnedByRel.get(rel);
     if (!corpusRow) throw new Error('missing pinned corpus file for six-chain test: ' + rel);
     const normalOptions = corpusScanOptions(corpusRow);
@@ -1475,18 +1475,33 @@ try {
     const mutant = adapter.scanDependencyTargets(Buffer.from(corpusRow.source, 'utf8'),
       { ...normalOptions, disableTerminatingArms: true });
     const active = (x) => x.reachability === 'production' || x.reachability === 'conditional';
-    const normalTarget = normal.targets.find((x) => active(x) && x.expression === expression);
-    const mutantTarget = mutant.targets.find((x) => active(x) && x.expression === expression);
+    const anchored = (x) => active(x) && x.expression === expression &&
+      (sourceSpan === null || (x.span && x.span.start === sourceSpan &&
+        x.span.end === sourceSpan + expression.length));
+    const normalTarget = normal.targets.find(anchored);
+    const mutantTarget = mutant.targets.find(anchored);
     const mutantUnresolved = mutant.targets.filter((x) => active(x) && x.status === 'unresolved');
     const mutantBreaks = !mutantTarget || mutantTarget.status !== 'resolved' ||
       !targetEndsWith(mutantTarget.target, expectedTarget);
+    const expectedAbsoluteTarget = sourceSpan === null ? null : path.posix.join(
+      path.posix.dirname(String(corpusRow.livePath).replace(/\\/g, '/')),
+      path.posix.basename(expectedTarget));
+    const wrongRootSameSuffix = sourceSpan === null ? null : 'C:/wrong/' + expectedTarget;
+    const exactTargetAnchor = sourceSpan === null ||
+      (!!normalTarget && normalTarget.target === expectedAbsoluteTarget &&
+        targetEndsWith(wrongRootSameSuffix, expectedTarget) && wrongRootSameSuffix !== expectedAbsoluteTarget);
+    const sourceAnchor = sourceSpan === null ||
+      corpusRow.source.slice(sourceSpan - 'exec node '.length, sourceSpan + expression.length) === sourceStatement &&
+      corpusRow.source.slice(0, sourceSpan).split('\n').length === sourceLine;
     return {
-      rel, expression, expectedTarget, mutationMustBreak,
+      rel, expression, expectedTarget, expectedAbsoluteTarget, wrongRootSameSuffix, mutationMustBreak,
+      sourceSpan, sourceLine, sourceStatement, sourceAnchor, exactTargetAnchor,
       corpusBytes: corpusRow.bytesActual, corpusSha256: corpusRow.sha256Actual,
       normalTarget, mutantTarget, mutantUnresolved, assumptions: normal.assumptions,
       ok: !!normalTarget && normalTarget.status === 'resolved' &&
         targetEndsWith(normalTarget.target, expectedTarget) &&
-        active(normalTarget),
+        active(normalTarget) && sourceAnchor && exactTargetAnchor &&
+        (sourceSpan === null || normalTarget.reachability === 'production'),
     };
   });
   check('R16a-fix6 pinned-corpus six reviewed chains stay production/conditional resolved 6/6',
@@ -1909,6 +1924,139 @@ try {
     JSON.stringify({
       direct: r6M4Direct, override: r6M4Override, sourced: r6M4Sourced,
     }));
+
+  const r7DynamicRhs = findExpr(adapter.scanDependencyTargets(
+    'if [ "$1" = "$FLAG" ]; then node ./dynamic-rhs.cjs; fi',
+    { productionArgv1Values: ['normal'] }), './dynamic-rhs.cjs');
+  const r7CommandSubstitutionRhs = findExpr(adapter.scanDependencyTargets(
+    'if [ "$1" = "$(printf flag)" ]; then node ./command-substitution-rhs.cjs; fi',
+    { productionArgv1Values: ['normal'] }), './command-substitution-rhs.cjs');
+  const r7SingleQuotedLiteralRhs = findExpr(adapter.scanDependencyTargets(
+    "if [ \"$1\" = '$FLAG' ]; then node ./single-quoted-literal-rhs.cjs; fi",
+    { productionArgv1Values: ['normal'] }), './single-quoted-literal-rhs.cjs');
+  const r7DoubleQuotedLiteralRhs = findExpr(adapter.scanDependencyTargets(
+    'if [ "$1" = "--self-test" ]; then node ./double-quoted-literal-rhs.cjs; fi',
+    { productionArgv1Values: ['normal'] }), './double-quoted-literal-rhs.cjs');
+  check('R16a-fix7 rule2 uses only a static RHS shell word; dynamic and command-substitution RHS stay conditional',
+    [r7DynamicRhs, r7CommandSubstitutionRhs]
+      .every((x) => !!x && x.reachability === 'conditional') &&
+      [r7SingleQuotedLiteralRhs, r7DoubleQuotedLiteralRhs]
+        .every((x) => !!x && x.reachability === 'dormant' &&
+          x.dormantRule === 'rule2-argv1-guard-false'),
+    JSON.stringify({
+      dynamic: r7DynamicRhs, commandSubstitution: r7CommandSubstitutionRhs,
+      singleQuotedLiteral: r7SingleQuotedLiteralRhs, doubleQuotedLiteral: r7DoubleQuotedLiteralRhs,
+    }));
+
+  const r7DirnameOptions = { productionInvocationPaths: [r6LinkPath], productionArgv1Values: [''] };
+  const r7DirnameLiteral = adapter.scanDependencyTargets(
+    'node "$(dirname "$0")/literal.cjs"', r7DirnameOptions).targets.find((x) => x.kind === 'node-script');
+  const r7DirnameDynamicZero = adapter.scanDependencyTargets(
+    'node "$(dirname "$0")/$TARGET.cjs"', r7DirnameOptions).targets.find((x) => x.kind === 'node-script');
+  const r7DirnameDynamicBashSource = adapter.scanDependencyTargets(
+    'node "$(dirname "${BASH_SOURCE[0]}")/$TARGET.cjs"', r7DirnameOptions).targets.find((x) => x.kind === 'node-script');
+  const r7CdPwdDynamicZero = adapter.scanDependencyTargets(
+    'node "$(cd "$(dirname "$0")" && pwd)/$TARGET.cjs"', r7DirnameOptions).targets.find((x) => x.kind === 'node-script');
+  const r7CdPwdDynamicBashSource = adapter.scanDependencyTargets(
+    'node "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$TARGET.cjs"', r7DirnameOptions).targets.find((x) => x.kind === 'node-script');
+  check('R16a-fix7 dirname resolves only static suffixes while cd/pwd retains dynamic-suffix refusal',
+    !!r7DirnameLiteral && r7DirnameLiteral.status === 'resolved' &&
+      r7DirnameLiteral.target === 'C:/links/axmem/literal.cjs' &&
+      [r7DirnameDynamicZero, r7DirnameDynamicBashSource,
+        r7CdPwdDynamicZero, r7CdPwdDynamicBashSource]
+        .every((x) => !!x && x.status === 'unresolved'),
+    JSON.stringify({
+      literal: r7DirnameLiteral, dynamicZero: r7DirnameDynamicZero,
+      dynamicBashSource: r7DirnameDynamicBashSource,
+      cdPwdDynamicZero: r7CdPwdDynamicZero, cdPwdDynamicBashSource: r7CdPwdDynamicBashSource,
+    }));
+
+  const r8SelfSource = 'if [ -n "${PMM_TEE_LOG:-}" ]; then _PMM_TEE_INNER=1 "$0" "$@"; fi; ' +
+    'if [ "$1" = "--self-test" ]; then node ./r8-self-test.cjs; fi; node "$_PMM_TEE_INNER"';
+  const r8Self = adapter.scanDependencyTargets(r8SelfSource,
+    { productionInvocationPaths: [r6LinkPath], productionArgv1Values: ['normal'] });
+  const r8SelfEdge = r8Self.targets.find((x) => x.kind === 'shell-script' && x.expression === '"$0"');
+  const r8Rule2AfterForward = findExpr(r8Self, './r8-self-test.cjs');
+  const r8PrefixAfter = findExpr(r8Self, '"$_PMM_TEE_INNER"');
+  const r8NoProvenance = adapter.scanDependencyTargets('"$0" "$@"',
+    { productionArgv1Values: ['normal'] });
+  const r8MultipleInvocation = adapter.scanDependencyTargets('"$0" "$@"',
+    { productionInvocationPaths: [r6LinkPath, 'C:/links/axmem/other-hook.sh'], productionArgv1Values: ['normal'] });
+  const r8Sourced = adapter.scanDependencyTargets('"$0" "$@"', {
+    sourcedOnProductionPath: true,
+    productionInvocationPaths: ['C:/callers/caller.sh'],
+    productionSourcePaths: ['C:/sourced/lib.sh'],
+    productionArgv1Values: ['normal'],
+  });
+  const r8UnknownCommandState = adapter.scanDependencyTargets('enable bogus; "$0" "$@"',
+    { productionInvocationPaths: [r6LinkPath], productionArgv1Values: ['normal'] });
+  const r8BashSelf = adapter.scanDependencyTargets('bash "$0"',
+    { productionInvocationPaths: [r6LinkPath], productionArgv1Values: ['normal'] }).targets.find((x) =>
+    x.kind === 'shell-script' && x.expression === '"$0"');
+  const r8Unproven = [r8NoProvenance, r8MultipleInvocation, r8Sourced, r8UnknownCommandState];
+  check('R16a-fix8 proven direct $0 self calls record one conditional shell edge, while dynamic forwarding invalidates rule2 without recursion or proof bypass',
+    !!r8SelfEdge && r8SelfEdge.status === 'resolved' && r8SelfEdge.target === r6LinkPath &&
+      r8SelfEdge.reachability === 'conditional' &&
+      r8SelfEdge.span && r8SelfEdge.span.start === r8SelfSource.indexOf('"$0"') &&
+      r8Self.targets.filter((x) => x.kind === 'shell-script' && x.expression === '"$0"').length === 1 &&
+      !!r8Rule2AfterForward && r8Rule2AfterForward.reachability === 'conditional' && !r8Rule2AfterForward.dormantRule &&
+      !!r8PrefixAfter && r8PrefixAfter.status === 'unresolved' &&
+      r8Unproven.every((scan) =>
+        scan.targets.some((x) => x.kind === 'command-name' && x.expression === '"$0"' && x.status === 'unresolved') &&
+        !scan.targets.some((x) => x.kind === 'shell-script' && x.expression === '"$0"' && x.status === 'resolved')) &&
+      !!r8BashSelf && r8BashSelf.status === 'resolved' && r8BashSelf.target === r6LinkPath &&
+        r8BashSelf.reachability === 'production',
+    JSON.stringify({
+      self: r8Self, noProvenance: r8NoProvenance, multipleInvocation: r8MultipleInvocation,
+      sourced: r8Sourced, unknownCommandState: r8UnknownCommandState, bashSelf: r8BashSelf,
+    }));
+
+  const r9AfterSelf = 'if [ "$1" = "--self-test" ]; then node ./r9-after-self.cjs; fi';
+  const r9SinglePathOptions = { productionInvocationPaths: [r6LinkPath], productionArgv1Values: ['normal'] };
+  const r9Cases = [
+    ['direct-dynamic-argv', '"$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['direct-dynamic-variable', '"$0" "$FLAG"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['direct-literal-self-test', '"$0" --self-test; ' + r9AfterSelf, r9SinglePathOptions],
+    ['direct-command-substitution', '"$0" "$(printf --self-test)"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['direct-known-literal-path', '"' + r6LinkPath + '" --self-test; ' + r9AfterSelf, r9SinglePathOptions],
+    ['direct-multiple-paths', '"$0" "$@"; ' + r9AfterSelf,
+      { productionInvocationPaths: [r6LinkPath, 'C:/links/axmem/other-hook.sh'], productionArgv1Values: ['normal'] }],
+    ['bash', 'bash "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['sh', 'sh "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['exec', 'if [ -n "$PMM_TEE_LOG" ]; then exec "$0" "$@"; fi; ' + r9AfterSelf, r9SinglePathOptions],
+    ['env', 'env "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['nohup', 'nohup "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['time', 'time "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['nice', 'nice "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['timeout', 'timeout 1 "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['stdbuf', 'stdbuf -oL "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['command', 'command "$0" "$@"; ' + r9AfterSelf, r9SinglePathOptions],
+    ['no-provenance', '"$0" --self-test; ' + r9AfterSelf, { productionArgv1Values: ['normal'] }],
+    ['sourced-frame', '"$0" --self-test; ' + r9AfterSelf, {
+      sourcedOnProductionPath: true,
+      productionInvocationPaths: ['C:/callers/caller.sh'],
+      productionSourcePaths: ['C:/sourced/lib.sh'],
+      productionArgv1Values: ['normal'],
+    }],
+  ].map(([name, sourceText, scanOptions]) => {
+    const scan = adapter.scanDependencyTargets(sourceText, scanOptions);
+    return { name, scan, dep: findExpr(scan, './r9-after-self.cjs') };
+  });
+  const r9NonCalls = [
+    ['printf-arguments', 'printf \'%s\' "$0" "$@"; ' + r9AfterSelf],
+    ['single-quoted-text', "'$0' '$@'; " + r9AfterSelf],
+  ].map(([name, sourceText]) => {
+    const scan = adapter.scanDependencyTargets(sourceText, r9SinglePathOptions);
+    return { name, scan, dep: findExpr(scan, './r9-after-self.cjs') };
+  });
+  check('R16a-fix9 any syntactic direct or delegated self call disables rule2 without widening resolved-edge proof',
+    r9Cases.every((row) => !!row.dep && row.dep.reachability === 'conditional' && !row.dep.dormantRule) &&
+      r9NonCalls.every((row) => !!row.dep && row.dep.reachability === 'dormant' &&
+        row.dep.dormantRule === 'rule2-argv1-guard-false') &&
+      r9Cases.filter((row) => row.name === 'direct-multiple-paths' || row.name === 'no-provenance' ||
+        row.name === 'sourced-frame').every((row) =>
+        !row.scan.targets.some((x) => x.kind === 'shell-script' && x.expression === '"$0"' && x.status === 'resolved')),
+    JSON.stringify({ cases: r9Cases, nonCalls: r9NonCalls }));
 
   const r6Receipt = pinnedWholeScans.get('memory/_local-config/pmm-receipt.sh');
   const r6ReceiptTarget = r6Receipt.targets.find((x) =>

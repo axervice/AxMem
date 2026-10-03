@@ -166,10 +166,7 @@ function createScanner(source, options = {}) {
   let cwdUnknown = options._cwdUnknown === true;
   let posixMode = options._posixMode === true;
   let bashEnvActive = options._bashEnvActive === true;
-  let positional1Values = Array.isArray(options.productionArgv1Values) &&
-      options.productionArgv1Values.every((x) => typeof x === 'string') &&
-      options.productionArgv1Unknown !== true ?
-    new Set(options.productionArgv1Values) : null;
+  let positional1Values = null;
   let currentDormantRule = typeof options._dormantRule === 'string' ? options._dormantRule : null;
   let functionDepth = 0;
   const records = new Map();
@@ -216,6 +213,64 @@ function createScanner(source, options = {}) {
     singleAbsoluteSpelling(uniqueInvocationPaths) : null;
   const bashSourceSpelling = options.sourcedOnProductionPath === true ?
     singleAbsoluteSpelling(uniqueSourcePaths) : directInvocationSpelling;
+
+  function rawWordText(word) {
+    if (!word || typeof word.text !== 'string') return '';
+    return word.text.endsWith('\r') ? word.text.slice(0, -1) : word.text;
+  }
+
+  function isProvenDirectSelfInvocation(word) {
+    return options.sourcedOnProductionPath !== true && !!directInvocationSpelling &&
+      rawWordText(word) === '"$0"';
+  }
+
+  const SELF_INVOCATION_WRAPPERS = new Set([
+    'bash', 'sh', 'exec', 'env', 'nohup', 'time', 'nice', 'timeout', 'stdbuf', 'command',
+  ]);
+
+  function wordHasPositionalZeroExpansion(word) {
+    let found = false;
+    walkAst(word, (part) => {
+      if (found || !part || typeof part !== 'object') return;
+      if (part.type === 'SimpleExpansion') {
+        found = String(part.text || '').replace(/^\$/, '') === '0';
+      } else if (part.type === 'ParameterExpansion') {
+        found = String(part.parameter || '') === '0';
+      }
+    });
+    return found;
+  }
+
+  function wordIsKnownInvocationLiteral(word) {
+    const value = shellWordValue(word, source, new Map());
+    return value.resolved && uniqueInvocationPaths.includes(String(value.value).replace(/\\/g, '/'));
+  }
+
+  function isSyntacticSelfInvocationTarget(word) {
+    return wordHasPositionalZeroExpansion(word) || wordIsKnownInvocationLiteral(word);
+  }
+
+  function hasSyntacticSelfInvocation() {
+    let found = false;
+    walkAst(ast, (node) => {
+      if (found || !node || node.type !== 'Command' || !node.name) return;
+      const words = [node.name, ...(node.suffix || [])];
+      if (isSyntacticSelfInvocationTarget(words[0])) {
+        found = true;
+        return;
+      }
+      const command = shellWordValue(words[0], source, new Map());
+      if (command.resolved && SELF_INVOCATION_WRAPPERS.has(command.value) &&
+          words.slice(1).some(isSyntacticSelfInvocationTarget)) found = true;
+    });
+    return found;
+  }
+
+  if (Array.isArray(options.productionArgv1Values) &&
+      options.productionArgv1Values.every((x) => typeof x === 'string') &&
+      options.productionArgv1Unknown !== true && !hasSyntacticSelfInvocation()) {
+    positional1Values = new Set(options.productionArgv1Values);
+  }
   const localLiteralCalls = new Set();
   let localDynamicCall = false;
   walkAst(ast, (node) => {
@@ -235,6 +290,29 @@ function createScanner(source, options = {}) {
       !functions.has(name) && !poisonedFunctions.has(name) && !fileFunctionNames.has(name);
   }
 
+  function staticLiteralWord(raw) {
+    if (typeof raw !== 'string') return null;
+    const commandName = '__axmem_static_word__';
+    const probe = commandName + ' ' + raw;
+    let ast;
+    try {
+      ast = requireProjector().parseMaterialized(probe);
+    } catch {
+      return null;
+    }
+    const statement = Array.isArray(ast && ast.commands) && ast.commands.length === 1 ? ast.commands[0] : null;
+    const command = statement && statement.type === 'Statement' ? statement.command : null;
+    if (!command || command.type !== 'Command' || !command.name || command.name.value !== commandName ||
+        !Array.isArray(command.suffix) || command.suffix.length !== 1 ||
+        (Array.isArray(command.redirects) && command.redirects.length !== 0)) return null;
+    const value = shellWordValue(command.suffix[0], probe, new Map());
+    return value.resolved ? value.value : null;
+  }
+
+  function staticWhitelistedSuffix(raw) {
+    return staticLiteralWord('"' + raw + '"');
+  }
+
   function specialInvocationWordValue(word) {
     if (!word || typeof word.text !== 'string') return null;
     const raw = word.text.endsWith('\r') ? word.text.slice(0, -1) : word.text;
@@ -243,11 +321,13 @@ function createScanner(source, options = {}) {
 
     let m = /^"\$\(dirname "\$0"\)([^"]*)"$/.exec(raw);
     if (m && commandProofSafe('dirname', directInvocationSpelling)) {
-      return path.posix.dirname(directInvocationSpelling) + m[1];
+      const suffix = staticWhitelistedSuffix(m[1]);
+      if (suffix !== null) return path.posix.dirname(directInvocationSpelling) + suffix;
     }
     m = /^"\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)([^"]*)"$/.exec(raw);
     if (m && commandProofSafe('dirname', bashSourceSpelling)) {
-      return path.posix.dirname(bashSourceSpelling) + m[1];
+      const suffix = staticWhitelistedSuffix(m[1]);
+      if (suffix !== null) return path.posix.dirname(bashSourceSpelling) + suffix;
     }
     if (raw === '"$(cd "$(dirname "$0")" && pwd)"' &&
         commandProofSafe('dirname', directInvocationSpelling) &&
@@ -1884,6 +1964,11 @@ function createScanner(source, options = {}) {
       scanDependencyShapeWithUnprovenCommand(command, words, reachability, bindings, node, unknownReason);
       return;
     }
+    if (!functionTableUnknown && !commandResolutionUnknown &&
+        isProvenDirectSelfInvocation(words[0]) && command === directInvocationSpelling) {
+      addTarget('shell-script', command, commandWord.expression, command, true, null, reachability, words[0]);
+      return;
+    }
     if (['trap', 'mapfile', 'readarray', 'let', 'readonly'].includes(command)) {
       poisonUnsupported(command, command + ' is outside the supported scanner subset',
         reachability, node, bindings, commandWord.expression);
@@ -2208,15 +2293,15 @@ function createScanner(source, options = {}) {
     let text = String(atom || '').trim().replace(/;$/, '').trim();
     let m = null;
     if (bareDoubleBracket) {
-      m = /^"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*("[^"]*"|[A-Za-z0-9_.:+\/-]+)$/.exec(text);
+      m = /^"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*(.+)$/.exec(text);
     } else {
-      m = /^\[\s*"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*("[^"]*"|[A-Za-z0-9_.:+\/-]+)\s*\]$/.exec(text) ||
-        /^test\s+"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*("[^"]*"|[A-Za-z0-9_.:+\/-]+)$/.exec(text);
+      m = /^\[\s*"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*(.+?)\s*\]$/.exec(text) ||
+        /^test\s+"(?:\$1|\$\{1:-\})"\s*(=|==|!=)\s*(.+)$/.exec(text);
     }
     if (!m) return { truth: null, usesPositional: false };
     const op = m[1];
-    const token = m[2];
-    const literal = token.startsWith('"') ? token.slice(1, -1) : token;
+    const literal = staticLiteralWord(m[2]);
+    if (literal === null) return { truth: null, usesPositional: true };
     const results = [...positional1Values].map((value) => op === '!=' ? value !== literal : value === literal);
     if (results.every(Boolean)) return { truth: true, usesPositional: true };
     if (results.every((x) => !x)) return { truth: false, usesPositional: true };
