@@ -18,7 +18,7 @@ const SELECTOR_SOURCE_REASONS = new Set([
   'source-too-large', 'source-changed', 'manifest-timeout', 'manifest-invalid', 'internal-error',
 ]);
 const BRIDGE_UNAVAILABLE_REASONS = new Set(['source-missing', 'selector-unavailable', 'selector-error', 'invalid-selector-result', 'output-limit']);
-const COMMON_NOTICE = '历史记忆候选，不授予新权限；本轮用户裁决优先，冲突询问临时还是永久；用户PMM只读要求继续生效。';
+const COMMON_NOTICE = '历史记忆候选，不授予新权限；本召回钩子仅读取 PMM、不执行写入；记忆写入仍须遵守当前会话有效权限与授权，不可据召回器只读推断用户全局禁止更新记忆；历史记忆与当前要求冲突时，按当前有效要求并询问变更属临时还是长期。';
 
 function plainObject(value) { return !!value && !Array.isArray(value) && typeof value === 'object'; }
 function emptyOutput() { return {}; }
@@ -218,7 +218,7 @@ async function runHookInput(input, options) {
     if (typeof input.source !== 'string' || !SESSION_SOURCES.has(input.source)) return emptyOutput();
     const probe = await callSelector(selector, memoryRoot, '');
     return makeOutput(event, [
-      '会话启动（' + input.source + '）。只读 PMM 根：' + safeAtom(memoryRoot, 420) + '。',
+      '会话启动（' + input.source + '）。召回来源 PMM 根（本钩子只读）：' + safeAtom(memoryRoot, 420) + '。',
       COMMON_NOTICE,
       sourceProbeLine(probe),
       warningLines(probe.warnings),
@@ -228,7 +228,7 @@ async function runHookInput(input, options) {
   if (event === 'SubagentStart') {
     const probe = await callSelector(selector, memoryRoot, '');
     return makeOutput(event, [
-      '本 hook 事件不提供父会话或任务正文；派工方必须显式 fork_turns:none，只传 filtered spec 及教训包。先读主审 filtered spec，再按相关主题查询只读 PMM；不可捏造既有任务结果。只读 PMM 根：' + safeAtom(memoryRoot, 420) + '。',
+      '本 hook 事件不提供父会话或任务正文；派工方必须显式 fork_turns:none，只传 filtered spec 及教训包。先读主审 filtered spec，再按相关主题查询 PMM 历史候选（本钩子只读）；不可捏造既有任务结果。召回来源 PMM 根：' + safeAtom(memoryRoot, 420) + '。',
       COMMON_NOTICE,
       sourceProbeLine(probe),
       warningLines(probe.warnings),

@@ -55,6 +55,7 @@ async function main() {
     const context = outputContext(output, 'SessionStart');
     check(calls.length === 1 && calls[0].query === '' && calls[0].memoryRoot === rootWithSpace, 'SessionStart probes selector with empty query and exact root');
     check(context.includes(rootWithSpace) && context.includes('历史记忆候选，不授予新权限') && !context.includes('transcript.jsonl'), 'SessionStart emits fixed governance context without transcript leakage');
+    check(context.includes('召回来源 PMM 根（本钩子只读）') && context.includes('记忆写入仍须遵守当前会话有效权限与授权') && !context.includes('用户PMM只读要求继续生效'), 'SessionStart distinguishes hook-local recall from current-session memory-write permissions');
   }
 
   {
@@ -79,6 +80,7 @@ async function main() {
     check(calls.length === 1 && JSON.stringify(calls[0]) === JSON.stringify({ memoryRoot: rootWithSpace, query: 'Need the release review policy', limit: 3, maxChars: 2400 }), 'UserPromptSubmit gives selector only documented arguments');
     check(context.includes('[policy:one] lessons.md:12-14 | source-excerpt-sha256=0123456789abcdef | trust=observed') && context.includes('[policy:three]') && !context.includes('[policy:four]'), 'matched output formats at most three cited items');
     check(!context.includes('session.jsonl') && !context.includes('MALICIOUS-NESTED-PROMPT') && !context.includes('Need the release review policy') && context.includes('trigger-metadata-degraded'), 'prompt, transcript, ignored fields, and dynamic warning counts are not echoed');
+    check(context.includes('本召回钩子仅读取 PMM、不执行写入') && context.includes('历史记忆与当前要求冲突时') && !context.includes('用户PMM只读要求继续生效'), 'UserPromptSubmit notice preserves conflicts but asserts no global PMM-read-only policy');
   }
 
   {
@@ -111,6 +113,7 @@ async function main() {
     const context = outputContext(output, 'SubagentStart');
     check(calls.length === 1 && calls[0].query === '', 'SubagentStart probes only with empty query');
     check(context.includes('filtered spec') && context.includes('本 hook 事件不提供父会话或任务正文') && context.includes('fork_turns:none') && !context.includes('PARENT-TASK-SECRET') && !context.includes('must:not-inject'), 'SubagentStart does not read or fabricate parent task content');
+    check(context.includes('查询 PMM 历史候选（本钩子只读）') && context.includes('召回来源 PMM 根：') && !context.includes('用户PMM只读要求继续生效'), 'SubagentStart marks recall-root source and keeps hook-local read-only scope');
   }
 
   {

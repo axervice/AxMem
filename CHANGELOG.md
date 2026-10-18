@@ -1,5 +1,11 @@
 # AxMem CHANGELOG
 
+## 2026-10-16 — Codex recall notice factual scope correction (candidate, NOT installed)
+
+- Historical memory recall grants no new privileges. The recall hook reads PMM only; a hook-local read-only operation is not an enduring user-wide ban on memory updates. Any memory write remains subject to currently effective session permissions and authorization. Conflicting historical and current instructions require current-context review and clarification of temporary versus long-term changes.
+- Candidate changes only the three recall notice strings, narrow tests, and this CHANGELOG entry. No retrieval, hook configuration, credentials, PMM write gate, memory originals, or current-session permissions change. Chief review and separate installation authorization are still required.
+
+
 ## 2026-10-03 — Codex read-only PMM recall candidate (not installed)
 
 - **Candidate scope and synthetic evidence**: Added a bounded lexical selector, synchronous three-event Codex hook bridge, filtered task-spec lesson helper, synthetic tests, example hook definition, and adapter documentation in the isolated `codex/memory-bridge` worktree. The selector reuses bundled MiniSearch and has 31/31 synthetic tests; bridge 20/20; helper 19/19. PMM stays read-only; the R14 ban on raw original-prompt capture remains. The source is explicitly `C:/Users/jax-x/.claude/memory`.
