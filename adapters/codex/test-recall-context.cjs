@@ -41,6 +41,49 @@ function item(tag, text) {
   };
 }
 
+
+function strictFixture(root, specifications, omitAll = false) {
+  const crypto = require('node:crypto');
+  const sha = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+  const items = [];
+  const pointers = specifications.map(([tag, text], i) => {
+    const hash = sha(text), omitted = omitAll;
+    if (!omitted) items.push({ tag, file: 'lessons.md', line: i * 4 + 7,
+      endLine: i * 4 + 9, hash, trust: 'observed', text });
+    return { rank: i + 1, sourceRoot: root, file: 'lessons.md',
+      line: i * 4 + 7, endLine: i * 4 + 9, tag, trust: 'observed',
+      sourceFileSha256: 'f'.repeat(64), fullEntrySha256: hash,
+      displayedTextSha256: omitted ? null : hash, date: '2026-01-01', scope: 'unknown',
+      resolvedFromTag: null, visibility: omitted ? 'omitted' : 'whole',
+      reason: omitted ? 'selector-budget' : 'none' };
+  });
+  return { status: omitAll ? 'unavailable' : 'ok', reason: omitAll ? 'output-limit' : null,
+    items, warnings: [],
+    receipt: { v: 1, event: 'selector', stage: omitAll ? 'omitted' : 'candidates-selected',
+      query: { method: 'lexical', originalChars: 1, effectiveChars: 1, sha256: 'c'.repeat(64) },
+      counts: { eligible: specifications.length, matched: specifications.length,
+        selected: specifications.length, displayed: omitAll ? 0 : specifications.length,
+        omitted: omitAll ? specifications.length : 0, matchedIdsNotListed: 0 }, pointers } };
+}
+
+function strictNoMatchFixture(root, reason = 'no-lexical-match') {
+  const none = reason === 'empty-query';
+  return { status: 'no-match', reason, items: [], warnings: [],
+    receipt: { v: 1, event: 'selector', stage: 'query-ran',
+      query: { method: none ? 'none' : 'lexical', originalChars: none ? 0 : 1,
+        effectiveChars: none ? 0 : 1, sha256: none ? null : 'c'.repeat(64) },
+      counts: { eligible: 1, matched: 0, selected: 0, displayed: 0, omitted: 0,
+        matchedIdsNotListed: 0 }, pointers: [] } };
+}
+
+function strictSelectionLimitFixture(root) {
+  return { status: 'unavailable', reason: 'selection-limit', items: [], warnings: ['query-limited'],
+    receipt: { v: 1, event: 'selector', stage: 'unavailable',
+      query: { method: 'mixed', originalChars: 400, effectiveChars: 400, sha256: 'c'.repeat(64) },
+      counts: { eligible: 1, matched: 1, selected: 0, displayed: 0, omitted: 0,
+        matchedIdsNotListed: 1 }, pointers: [] } };
+}
+
 async function main() {
   const rootWithSpace = process.platform === 'win32'
     ? 'C:\\PMM Fixture Root\\memory'
@@ -183,7 +226,7 @@ async function main() {
     );
     const json = JSON.stringify(output);
     const context = outputContext(output, 'UserPromptSubmit');
-    check(Buffer.byteLength(json, 'utf8') <= bridge.MAX_OUTPUT_BYTES && Buffer.byteLength(context, 'utf8') <= bridge.MAX_CONTEXT_BYTES && JSON.parse(json).hookSpecificOutput.additionalContext === context && context.includes('显示节选已截断') && context.includes('source-excerpt-sha256 是原 selector 节选哈希'), 'context keeps complete UTF-8/JSON bounds and marks a truncated display without relabelling its source hash');
+    check(Buffer.byteLength(json, 'utf8') <= bridge.MAX_OUTPUT_BYTES && Buffer.byteLength(context, 'utf8') <= bridge.MAX_CONTEXT_BYTES && JSON.parse(json).hookSpecificOutput.additionalContext === context && !context.includes('显示节选已截断') && !context.includes('记'.repeat(40)) && context.includes('候选元数据超出展示预算'), 'legacy result lacks verified completeness and never emits a partial rule');
   }
 
   {
@@ -206,6 +249,120 @@ async function main() {
     const parsed = JSON.parse(res.stdout);
     const context = outputContext(parsed, 'UserPromptSubmit');
     check(res.status === 0 && context.includes('source-missing') && !context.includes('CLI-PROMPT-CANARY') && res.stderr.includes('memory-root-required'), 'CLI missing root reports unavailable without prompt leakage');
+  }
+
+
+  {
+    const whole = strictFixture(rootWithSpace, [['syn:verified', 'WHOLE VERIFIED BODY']]);
+    const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'test-canary' },
+      { memoryRoot: rootWithSpace, selector: async () => whole });
+    const context = outputContext(output, 'UserPromptSubmit');
+    check(context.includes('WHOLE VERIFIED BODY') && context.includes('fullEntrySHA256=') &&
+      context.includes('selected=1 displayed=1 omitted=0') && context.includes('stage=emitted') &&
+      !context.includes('c'.repeat(64)) && !context.includes('f'.repeat(64)) &&
+      !context.includes('test-canary') && !context.includes('"sourceRoot"'),
+      'valid v1 whole entry is constructed with compact safe pointer; query/source-file hashes and raw prompt are not projected');
+  }
+  {
+    const text = '记'.repeat(2200) + 'FINAL-EXCEPTION';
+    const whole = strictFixture(rootWithSpace, [['syn:budget', text]]);
+    const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'synthetic' },
+      { memoryRoot: rootWithSpace, selector: async () => whole });
+    const context = outputContext(output, 'UserPromptSubmit');
+    check(Buffer.byteLength(context, 'utf8') <= bridge.MAX_CONTEXT_BYTES &&
+      Buffer.byteLength(JSON.stringify(output), 'utf8') <= bridge.MAX_OUTPUT_BYTES &&
+      context.includes('syn:budget') && context.includes('omitted/bridge-budget') &&
+      context.includes('displayed=0 omitted=1') && !context.includes('FINAL-EXCEPTION') &&
+      !context.includes('记'.repeat(30)) && context.includes('output-limit'),
+      'bridge omits entire verified multibyte entry with bound pointer and exact final wire budget');
+  }
+  {
+    const omitted = strictFixture(rootWithSpace, [['syn:omitted', 'SECRETS-NOT-DISPLAYED']], true);
+    const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'x' },
+      { memoryRoot: rootWithSpace, selector: async () => omitted });
+    const context = outputContext(output, 'UserPromptSubmit');
+    check(context.includes('syn:omitted') && context.includes('selector-budget') &&
+      context.includes('output-limit') && !context.includes('SECRETS-NOT-DISPLAYED') &&
+      !context.includes('未找到历史记忆候选'),
+      'selector all-omitted unavailable retains verified v1 pointer at bridge');
+  }
+  {
+    const longTag = 'demo:' + 'x'.repeat(130);
+    const accepted = bridge.normaliseSelectorResult(
+      strictFixture(rootWithSpace, [[longTag, 'LONG TAG BODY']]), rootWithSpace);
+    const rejected = bridge.normaliseSelectorResult(
+      strictFixture(rootWithSpace, [['demo:' + 'x'.repeat(508), 'TOO LONG']]), rootWithSpace);
+    check(accepted.status === 'ok' && accepted.items[0].tag === longTag &&
+      accepted.receipt.pointers[0].tag === longTag && rejected.status === 'unavailable' &&
+      rejected.reason === 'invalid-selector-result' && !Object.hasOwn(rejected, 'receipt'),
+      'bridge preserves a valid 135-character identity and rejects a receipt tag over 512 characters');
+  }
+  {
+    const dirty = { tag: 'demo:legacy\n' + 't'.repeat(180),
+      file: 'lessons.md\r\n' + 'f'.repeat(380), line: 7, endLine: 9,
+      hash: 'bad\t' + 'h'.repeat(180), trust: 'observed\n' + 'r'.repeat(120), text: 'legacy body' };
+    const normalized = bridge.normaliseSelectorResult(
+      { status: 'ok', reason: null, items: [dirty], warnings: [] }, rootWithSpace);
+    const legacy = normalized.items[0], metadata = legacy.tag + legacy.file + legacy.hash + legacy.trust;
+    check(normalized.status === 'ok' && !/[\u0000-\u001f\u007f]/.test(metadata) &&
+      Buffer.byteLength(legacy.tag, 'utf8') <= 120 && Buffer.byteLength(legacy.file, 'utf8') <= 360 &&
+      Buffer.byteLength(legacy.hash, 'utf8') <= 128 && Buffer.byteLength(legacy.trust, 'utf8') <= 80,
+      'receipt-absent bridge legacy metadata keeps control cleaning and historical byte caps');
+  }
+  {
+    const limited = strictSelectionLimitFixture(rootWithSpace);
+    const normalized = bridge.normaliseSelectorResult(limited, rootWithSpace);
+    const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'synthetic' },
+      { memoryRoot: rootWithSpace, selector: async () => limited });
+    const context = outputContext(output, 'UserPromptSubmit');
+    check(normalized.status === 'unavailable' && normalized.reason === 'selection-limit' &&
+      normalized.receipt.counts.matched === 1 && normalized.receipt.pointers.length === 0 &&
+      context.includes('存在匹配，但受固定候选选择上限限制，主审需补查') &&
+      !context.includes('未找到历史记忆候选') && !context.includes('output-limit') &&
+      !context.includes('demo:limited-safe5') && !context.includes('SAFE-FIFTH-BODY'),
+      'bridge preserves finite selection-limit receipt and emits truthful no-ID follow-up text');
+  }
+  {
+    const valid = [strictNoMatchFixture(rootWithSpace),
+      strictNoMatchFixture(rootWithSpace, 'empty-query'),
+      strictFixture(rootWithSpace, [['syn:omitted-control', 'HIDDEN']], true)];
+    const base = strictNoMatchFixture(rootWithSpace);
+    const invalid = [
+      { ...base, reason: 'output-limit' }, { ...base, reason: null },
+      { ...base, reason: 7 }, { ...base, reason: 'future-reason' },
+      { ...base, receipt: { ...base.receipt, stage: 'omitted' } },
+      { ...base, receipt: { ...base.receipt, counts: { ...base.receipt.counts,
+        matched: 1, matchedIdsNotListed: 1 } } },
+      { ...base, receipt: { ...base.receipt, counts: { ...base.receipt.counts,
+        matched: 2, matchedIdsNotListed: 2 } } },
+    ].map((value) => bridge.normaliseSelectorResult(value, rootWithSpace));
+    const normalized = valid.map((value) => bridge.normaliseSelectorResult(value, rootWithSpace));
+    check(normalized[0].status === 'no-match' && normalized[0].reason === 'no-lexical-match' &&
+      normalized[1].status === 'no-match' && normalized[1].reason === 'empty-query' &&
+      normalized[2].status === 'unavailable' && normalized[2].reason === 'output-limit' &&
+      invalid.every((value) => value.status === 'unavailable' &&
+        value.reason === 'invalid-selector-result' && !Object.hasOwn(value, 'receipt')),
+      'bridge accepts coherent finite receipt outcomes and rejects contradictory reasons/stages/counts');
+  }
+  {
+    const original = strictFixture(rootWithSpace, [['syn:invalid', 'VALID BODY SHOULD NOT APPEAR']]);
+    const malformed = [
+      { ...original.receipt, v: 2 },
+      { ...original.receipt, extra: 'untrusted' },
+      { ...original.receipt, counts: { ...original.receipt.counts, selected: 2 } },
+      { ...original.receipt, pointers: [{ ...original.receipt.pointers[0], sourceRoot: rootWithSpace + '-evil' }] },
+      { ...original.receipt, pointers: [{ ...original.receipt.pointers[0], file: '../lessons.md' }] },
+      { ...original.receipt, pointers: [{ ...original.receipt.pointers[0], fullEntrySha256: '0'.repeat(64) }] },
+    ];
+    const results = [];
+    for (const receipt of malformed) {
+      const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'x' },
+        { memoryRoot: rootWithSpace, selector: async () => ({ ...original, receipt }) });
+      results.push(outputContext(output, 'UserPromptSubmit'));
+    }
+    check(results.length === 6 && results.every((s) => s.includes('invalid-selector-result') &&
+      !s.includes('VALID BODY SHOULD NOT APPEAR') && !s.includes('syn:invalid')),
+      'unknown/malformed receipt never becomes a false bridge ok, no-match or private body projection');
   }
 
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' codex recall context self-test ' + passed + '/' + total + '\n');

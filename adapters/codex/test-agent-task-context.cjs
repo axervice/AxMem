@@ -35,6 +35,49 @@ function lessonBlock(message, original) {
   return message.slice(original.length);
 }
 
+
+function strictFixture(root, specifications, omitAll = false) {
+  const crypto = require('node:crypto');
+  const sha = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+  const items = [];
+  const pointers = specifications.map(([tag, text], i) => {
+    const hash = sha(text), omitted = omitAll;
+    if (!omitted) items.push({ tag, file: 'lessons.md', line: i * 4 + 7,
+      endLine: i * 4 + 9, hash, trust: 'observed', text });
+    return { rank: i + 1, sourceRoot: root, file: 'lessons.md',
+      line: i * 4 + 7, endLine: i * 4 + 9, tag, trust: 'observed',
+      sourceFileSha256: 'f'.repeat(64), fullEntrySha256: hash,
+      displayedTextSha256: omitted ? null : hash, date: '2026-01-01', scope: 'unknown',
+      resolvedFromTag: null, visibility: omitted ? 'omitted' : 'whole',
+      reason: omitted ? 'selector-budget' : 'none' };
+  });
+  return { status: omitAll ? 'unavailable' : 'ok', reason: omitAll ? 'output-limit' : null,
+    items, warnings: [],
+    receipt: { v: 1, event: 'selector', stage: omitAll ? 'omitted' : 'candidates-selected',
+      query: { method: 'lexical', originalChars: 1, effectiveChars: 1, sha256: 'c'.repeat(64) },
+      counts: { eligible: specifications.length, matched: specifications.length,
+        selected: specifications.length, displayed: omitAll ? 0 : specifications.length,
+        omitted: omitAll ? specifications.length : 0, matchedIdsNotListed: 0 }, pointers } };
+}
+
+function strictNoMatchFixture(root, reason = 'no-lexical-match') {
+  const none = reason === 'empty-query';
+  return { status: 'no-match', reason, items: [], warnings: [],
+    receipt: { v: 1, event: 'selector', stage: 'query-ran',
+      query: { method: none ? 'none' : 'lexical', originalChars: none ? 0 : 1,
+        effectiveChars: none ? 0 : 1, sha256: none ? null : 'c'.repeat(64) },
+      counts: { eligible: 1, matched: 0, selected: 0, displayed: 0, omitted: 0,
+        matchedIdsNotListed: 0 }, pointers: [] } };
+}
+
+function strictSelectionLimitFixture(root) {
+  return { status: 'unavailable', reason: 'selection-limit', items: [], warnings: ['query-limited'],
+    receipt: { v: 1, event: 'selector', stage: 'unavailable',
+      query: { method: 'mixed', originalChars: 400, effectiveChars: 400, sha256: 'c'.repeat(64) },
+      counts: { eligible: 1, matched: 1, selected: 0, displayed: 0, omitted: 0,
+        matchedIdsNotListed: 1 }, pointers: [] } };
+}
+
 async function main() {
   const memoryRoot = process.platform === 'win32'
     ? 'C:\\PMM Fixture Root\\memory'
@@ -199,7 +242,116 @@ async function main() {
       { selector: async () => ({ status: 'ok', items: [oversizedHeader, lesson('two', long), lesson('three', long)], warnings: [] }) },
     );
     const block = lessonBlock(result.message, taskSpec);
-    check(Buffer.byteLength(block, 'utf8') <= helper.MAX_BLOCK_BYTES && block.includes('显示节选已截断') && block.includes('source-excerpt-sha256 是原 selector 节选哈希'), 'block uses complete-item budgeting and labels a truncated display hash correctly');
+    check(result.status === 'unavailable' && result.reason === 'output-limit' && result.lessons.length === 0 && Buffer.byteLength(block, 'utf8') <= helper.MAX_BLOCK_BYTES && !block.includes('显示节选已截断') && !block.includes('教训'.repeat(40)) && block.includes('旧版节选完整性及来源绑定未知'), 'legacy task format reports output-limit rather than success when all whole bodies are omitted');
+  }
+
+
+  {
+    const whole = strictFixture(memoryRoot, [['syn:whole', 'FULL PROVENANCE TEST']]);
+    const r = await helper.prepareAgentTask({ memoryRoot, taskSpec },
+      { selector: async () => whole });
+    check(r.status === 'ok' && r.message.startsWith(taskSpec) &&
+      r.message.includes('FULL PROVENANCE TEST') && r.message.includes('selected=1 displayed=1') &&
+      r.message.includes('stage=emitted') && r.receipt?.pointers[0].visibility === 'whole' &&
+      !r.message.includes('c'.repeat(64)) && !r.message.includes('f'.repeat(64)) &&
+      Buffer.byteLength(lessonBlock(r.message, taskSpec), 'utf8') <= helper.MAX_BLOCK_BYTES,
+      'agent-task preserves source-bound whole lesson, compact diagnostics and original task prefix');
+  }
+  {
+    const long = '教'.repeat(1900) + 'FINAL-EXCEPTION';
+    const data = strictFixture(memoryRoot, [['syn:huge1', long],
+      ['syn:huge2', long], ['syn:huge3', 'short complete']]);
+    const r = await helper.prepareAgentTask({ memoryRoot, taskSpec },
+      { selector: async () => data });
+    check(r.message.startsWith(taskSpec) && r.receipt?.counts.selected === 3 &&
+      r.receipt.counts.omitted >= 1 && r.receipt.pointers.some((p) => p.reason === 'task-budget') &&
+      Buffer.byteLength(lessonBlock(r.message, taskSpec), 'utf8') <= helper.MAX_BLOCK_BYTES &&
+      r.message.includes('fullEntrySHA256=') &&
+      (!r.message.includes('教'.repeat(40)) || r.message.includes('FINAL-EXCEPTION')) &&
+      r.message.includes('short complete'), 'agent-task retains three ranked pointers without partial long entry');
+  }
+  {
+    const omitted = strictFixture(memoryRoot, [['syn:omitted', 'HIDDEN']], true);
+    const r = await helper.prepareAgentTask({ memoryRoot, taskSpec },
+      { selector: async () => omitted });
+    check(r.status === 'unavailable' && r.reason === 'output-limit' &&
+      r.receipt?.counts.selected === 1 && r.receipt.counts.displayed === 0 &&
+      r.message.includes('syn:omitted') && r.message.includes('selector-budget') &&
+      !r.message.includes('HIDDEN') && r.lessons.length === 1,
+      'agent-task preserves selector all-omitted receipts and source pointer despite unavailable status');
+  }
+  {
+    const longTag = 'demo:' + 'x'.repeat(130);
+    const accepted = helper.normaliseSelectorResult(
+      strictFixture(memoryRoot, [[longTag, 'LONG TAG BODY']]), memoryRoot);
+    const rejected = helper.normaliseSelectorResult(
+      strictFixture(memoryRoot, [['demo:' + 'x'.repeat(508), 'TOO LONG']]), memoryRoot);
+    check(accepted.status === 'ok' && accepted.items[0].tag === longTag &&
+      accepted.receipt.pointers[0].tag === longTag && rejected.status === 'unavailable' &&
+      rejected.reason === 'invalid-selector-result' && !Object.hasOwn(rejected, 'receipt'),
+      'agent-task preserves a valid 135-character identity and rejects a receipt tag over 512 characters');
+  }
+  {
+    const dirty = { tag: 'demo:legacy\n' + 't'.repeat(180),
+      file: 'lessons.md\r\n' + 'f'.repeat(380), line: 7, endLine: 9,
+      hash: 'bad\t' + 'h'.repeat(180), trust: 'observed\n' + 'r'.repeat(120), text: 'legacy body' };
+    const normalized = helper.normaliseSelectorResult(
+      { status: 'ok', reason: null, items: [dirty], warnings: [] }, memoryRoot);
+    const legacy = normalized.items[0], metadata = legacy.tag + legacy.file + legacy.hash + legacy.trust;
+    check(normalized.status === 'ok' && !/[\u0000-\u001f\u007f]/.test(metadata) &&
+      Buffer.byteLength(legacy.tag, 'utf8') <= 120 && Buffer.byteLength(legacy.file, 'utf8') <= 360 &&
+      Buffer.byteLength(legacy.hash, 'utf8') <= 128 && Buffer.byteLength(legacy.trust, 'utf8') <= 80,
+      'receipt-absent agent-task legacy metadata keeps control cleaning and historical byte caps');
+  }
+  {
+    const limited = strictSelectionLimitFixture(memoryRoot);
+    const normalized = helper.normaliseSelectorResult(limited, memoryRoot);
+    const result = await helper.prepareAgentTask({ memoryRoot, taskSpec },
+      { selector: async () => limited });
+    check(normalized.status === 'unavailable' && normalized.reason === 'selection-limit' &&
+      normalized.receipt.counts.matched === 1 && result.status === 'unavailable' &&
+      result.reason === 'selection-limit' && result.lessons.length === 0 &&
+      result.message.startsWith(taskSpec) &&
+      result.message.includes('存在匹配，但受固定候选选择上限限制，主审需补查') &&
+      !result.message.includes('没有历史候选') && !result.message.includes('output-limit') &&
+      !result.message.includes('demo:limited-safe5') && !result.message.includes('SAFE-FIFTH-BODY'),
+      'agent-task preserves finite selection-limit receipt, task prefix and truthful no-ID text');
+  }
+  {
+    const valid = [strictNoMatchFixture(memoryRoot), strictNoMatchFixture(memoryRoot, 'empty-query'),
+      strictFixture(memoryRoot, [['syn:omitted-control', 'HIDDEN']], true)];
+    const base = strictNoMatchFixture(memoryRoot);
+    const invalid = [
+      { ...base, reason: 'output-limit' }, { ...base, reason: null },
+      { ...base, reason: 7 }, { ...base, reason: 'future-reason' },
+      { ...base, receipt: { ...base.receipt, stage: 'omitted' } },
+      { ...base, receipt: { ...base.receipt, counts: { ...base.receipt.counts,
+        matched: 1, matchedIdsNotListed: 1 } } },
+      { ...base, receipt: { ...base.receipt, counts: { ...base.receipt.counts,
+        matched: 2, matchedIdsNotListed: 2 } } },
+    ].map((value) => helper.normaliseSelectorResult(value, memoryRoot));
+    const normalized = valid.map((value) => helper.normaliseSelectorResult(value, memoryRoot));
+    check(normalized[0].status === 'no-match' && normalized[0].reason === 'no-lexical-match' &&
+      normalized[1].status === 'no-match' && normalized[1].reason === 'empty-query' &&
+      normalized[2].status === 'unavailable' && normalized[2].reason === 'output-limit' &&
+      invalid.every((value) => value.status === 'unavailable' &&
+        value.reason === 'invalid-selector-result' && !Object.hasOwn(value, 'receipt')),
+      'agent-task accepts coherent finite receipt outcomes and rejects contradictory reasons/stages/counts');
+  }
+  {
+    const original = strictFixture(memoryRoot, [['syn:invalid', 'SHOULD NEVER BE RENDERED']]);
+    const wrong = [ { ...original.receipt, v: 7 },
+      { ...original.receipt, extra: 1 },
+      { ...original.receipt, counts: { ...original.receipt.counts, omitted: 1 } },
+      { ...original.receipt, pointers: [{ ...original.receipt.pointers[0], sourceRoot: memoryRoot + 'other' }] },
+      { ...original.receipt, pointers: [{ ...original.receipt.pointers[0], tag: 'another:tag' }] } ];
+    const outcomes = [];
+    for (const receipt of wrong) outcomes.push(await helper.prepareAgentTask({ memoryRoot, taskSpec },
+      { selector: async () => ({ ...original, receipt }) }));
+    check(outcomes.every((r) => r.status === 'unavailable' &&
+      r.reason === 'invalid-selector-result' && r.lessons.length === 0 &&
+      r.message.startsWith(taskSpec) && !r.message.includes('SHOULD NEVER BE RENDERED')),
+      'agent-task invalid v1 receipt fails closed with task prefix unchanged');
   }
 
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' agent task context self-test ' + passed + '/' + total + '\n');

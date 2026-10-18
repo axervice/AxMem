@@ -1,5 +1,33 @@
 # AxMem CHANGELOG
 
+## 2026-10-18 — Recall A1/R2 local integration; lifecycle verification remains partial
+
+- Installed the accepted selector, hook bridge and delegated task helper together at the existing absolute local Codex adapter path. The six code/test working-byte hashes match candidate commit 0a908d859d04ca9574ee111537748ccf6188f1cf; bundled MiniSearch, manifest, prelude and msys-path hashes are unchanged. The prior notice-only commit 7c3965dff6ab9bfedcf2bfdb7061a207164d1b22 is preserved separately for rollback.
+- Reused source-bound isolated live evidence: targeted 3/3, selector 35/35, bridge 31/31 and helper 27/27, all native RC 0 with no timeout or source change. A minimal read-only real-PMM smoke returned valid v1 receipts: empty probe eligible 636; the directed query and helper reported output-limit with matched/selected 3, displayed 0 and omitted 3. This is a bounded omission, not no-match. PMM input hashes, root names, adapter source and hooks/AGENTS hashes were unchanged.
+- Activation evidence is separate: main observed two normal UserPromptSubmit model-visible v1 receipts after installation (query-ran 0/0/0 and omitted 3/0/3). SessionStart, explicit SubagentStart event identity, normal /hooks trust state and complete lifecycle delivery remain UNKNOWN. The helper was explicitly invoked from the installed absolute path; package delivery and adoption require separate evidence. Manual API success does not prove client dispatch.
+- The installed bytes and documentation are a local integration, not a complete online release, remote publication, or closure of A2/R16/P2. No hook configuration or trust ledger was changed. Historical candidate entries below describe their original observation time. Execution attribution is retained: earlier commit/install/tests by gpt-5.6-sol, continuation smoke/documentation/integration by gpt-6.1-sol; actual token use is unknown.
+
+
+## 2026-10-18 — Recall A1 R3 legacy compatibility and selection diagnostics candidate (NOT installed)
+
+- R3 main-review rework restores receipt-absent legacy metadata cleaning and byte caps while retaining exact identity validation for strict receipt-present results.
+- When complete diagnostics find a match outside the unchanged four-citation ranking cap and fixed ranking selects nothing, the candidate now returns the finite `selection-limit` unavailable reason with truthful counts and no additional IDs or bodies. Search windows, ranking and top-three selection are unchanged.
+- Synthetic evidence only; this isolated candidate is not installed, approved, committed, merged, pushed or released.
+
+
+## 2026-10-18 — Recall A1 R2 receipt consistency candidate (NOT installed)
+
+- R2 candidate only: preserves valid selector identities through 512 characters in both consumers, reports complete distinct match counts beyond the four-citation ranking cap, and rejects receipt-present status/reason/stage contradictions while retaining receipt-absent source-failure fallback behavior.
+- The 2026-10-16 notice entry below remains a historical candidate snapshot. This R2 work is an uninstalled follow-up in the isolated Recall A1 worktree; it does not state that either candidate is installed, approved, or released.
+
+
+## 2026-10-17 — Recall A1 bounded receipt and complete entry candidate (NOT installed)
+
+- A1 candidate only: versioned, strictly validated in-memory receipts and source-bound full-entry pointers, all-or-nothing entry display, truthful output-limit omissions, and verifiable date/unique replacement metadata. Selector, Codex hook bridge, and delegated task helper retain the original event/API caps, explicit supersession graph, source/race safety and permission notice.
+- Offline isolated evidence: legacy selector target red for an actual mid-entry slice (RC1); corresponding candidate target green (RC0); selector synthetic 33/33, bridge synthetic 27/27, delegated task synthetic 23/23, all RC0 with source-bound logs. A1 does not improve lexical query ranking or change the first-256/first-8192 search windows.
+- Development only: no real PMM source, raw user prompts, installed hook, model, production state, commit, push, merge or release. AUTO-01/A2, AUTO-03 and AUTO-06 remain unimplemented and require separate leases; candidate delivery is not independent review or host installation.
+
+
 ## 2026-10-16 — Codex recall notice factual scope correction (candidate, NOT installed)
 
 - Historical memory recall grants no new privileges. The recall hook reads PMM only; a hook-local read-only operation is not an enduring user-wide ban on memory updates. Any memory write remains subject to currently effective session permissions and authorization. Conflicting historical and current instructions require current-context review and clarification of temporary versus long-term changes.

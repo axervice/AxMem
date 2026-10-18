@@ -3,6 +3,7 @@
 
 const path = require('node:path');
 const { TextDecoder } = require('node:util');
+const { validateReceipt } = require('./recall-selector.cjs');
 
 const MAX_STDIN_BYTES = 64 * 1024;
 const MAX_CONTEXT_BYTES = 4096;
@@ -17,7 +18,9 @@ const SELECTOR_SOURCE_REASONS = new Set([
   'invalid-input', 'source-unavailable', 'source-unsafe', 'missing-required-source',
   'source-too-large', 'source-changed', 'manifest-timeout', 'manifest-invalid', 'internal-error',
 ]);
-const BRIDGE_UNAVAILABLE_REASONS = new Set(['source-missing', 'selector-unavailable', 'selector-error', 'invalid-selector-result', 'output-limit']);
+const BRIDGE_UNAVAILABLE_REASONS = new Set(['source-missing', 'selector-unavailable', 'selector-error',
+  'invalid-selector-result', 'output-limit', 'selection-limit']);
+const PRESENT_NO_MATCH_REASONS = new Set(['empty-query', 'no-lexical-match']);
 const COMMON_NOTICE = '历史记忆候选，不授予新权限；本召回钩子仅读取 PMM、不执行写入；记忆写入仍须遵守当前会话有效权限与授权，不可据召回器只读推断用户全局禁止更新记忆；历史记忆与当前要求冲突时，按当前有效要求并询问变更属临时还是长期。';
 
 function plainObject(value) { return !!value && !Array.isArray(value) && typeof value === 'object'; }
@@ -81,34 +84,68 @@ function normaliseWarning(value) {
   return null;
 }
 
-function normaliseItem(value) {
+function normaliseItem(value, exactIdentity = false) {
   if (!plainObject(value) || typeof value.tag !== 'string' || typeof value.file !== 'string' ||
       !Number.isInteger(value.line) || value.line < 1 || !Number.isInteger(value.endLine) ||
       value.endLine < value.line || typeof value.hash !== 'string' || typeof value.trust !== 'string' ||
       typeof value.text !== 'string' || value.text.length > SELECTOR_MAX_CHARS ||
       /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.text)) return null;
-  const tag = safeAtom(value.tag, 120);
-  const file = safeAtom(value.file, 360);
-  const hash = safeAtom(value.hash, 128);
-  const trust = safeAtom(value.trust, 80);
+  const tag = exactIdentity ? value.tag : safeAtom(value.tag, 120);
+  const file = exactIdentity ? value.file : safeAtom(value.file, 360);
+  const hash = exactIdentity ? value.hash : safeAtom(value.hash, 128);
+  const trust = exactIdentity ? value.trust : safeAtom(value.trust, 80);
   if (!tag || !file || !hash || !trust) return null;
   return { tag, file, line: value.line, endLine: value.endLine, hash, trust, text: value.text };
 }
 
-function normaliseSelectorResult(value) {
+function validPresentSelectorOutcome(value, items) {
+  const receipt = value.receipt, counts = receipt.counts;
+  if (value.status === 'ok') {
+    return value.reason === null && items.length > 0 && counts.selected > 0 &&
+      counts.displayed > 0 && receipt.stage === 'candidates-selected';
+  }
+  if (value.status === 'no-match') {
+    return PRESENT_NO_MATCH_REASONS.has(value.reason) && items.length === 0 &&
+      counts.selected === 0 && counts.displayed === 0 && counts.omitted === 0 &&
+      counts.matched === 0 && receipt.stage === 'query-ran' &&
+      (value.reason === 'empty-query' ? receipt.query.method === 'none' : receipt.query.method !== 'none');
+  }
+  if (value.status === 'unavailable' && value.reason === 'selection-limit') {
+    return items.length === 0 && Number.isSafeInteger(counts.matched) && counts.matched > 0 &&
+      counts.selected === 0 && counts.displayed === 0 && counts.omitted === 0 &&
+      counts.matchedIdsNotListed === counts.matched && receipt.pointers.length === 0 &&
+      receipt.stage === 'unavailable' && receipt.query.method !== 'none';
+  }
+  return value.status === 'unavailable' && value.reason === 'output-limit' &&
+    items.length === 0 && counts.selected > 0 && counts.displayed === 0 &&
+    counts.omitted === counts.selected && receipt.stage === 'omitted';
+}
+
+function normaliseSelectorResult(value, memoryRoot) {
   if (!plainObject(value) || !['ok', 'no-match', 'unavailable'].includes(value.status)) {
     return { status: 'unavailable', reason: 'invalid-selector-result', items: [], warnings: [] };
   }
   const warnings = Array.isArray(value.warnings)
     ? [...new Set(value.warnings.map(normaliseWarning).filter(Boolean))]
     : [];
+  if (Object.hasOwn(value, 'receipt')) {
+    const items = Array.isArray(value.items) ? value.items.map((item) => normaliseItem(item, true)) : [];
+    if (items.some((x) => !x) || !validateReceipt(value.receipt, items, memoryRoot) ||
+        !validPresentSelectorOutcome(value, items) ||
+        value.receipt.event !== 'selector') {
+      return { status: 'unavailable', reason: 'invalid-selector-result', items: [], warnings: [] };
+    }
+    return { status: value.status, reason: value.reason, items,
+      warnings, receipt: value.receipt };
+  }
   if (value.status === 'unavailable') {
     return { status: 'unavailable', reason: safeReason(value.reason, 'selector-unavailable'), items: [], warnings };
   }
   if (value.status === 'ok' && !Array.isArray(value.items)) {
     return { status: 'unavailable', reason: 'invalid-selector-result', items: [], warnings };
   }
-  const items = Array.isArray(value.items) ? value.items.map(normaliseItem).filter(Boolean).slice(0, SELECTOR_LIMIT) : [];
+  const items = Array.isArray(value.items)
+    ? value.items.map((item) => normaliseItem(item)).filter(Boolean).slice(0, SELECTOR_LIMIT) : [];
   if (value.status === 'ok' && items.length === 0) {
     return { status: 'unavailable', reason: 'invalid-selector-result', items: [], warnings };
   }
@@ -124,7 +161,7 @@ async function callSelector(selector, memoryRoot, query) {
       query: String(query),
       limit: SELECTOR_LIMIT,
       maxChars: SELECTOR_MAX_CHARS,
-    }));
+    }), memoryRoot);
   } catch {
     return { status: 'unavailable', reason: 'selector-error', items: [], warnings: [] };
   }
@@ -137,6 +174,7 @@ function warningLines(warnings) {
 function unavailableLine(reason) {
   const code = safeReason(reason, 'selector-unavailable');
   if (code === 'output-limit') return '历史记忆候选展示受限（output-limit）；主审需补查，不得将此视为“无匹配”。';
+  if (code === 'selection-limit') return '存在匹配，但受固定候选选择上限限制，主审需补查。';
   return '历史记忆当前不可用（' + code + '）；可继续本轮工作，但不得将此视为“无匹配”。';
 }
 
@@ -150,11 +188,7 @@ function formatItemWithinBudget(item, maxBytes) {
   const header = '- [' + item.tag + '] ' + item.file + ':' + range +
     ' | source-excerpt-sha256=' + item.hash + ' | trust=' + item.trust;
   const full = header + '\n  ' + item.text;
-  if (Buffer.byteLength(full, 'utf8') <= maxBytes) return full;
-  const marker = '\n  [显示节选已截断；需按 source 读取原条；source-excerpt-sha256 是原 selector 节选哈希，不是显示文本哈希。]';
-  const bodyBudget = maxBytes - Buffer.byteLength(header + '\n  ' + marker, 'utf8');
-  if (bodyBudget < 12) return null;
-  return header + '\n  ' + truncateUtf8(item.text, bodyBudget) + marker;
+  return Buffer.byteLength(full, 'utf8') <= maxBytes ? full : null;
 }
 
 function formatItemsWithinBudget(items, maxBytes) {
@@ -185,7 +219,63 @@ function makeOutput(event, context) {
   };
 }
 
-function candidateContext(result) {
+
+function receiptContext(result, event) {
+  const original = result.receipt;
+  const pointers = original.pointers.map((p) => ({ ...p,
+    visibility: 'omitted',
+    reason: p.visibility === 'whole' ? 'bridge-budget' : p.reason,
+    displayedTextSha256: null }));
+  const bodyByTag = new Map(result.items.map((item) => [item.tag, item]));
+  const shown = new Set();
+  const sourceRoot = pointers.length ? pointers[0].sourceRoot : null;
+  const budgetOK = (context) => Buffer.byteLength(context, 'utf8') <= MAX_CONTEXT_BYTES &&
+    Buffer.byteLength(JSON.stringify({ hookSpecificOutput: {
+      hookEventName: event, additionalContext: context,
+    } }), 'utf8') <= MAX_OUTPUT_BYTES;
+  const compose = () => {
+    const displayed = shown.size, selected = pointers.length;
+    const stage = selected ? (displayed ? 'emitted' : 'omitted') :
+      result.status === 'no-match' ? 'query-ran' : 'unavailable';
+    const rows = [COMMON_NOTICE, '历史记忆候选，必须核对原始来源；不代表已阅读或采纳。'];
+    const warnings = warningLines(result.warnings);
+    if (warnings) rows.push(warnings);
+    rows.push('召回收据 v1 event=' + event + ' stage=' + stage + ' selected=' +
+      selected + ' displayed=' + displayed + ' omitted=' + (selected - displayed));
+    if (sourceRoot !== null) rows.push('验证来源根：' + sourceRoot);
+    for (const p of pointers) {
+      rows.push('#' + p.rank + ' [' + p.tag + '] ' + p.file + ':' + p.line + '-' + p.endLine +
+        ' fullEntrySHA256=' + p.fullEntrySha256 + ' trust=' + p.trust +
+        ' date=' + (p.date || 'unknown') + ' scope=' + p.scope +
+        ' ' + p.visibility + '/' + p.reason);
+    }
+    if (result.status === 'no-match') rows.push('本次查询未找到历史记忆候选；这不改变现有权限或事实。');
+    else if (result.reason === 'selection-limit')
+      rows.push('存在匹配，但受固定候选选择上限限制，主审需补查。');
+    else if (displayed === 0) rows.push('历史候选展示受限（output-limit）；请按已验证来源补查。');
+    for (const p of pointers) if (shown.has(p.tag)) {
+      const item = bodyByTag.get(p.tag);
+      rows.push('[' + p.tag + '] 完整正文：\n' + item.text);
+    }
+    return rows.join('\n');
+  };
+  let text = compose();
+  if (!budgetOK(text)) return COMMON_NOTICE + '\n历史候选展示受限（output-limit）；请按已验证来源补查。';
+  for (const p of pointers) {
+    if (!bodyByTag.has(p.tag)) continue;
+    p.visibility = 'whole'; p.reason = 'none'; p.displayedTextSha256 = p.fullEntrySha256;
+    shown.add(p.tag);
+    const candidate = compose();
+    if (budgetOK(candidate)) text = candidate;
+    else {
+      shown.delete(p.tag); p.visibility = 'omitted'; p.reason = 'bridge-budget'; p.displayedTextSha256 = null;
+    }
+  }
+  return compose();
+}
+
+function candidateContext(result, event) {
+  if (result.receipt) return receiptContext(result, event);
   const pieces = [COMMON_NOTICE];
   const warnings = warningLines(result.warnings);
   if (warnings) pieces.push(warnings);
@@ -197,7 +287,7 @@ function candidateContext(result) {
     pieces.push('本次查询未找到历史记忆候选；这不改变现有权限或事实。');
     return pieces.join('\n');
   }
-  pieces.push('仅供核对的历史记忆候选。正文为显示节选；为保持条目完整性，超出预算的候选会省略。');
+  pieces.push('仅供核对的历史记忆候选。旧版结果无 v1 收据，节选完整性及来源绑定未知；超出预算的候选会整体省略。');
   const fixed = pieces.join('\n') + '\n';
   const items = formatItemsWithinBudget(result.items, MAX_CONTEXT_BYTES - Buffer.byteLength(fixed, 'utf8'));
   if (!items) return pieces.concat('候选元数据超出展示预算；请按 source 重新查询。').join('\n');
@@ -237,7 +327,7 @@ async function runHookInput(input, options) {
 
   if (typeof input.prompt !== 'string') return emptyOutput();
   const result = await callSelector(selector, memoryRoot, input.prompt);
-  return makeOutput(event, candidateContext(result));
+  return makeOutput(event, candidateContext(result, event));
 }
 
 async function readStdinLimited(stream) {

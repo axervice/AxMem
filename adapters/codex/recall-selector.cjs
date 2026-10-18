@@ -32,7 +32,7 @@ function result(status, reason, items = [], warnings = []) { return { status, re
 function tagIn(text) { return typeof text === 'string' && TAG.test(text); }
 
 function localMemoryRoot(memoryRoot, platform) {
-  if (typeof memoryRoot !== 'string' || !memoryRoot || memoryRoot.includes('\0'))
+  if (typeof memoryRoot !== 'string' || !memoryRoot || /[\u0000-\u001f\u007f]/.test(memoryRoot))
     return false;
   const slashedRoot = memoryRoot.replace(/\\/g, '/');
   // Do this before any fs call. UNC and Win32 device namespaces may cross a
@@ -169,7 +169,10 @@ function boundEntries(manifest, sources) {
         sha(Buffer.from(parserProjection, 'utf8')).slice(0, 16) !== entry.blockHash)
       fail('manifest-source-mismatch');
     if (entry.supersedes.some((old) => !tagIn(old))) fail('manifest-invalid');
-    entries.push({ ...entry, text });
+    const dateInSource = /^\*\*(20[0-9-]{8})[^*]*\*\*/.exec(firstLine);
+    const verifiedDate = dateInSource && dateInSource[1] === entry.date && validDate(entry.date)
+      ? entry.date : null;
+    entries.push({ ...entry, date: verifiedDate, text });
   }
   return entries;
 }
@@ -251,7 +254,7 @@ function tokenize(text) {
   }
   return words;
 }
-function citedTags(scan, graph) {
+function citedTags(scan, graph, limit = 4) {
   const found = [];
   const left = (ch) => ch === undefined || /[\s"'([{,;，。；、\p{Script=Han}]/u.test(ch);
   const right = (ch) => ch === undefined || /[\s"')\]},;!?，。；、\p{Script=Han}]/u.test(ch);
@@ -268,7 +271,7 @@ function citedTags(scan, graph) {
           !graph.excluded.has(withoutTerminalDots)) tag = withoutTerminalDots;
     }
     if (graph.byTag.has(tag) && !found.includes(tag)) found.push(tag);
-    if (found.length >= 4) break;
+    if (found.length >= limit) break;
   }
   return found;
 }
@@ -280,48 +283,170 @@ function select(entries, graph, query, scan, limit) {
   const mini = new MiniSearch({ idField: 'id', fields: ['title', 'body'], storeFields: [],
     tokenize, processTerm: (term) => term, searchOptions: { combineWith: 'OR', prefix: false, fuzzy: false } });
   if (docs.length) mini.addAll(docs);
+  const allCitedTags = citedTags(scan, graph, Number.POSITIVE_INFINITY);
+  const rankedCitedTags = allCitedTags.slice(0, 4);
   const ranked = [];
-  for (const tag of citedTags(scan, graph)) {
+  for (const tag of rankedCitedTags) {
     if (graph.excluded.has(tag) || !graph.byTag.has(tag)) continue;
     const source = graph.byTag.get(tag)[0];
     if (!TRUST.has(source.trust)) continue;
     const head = graph.headOf(tag);
     if (head && byTag.has(head) && !ranked.includes(byTag.get(head))) ranked.push(byTag.get(head));
   }
-  for (const found of mini.search(query).slice(0, limit + 20)) {
-    const entry = byTag.get(found.id);
-    if (entry && !ranked.includes(entry)) ranked.push(entry);
-    if (ranked.length >= limit) break;
+  const lexicalHits = mini.search(query);
+  const hitTags = new Set();
+  for (const tag of allCitedTags) {
+    if (graph.excluded.has(tag) || !graph.byTag.has(tag)) continue;
+    const source = graph.byTag.get(tag)[0];
+    if (!TRUST.has(source.trust)) continue;
+    const head = graph.headOf(tag);
+    if (head && byTag.has(head)) hitTags.add(head);
   }
-  return { ranked: ranked.slice(0, limit), current, unknownTrustExcluded: entries.filter((e) => !TRUST.has(e.trust)).length };
+  for (const found of lexicalHits) {
+    const entry = byTag.get(found.id);
+    if (entry) hitTags.add(entry.tag);
+    if (entry && !ranked.includes(entry) && ranked.length < limit) ranked.push(entry);
+  }
+  const fromTags = new Map();
+  for (const cited of rankedCitedTags) {
+    const head = graph.headOf(cited);
+    if (head && head !== cited && byTag.has(head) && !fromTags.has(head)) fromTags.set(head, cited);
+  }
+  return { ranked: ranked.slice(0, limit), current, matched: hitTags.size, fromTags,
+    unknownTrustExcluded: entries.filter((e) => !TRUST.has(e.trust)).length };
 }
 
-function boundedItems(selected, warnings, maxChars) {
-  const items = [];
-  let clipped = false;
-  for (const entry of selected) {
-    const base = { tag: entry.tag, file: entry.file, line: entry.line, endLine: entry.endLine,
-      hash: '', trust: entry.trust === null ? 'undeclared' : entry.trust, text: '' };
-    let low = 0, high = entry.text.length;
-    while (low < high) {
-      const mid = Math.ceil((low + high) / 2);
-      const text = entry.text.slice(0, mid).replace(/[\uD800-\uDBFF]$/, '');
-      const item = { ...base, text, hash: sha(Buffer.from(text, 'utf8')) };
-      const trial = result('ok', null, [...items, item], [...warnings, 'lexical-historical-reference', 'excerpt-may-be-truncated']);
-      if (JSON.stringify(trial).length <= maxChars) low = mid;
-      else high = mid - 1;
+
+const HEX64 = /^[a-f0-9]{64}$/;
+const ITEM_FILES = new Set(FILES.slice(0, 3));
+const RECEIPT_EVENTS = new Set(['selector', 'SessionStart', 'UserPromptSubmit', 'SubagentStart', 'agent-task']);
+const RECEIPT_STAGES = new Set(['source-probed', 'query-ran', 'candidates-selected', 'emitted', 'omitted', 'unavailable']);
+const QUERY_METHODS = new Set(['none', 'lexical', 'explicit-tag', 'mixed']);
+const VISIBILITIES = new Set(['whole', 'omitted']);
+const OMISSION_REASONS = new Set(['none', 'selector-budget', 'bridge-budget', 'task-budget']);
+function exactKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+const R_KEYS = ['v', 'event', 'stage', 'query', 'counts', 'pointers'];
+const Q_KEYS = ['method', 'originalChars', 'effectiveChars', 'sha256'];
+const C_KEYS = ['eligible', 'matched', 'selected', 'displayed', 'omitted', 'matchedIdsNotListed'];
+const P_KEYS = ['rank', 'sourceRoot', 'file', 'line', 'endLine', 'tag', 'trust', 'sourceFileSha256',
+  'fullEntrySha256', 'displayedTextSha256', 'date', 'scope', 'resolvedFromTag', 'visibility', 'reason'];
+const integer = (v, max) => Number.isSafeInteger(v) && v >= 0 && v <= max;
+function validDate(v) {
+  if (v === null) return true;
+  if (typeof v !== 'string' || !/^\d{4}-\d\d-\d\d$/.test(v)) return false;
+  const d = new Date(v + 'T00:00:00.000Z');
+  return Number.isFinite(d.valueOf()) && d.toISOString().slice(0, 10) === v;
+}
+function validateReceipt(receipt, items, memoryRoot) {
+  if (!exactKeys(receipt, R_KEYS) || receipt.v !== 1 ||
+      !RECEIPT_EVENTS.has(receipt.event) || !RECEIPT_STAGES.has(receipt.stage) ||
+      !exactKeys(receipt.query, Q_KEYS) || !exactKeys(receipt.counts, C_KEYS) ||
+      !Array.isArray(receipt.pointers)) return false;
+  const q = receipt.query, c = receipt.counts;
+  if (!QUERY_METHODS.has(q.method) || !integer(q.originalChars, 65536) ||
+      !integer(q.effectiveChars, 65536) || q.effectiveChars > q.originalChars ||
+      !(q.sha256 === null || typeof q.sha256 === 'string' && HEX64.test(q.sha256)) ||
+      (q.method === 'none' && (q.effectiveChars !== 0 || q.sha256 !== null)) ||
+      (q.method !== 'none' && (q.effectiveChars === 0 || q.sha256 === null))) return false;
+  if (!integer(c.eligible, 5000) || !(c.matched === null || integer(c.matched, 5000)) ||
+      !integer(c.selected, 3) || !integer(c.displayed, 3) || !integer(c.omitted, 3) ||
+      c.displayed + c.omitted !== c.selected || c.selected > c.eligible ||
+      c.matched !== null && (c.matched < c.selected || c.matched > c.eligible) ||
+      !(c.matchedIdsNotListed === null || integer(c.matchedIdsNotListed, 5000)) ||
+      (c.matched === null ? c.matchedIdsNotListed !== null : c.matchedIdsNotListed !== c.matched - c.selected) ||
+      receipt.pointers.length !== c.selected || items.length !== c.displayed) return false;
+  const selected = new Set();
+  let itemIndex = 0;
+  for (let i = 0; i < receipt.pointers.length; i++) {
+    const p = receipt.pointers[i];
+    if (!exactKeys(p, P_KEYS) || p.rank !== i + 1 ||
+        typeof p.sourceRoot !== 'string' || p.sourceRoot !== memoryRoot ||
+        Buffer.byteLength(p.sourceRoot, 'utf8') > 512 ||
+        !ITEM_FILES.has(p.file) || !integer(p.line, 4194305) || p.line < 1 ||
+        !integer(p.endLine, 4194305) || p.endLine < p.line ||
+        !tagIn(p.tag) || p.tag.length > 512 || selected.has(p.tag) ||
+        !['observed', 'derived', 'user-ratified', 'undeclared'].includes(p.trust) ||
+        typeof p.sourceFileSha256 !== 'string' || !HEX64.test(p.sourceFileSha256) ||
+        typeof p.fullEntrySha256 !== 'string' || !HEX64.test(p.fullEntrySha256) ||
+        !(p.displayedTextSha256 === null ||
+          typeof p.displayedTextSha256 === 'string' && HEX64.test(p.displayedTextSha256)) ||
+        !validDate(p.date) || p.scope !== 'unknown' ||
+        !(p.resolvedFromTag === null || tagIn(p.resolvedFromTag) && p.resolvedFromTag.length <= 512) ||
+        !VISIBILITIES.has(p.visibility) || !OMISSION_REASONS.has(p.reason) ||
+        (p.visibility === 'whole' && (p.reason !== 'none' ||
+          p.displayedTextSha256 !== p.fullEntrySha256)) ||
+        (p.visibility === 'omitted' && (p.reason === 'none' || p.displayedTextSha256 !== null)))
+      return false;
+    selected.add(p.tag);
+    if (p.visibility === 'whole') {
+      const item = items[itemIndex++];
+      if (!item || item.tag !== p.tag || item.file !== p.file ||
+          item.line !== p.line || item.endLine !== p.endLine || item.trust !== p.trust ||
+          typeof item.text !== 'string' || item.hash !== p.fullEntrySha256 ||
+          sha(Buffer.from(item.text, 'utf8')) !== p.fullEntrySha256) return false;
     }
-    if (low === 0) break;
-    const text = entry.text.slice(0, low).replace(/[\uD800-\uDBFF]$/, '');
-    if (text.length === 0) break;
-    clipped ||= text.length < entry.text.length;
-    items.push({ ...base, text, hash: sha(Buffer.from(text, 'utf8')) });
   }
-  if (!items.length) return result('unavailable', 'output-limit', [], warnings);
-  const final = result('ok', null, items, [...warnings, 'lexical-historical-reference',
-    ...(clipped ? ['excerpt-may-be-truncated'] : [])]);
-  if (JSON.stringify(final).length > maxChars) fail('output-limit');
-  return final;
+  return true;
+}
+function digestQuery(query, method) {
+  const scan = method === 'none' ? '' : query.slice(0, method === 'lexical' ? 256 : 8192);
+  return { method, originalChars: query.length, effectiveChars: scan.length,
+    sha256: method === 'none' ? null : sha(Buffer.from('axmem-recall-q:v1\0' + scan, 'utf8')) };
+}
+function compactReceiptResult(receipt, warnings, items, maxChars, status, reason) {
+  const obj = { status, reason, items, warnings, receipt };
+  return JSON.stringify(obj).length <= maxChars ? obj : null;
+}
+function outputLimit() { return result('unavailable', 'output-limit'); }
+function entryPointer(entry, rank, memoryRoot, sources, fromTag) {
+  const rootFile = sources.files.get(entry.file);
+  const textHash = sha(Buffer.from(entry.text, 'utf8'));
+  return {
+    rank, sourceRoot: memoryRoot, file: entry.file, line: entry.line, endLine: entry.endLine,
+    tag: entry.tag, trust: entry.trust === null ? 'undeclared' : entry.trust,
+    sourceFileSha256: rootFile.hash, fullEntrySha256: textHash,
+    displayedTextSha256: null, date: validDate(entry.date) && entry.date !== null ? entry.date : null,
+    scope: 'unknown', resolvedFromTag: fromTag || null, visibility: 'omitted', reason: 'selector-budget',
+  };
+}
+function wholeItems(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags) {
+  if (Buffer.byteLength(memoryRoot, 'utf8') > 512 || selected.some((e) => e.tag.length > 512))
+    return outputLimit();
+  const pointers = selected.map((entry, i) => entryPointer(entry, i + 1, memoryRoot, sources, fromTags.get(entry.tag)));
+  const counts = { eligible, matched, selected: selected.length, displayed: 0, omitted: selected.length,
+    matchedIdsNotListed: matched === null ? null : matched - selected.length };
+  const selectionLimited = selected.length === 0 && matched !== null && matched > 0;
+  const receipt = { v: 1, event: 'selector',
+    stage: selected.length ? 'omitted' : selectionLimited ? 'unavailable' : 'query-ran',
+    query: queryInfo, counts, pointers };
+  // Integrity-critical metadata must fit before any body. Never truncate a pointer.
+  const emptyStatus = selected.length || selectionLimited ? 'unavailable' : 'no-match';
+  const emptyReason = selected.length ? 'output-limit' : selectionLimited ? 'selection-limit' : 'no-lexical-match';
+  if (!compactReceiptResult(receipt, warnings, [], maxChars, emptyStatus, emptyReason)) return outputLimit();
+  const items = [];
+  for (let i = 0; i < selected.length; i++) {
+    const entry = selected[i], p = pointers[i];
+    const item = { tag: entry.tag, file: entry.file, line: entry.line, endLine: entry.endLine,
+      hash: p.fullEntrySha256, trust: p.trust, text: entry.text };
+    p.visibility = 'whole'; p.reason = 'none'; p.displayedTextSha256 = p.fullEntrySha256;
+    counts.displayed++; counts.omitted--;
+    receipt.stage = 'candidates-selected';
+    if (compactReceiptResult(receipt, warnings, [...items, item], maxChars, 'ok', null)) items.push(item);
+    else {
+      p.visibility = 'omitted'; p.reason = 'selector-budget'; p.displayedTextSha256 = null;
+      counts.displayed--; counts.omitted++;
+    }
+  }
+  receipt.stage = !selected.length ? (selectionLimited ? 'unavailable' : 'query-ran') :
+    counts.displayed ? 'candidates-selected' : 'omitted';
+  const status = !selected.length ? (selectionLimited ? 'unavailable' : 'no-match') :
+    counts.displayed ? 'ok' : 'unavailable';
+  const reason = !selected.length ? (selectionLimited ? 'selection-limit' : 'no-lexical-match') :
+    counts.displayed ? null : 'output-limit';
+  return compactReceiptResult(receipt, warnings, items, maxChars, status, reason) || outputLimit();
 }
 
 async function recall({ memoryRoot, query = '', limit = 3, maxChars = 2400 } = {}) {
@@ -351,14 +476,25 @@ async function recall({ memoryRoot, query = '', limit = 3, maxChars = 2400 } = {
     const graph = graphOf(entries, manifest);
     const graphCount = entries.filter((entry) => graph.excluded.has(entry.tag)).length;
     if (graphCount) warnings.push('graph-ambiguous-excluded:' + graphCount);
-    if (!query.trim()) return result('no-match', 'empty-query', [], warnings);
+    if (!query.trim()) {
+      const empty = select(entries, graph, '', '', boundedLimit);
+      const r = { v: 1, event: 'selector', stage: 'query-ran', query: digestQuery(query, 'none'),
+        counts: { eligible: empty.current.length, matched: 0, selected: 0, displayed: 0, omitted: 0,
+          matchedIdsNotListed: 0 }, pointers: [] };
+      return compactReceiptResult(r, warnings, [], maxChars, 'no-match', 'empty-query') || outputLimit();
+    }
     const selected = select(entries, graph, lexicalQuery, scan, boundedLimit);
     if (selected.unknownTrustExcluded) warnings.push('unknown-trust-excluded:' + selected.unknownTrustExcluded);
-    if (!selected.ranked.length) return result('no-match', 'no-lexical-match', [], warnings);
-    return boundedItems(selected.ranked, warnings, maxChars);
+    const hasCites = citedTags(scan, graph, Number.POSITIVE_INFINITY)
+      .some((tag) => !graph.excluded.has(tag));
+    const method = hasCites ? 'mixed' : 'lexical';
+    const q = digestQuery(query, method);
+    return wholeItems(selected.ranked,
+      selected.ranked.length ? [...warnings, 'lexical-historical-reference'] : warnings, maxChars,
+      memoryRoot, before, q, selected.current.length, selected.matched, selected.fromTags);
   } catch (error) {
     return result('unavailable', error instanceof SelectorError ? error.reason : 'internal-error');
   }
 }
 
-module.exports = { recall };
+module.exports = { recall, validateReceipt };

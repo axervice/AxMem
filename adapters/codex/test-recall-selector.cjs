@@ -99,7 +99,7 @@ function assertItem(result, tag) {
     assert.equal(found.reason, 'empty-query');
   });
   await check(async () => {
-    const badRoots = ['//server/share/memory', String.raw`\\server\share\memory`,
+    const badRoots = ['//server/share/memory', 'C:/synthetic\ninjected', String.raw`\\server\share\memory`,
       String.raw`\\?\C:\memory`, String.raw`\\.\C:\memory`,
       '/??/C:/memory', '/Device/HarddiskVolume1/memory',
       'file:/C:/memory', 'file://server/memory', 'https://example.invalid/memory'];
@@ -140,10 +140,51 @@ function assertItem(result, tag) {
     }
   });
   await check(async () => {
-    const found = await recall({ memoryRoot: normal, query: 'demo:new', maxChars: 512 });
-    assertItem(found, 'demo:new');
-    assert(JSON.stringify(found).length <= 512);
-    assert(found.items[0].text.length < fs.readFileSync(path.join(normal, 'decisions.md'), 'utf8').length);
+    const blocked = await recall({ memoryRoot: normal, query: 'demo:new', maxChars: 512 });
+    assert.equal(blocked.status, 'unavailable');
+    assert.equal(blocked.reason, 'output-limit');
+    assert.deepEqual(blocked.items, []);
+    assert(!Object.hasOwn(blocked, 'receipt'), 'integrity metadata may not be truncated to fit 512');
+    assert(JSON.stringify(blocked).length <= 512);
+    const full = await recall({ memoryRoot: normal, query: 'demo:new' });
+    assertItem(full, 'demo:new');
+    assert.equal(full.receipt.pointers[0].visibility, 'whole');
+    assert.equal(full.receipt.pointers[0].fullEntrySha256, full.items[0].hash);
+    assert.equal(full.receipt.pointers[0].sourceFileSha256,
+      crypto.createHash('sha256').update(fs.readFileSync(path.join(normal, 'decisions.md'))).digest('hex'));
+  });
+  const entire = fixture('entire-a1', [
+    entry('demo:oversized', 'Long rule', 'Start.\n' + 'A'.repeat(3600) +
+      '\nDECISIVE EXCEPTION: never confuse a prefix with the full rule.', '[trust:observed]'),
+    entry('demo:short1', 'Short rule one', 'complete one', '[trust:derived]'),
+    entry('demo:short2', 'Short rule two', 'complete two', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    const r = await recall({ memoryRoot: entire,
+      query: 'demo:oversized demo:short1 demo:short2', maxChars: 4000 });
+    assert.equal(r.status, 'ok', JSON.stringify(r));
+    assert.equal(r.receipt.counts.selected, 3);
+    assert.equal(r.receipt.counts.displayed, 2);
+    assert.equal(r.receipt.counts.omitted, 1);
+    assert.deepEqual(r.items.map((x) => x.tag), ['demo:short1', 'demo:short2']);
+    assert.deepEqual(r.receipt.pointers.map((x) => x.rank), [1, 2, 3]);
+    assert.equal(r.receipt.pointers[0].reason, 'selector-budget');
+    assert.equal(r.receipt.pointers[0].displayedTextSha256, null);
+    assert.equal(r.receipt.pointers[0].sourceRoot, entire);
+    const original = fs.readFileSync(path.join(entire, 'decisions.md'), 'utf8').split('\n');
+    const pointer = r.receipt.pointers[0];
+    assert.equal(pointer.fullEntrySha256, sha(original.slice(pointer.line - 1, pointer.endLine).join('\n')));
+    assert(r.items.every((item) => r.receipt.pointers.find((p) => p.tag === item.tag).fullEntrySha256 === item.hash));
+    assert(!JSON.stringify(r).includes('DECISIVE EXCEPTION'));
+  });
+  await check(async () => {
+    const r = await recall({ memoryRoot: entire, query: 'demo:oversized', maxChars: 2400 });
+    assert.equal(r.status, 'unavailable');
+    assert.equal(r.reason, 'output-limit');
+    assert.equal(r.receipt.counts.selected, 1);
+    assert.equal(r.receipt.counts.displayed, 0);
+    assert.equal(r.receipt.pointers[0].visibility, 'omitted');
+    assert.deepEqual(r.items, []);
   });
   const longTag = 'demo:' + 'x'.repeat(490);
   const metadataHeavy = fixture('metadata-heavy', [entry(longTag, 'Metadata', 'short body')]);
@@ -152,6 +193,47 @@ function assertItem(result, tag) {
     assert.equal(blocked.status, 'unavailable');
     assert.equal(blocked.reason, 'output-limit');
     assert.deepEqual(blocked.items, []);
+  });
+  const countedTags = Array.from({ length: 5 }, (_, i) => 'demo:count' + (i + 1));
+  const counted = fixture('counted-citations', countedTags.map((tag, i) =>
+    entry(tag, 'Count ' + (i + 1), i === 4 ? 'lexical-overlap-token' : 'body ' + (i + 1))));
+  await check(async () => {
+    const four = await recall({ memoryRoot: counted,
+      query: 'z'.repeat(300) + ' ' + countedTags.slice(0, 4).join(' ') });
+    assert.equal(four.receipt.counts.matched, 4);
+    assert.equal(four.receipt.counts.matchedIdsNotListed, 1);
+    const five = await recall({ memoryRoot: counted,
+      query: 'lexical-overlap-token ' + 'z'.repeat(280) + ' ' +
+        countedTags.concat(countedTags[0], 'demo:unknown').join(' ') });
+    assert.equal(five.receipt.counts.matched, 5);
+    assert.equal(five.receipt.counts.matchedIdsNotListed, 2);
+  });
+  const limitedEntries = Array.from({ length: 4 }, (_, i) =>
+    entry('demo:limited-unsafe' + (i + 1), 'Limited unsafe ' + (i + 1),
+      'unsafe body ' + (i + 1), '[trust:future]'));
+  const limitedSafeTag = 'demo:limited-safe5';
+  const limited = fixture('selection-limit', limitedEntries.concat(
+    entry(limitedSafeTag, 'Limited safe fifth', 'SAFE-FIFTH-BODY', '[trust:observed]')));
+  await check(async () => {
+    const prefix = 'z'.repeat(300) + ' ';
+    const firstFour = limitedEntries.map((value) => value.tag);
+    const noFifth = await recall({ memoryRoot: limited, query: prefix + firstFour.join(' ') });
+    assert.equal(noFifth.status, 'no-match');
+    assert.equal(noFifth.reason, 'no-lexical-match');
+    assert.equal(noFifth.receipt.counts.matched, 0);
+    assert.equal(noFifth.receipt.stage, 'query-ran');
+    const fifth = await recall({ memoryRoot: limited,
+      query: prefix + firstFour.concat(limitedSafeTag).join(' ') });
+    assert.equal(fifth.status, 'unavailable');
+    assert.equal(fifth.reason, 'selection-limit');
+    assert.deepEqual(fifth.receipt.counts, { eligible: 1, matched: 1, selected: 0,
+      displayed: 0, omitted: 0, matchedIdsNotListed: 1 });
+    assert.equal(fifth.receipt.stage, 'unavailable');
+    assert.equal(fifth.receipt.query.method, 'mixed');
+    assert.deepEqual(fifth.receipt.pointers, []);
+    assert.deepEqual(fifth.items, []);
+    assert(!JSON.stringify(fifth).includes(limitedSafeTag));
+    assert(!JSON.stringify(fifth).includes('SAFE-FIFTH-BODY'));
   });
   await check(async () => {
     const found = await recall({ memoryRoot: normal, query: 'demo:new', limit: 30 });
@@ -195,8 +277,13 @@ function assertItem(result, tag) {
   await check(async () => {
     const blocked = await recall({ memoryRoot: fork, query: '[demo:base]' });
     assert.equal(blocked.status, 'no-match');
+    assert.equal(blocked.receipt.counts.matched, 0);
     assert(blocked.warnings.some((w) => /^graph-ambiguous-excluded:3$/.test(w)));
     assertItem(await recall({ memoryRoot: fork, query: 'demo:safe' }), 'demo:safe');
+    const mixed = await recall({ memoryRoot: fork,
+      query: 'z'.repeat(300) + ' demo:base demo:safe' });
+    assert.equal(mixed.receipt.counts.matched, 1, 'ambiguous citation is not counted');
+    assert.deepEqual(mixed.items.map((value) => value.tag), ['demo:safe']);
   });
 
   const duplicate = fixture('duplicate', [
@@ -208,6 +295,7 @@ function assertItem(result, tag) {
   await check(async () => {
     const blocked = await recall({ memoryRoot: duplicate, query: 'demo:dup' });
     assert.equal(blocked.status, 'no-match');
+    assert.equal(blocked.receipt.counts.matched, 0);
     assert(blocked.warnings.some((w) => w.startsWith('graph-ambiguous-excluded:')));
     assertItem(await recall({ memoryRoot: duplicate, query: 'demo:clean' }), 'demo:clean');
   });
@@ -274,6 +362,7 @@ function assertItem(result, tag) {
   await check(async () => {
     const blocked = await recall({ memoryRoot: unknown, query: 'demo:mystery' });
     assert.equal(blocked.status, 'no-match');
+    assert.equal(blocked.receipt.counts.matched, 0);
     assert(blocked.warnings.includes('unknown-trust-excluded:1'));
   });
 
