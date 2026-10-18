@@ -1,5 +1,12 @@
 # AxMem CHANGELOG
 
+## 2026-10-18 — Codex lifecycle identity labels; runtime diagnosis remains bounded
+
+- The validated SessionStart and SubagentStart branches now prepend fixed event identity lines to additionalContext. The existing startup source whitelist and human-readable headers remain. These labels identify the branch response; they do not assert successful host injection or exact runtime version.
+- UserPromptSubmit output, v1 receipts, retrieval/ranking, permissions, hook/trust configuration and byte limits are unchanged. Existing bridge checks now cover event exclusivity and long multibyte root/all finite-warning budgets; no raw prompt/session/transcript logging is added.
+- The user observed the previous SessionStart startup header in a normal client, supporting bounded delivery through the unique source branch. SubagentStart runtime cause and normal trust remain UNKNOWN: missing visible event names alone do not prove failure. Desktop CLI 0.163.0-alpha.10.2 and npm CLI 0.160.0 coexist; no causal attribution or bypass is claimed. This is an observability repair, not complete lifecycle acceptance.
+
+
 ## 2026-10-18 — Recall A1/R2 local integration; lifecycle verification remains partial
 
 - Installed the accepted selector, hook bridge and delegated task helper together at the existing absolute local Codex adapter path. The six code/test working-byte hashes match candidate commit 0a908d859d04ca9574ee111537748ccf6188f1cf; bundled MiniSearch, manifest, prelude and msys-path hashes are unchanged. The prior notice-only commit 7c3965dff6ab9bfedcf2bfdb7061a207164d1b22 is preserved separately for rollback.

@@ -308,6 +308,7 @@ async function runHookInput(input, options) {
     if (typeof input.source !== 'string' || !SESSION_SOURCES.has(input.source)) return emptyOutput();
     const probe = await callSelector(selector, memoryRoot, '');
     return makeOutput(event, [
+      'AxMem lifecycle event=SessionStart adapter=codex-recall-v1',
       '会话启动（' + input.source + '）。召回来源 PMM 根（本钩子只读）：' + safeAtom(memoryRoot, 420) + '。',
       COMMON_NOTICE,
       sourceProbeLine(probe),
@@ -318,6 +319,7 @@ async function runHookInput(input, options) {
   if (event === 'SubagentStart') {
     const probe = await callSelector(selector, memoryRoot, '');
     return makeOutput(event, [
+      'AxMem lifecycle event=SubagentStart adapter=codex-recall-v1',
       '本 hook 事件不提供父会话或任务正文；派工方必须显式 fork_turns:none，只传 filtered spec 及教训包。先读主审 filtered spec，再按相关主题查询 PMM 历史候选（本钩子只读）；不可捏造既有任务结果。召回来源 PMM 根：' + safeAtom(memoryRoot, 420) + '。',
       COMMON_NOTICE,
       sourceProbeLine(probe),
