@@ -1,5 +1,12 @@
 # AxMem CHANGELOG
 
+## 2026-10-22 — Basic recall C2 relevance correction (candidate only; NOT installed)
+
+- Replace C1 corpus-wide frequency admission with query-to-verified-title/prose support sets: equally supported all-topic and Chinese entries remain eligible, while strict-subset lexical hits yield to stronger verified query evidence without displacing valid explicit-tag anchors. Ignore HTML metadata comments in lexical matching without changing original-query receipt digest, windows or warnings.
+- Preserve C1 whole-entry packing, default budgets, v1 source/graph/trust validation and unchanged event/task formatters. Extend the existing selector suite with Main's three counterexamples, unrelated-document invariance, comment-only distractor, complementary and equal-support positives, plus strengthened finite citation receipts.
+- Isolated candidate pending independent Main review; no live PMM or host delivery evidence, integration, install, vendor or scope-policy change.
+
+
 ## 2026-10-22 — Basic recall C1 isolated relevance/whole-entry candidate (NOT installed)
 
 - Normalize terminal sentence punctuation for lexical matching while retaining exact known dotted tags, Chinese bigrams and non-fuzzy/non-prefix search; exclude parser metadata from lexical evidence and require distinctive corroboration before admitting generic workflow-only candidates. No verified structured project scope is available in the current selector call contract, so unknown cross-project semantics remain for Main review.

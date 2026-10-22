@@ -305,19 +305,14 @@ function select(entries, graph, query, scan, limit) {
   const mini = new MiniSearch({ idField: 'id', fields: ['title', 'body'], storeFields: [],
     tokenize, processTerm: (term) => term, searchOptions: { combineWith: 'OR', prefix: false, fuzzy: false } });
   if (docs.length) mini.addAll(docs);
-  // Require distinctive lexical evidence in the verified local corpus. In the
-  // absence of actual structured project scope, common workflow words alone
-  // must not manufacture cross-project relevance.
-  const documentTerms = docs.map((doc) => new Set(tokenize(doc.title + '\n' + doc.body)));
-  const queryTerms = [...new Set(tokenize(query))].filter((term) =>
+  // Match the same comment-free query text used for evidence. A cited tag
+  // inside an HTML metadata comment is not lexical support either. The v1
+  // receipt still digests the original, unmodified query window.
+  const lexicalText = query.replace(/<!--[\s\S]*?-->/g, ' ');
+  const documentTerms = new Map(docs.map((doc) =>
+    [doc.id, new Set(tokenize(doc.title + '\n' + doc.body))]));
+  const queryTerms = [...new Set(tokenize(lexicalText))].filter((term) =>
     !GENERIC_QUERY_TERMS.has(term) && !/^\d+$/.test(term));
-  const frequency = new Map();
-  for (const terms of documentTerms) for (const term of terms)
-    frequency.set(term, (frequency.get(term) || 0) + 1);
-  const distinct = queryTerms.filter((term) => frequency.has(term) &&
-    (docs.length === 1 || frequency.get(term) < docs.length));
-  const evidenceTerms = distinct.length ? distinct : docs.length === 1
-    ? queryTerms.filter((term) => frequency.has(term)) : [];
   const allCitedTags = citedTags(scan, graph, Number.POSITIVE_INFINITY);
   const rankedCitedTags = allCitedTags.slice(0, 4);
   const ranked = [];
@@ -328,7 +323,18 @@ function select(entries, graph, query, scan, limit) {
     const head = graph.headOf(tag);
     if (head && byTag.has(head) && !ranked.includes(byTag.get(head))) ranked.push(byTag.get(head));
   }
-  const lexicalHits = mini.search(query);
+  const lexicalHits = mini.search(lexicalText);
+  // Admission is independent of corpus cardinality. Equal or complementary
+  // verified query evidence may coexist; strict subsets cannot occupy spare
+  // slots ahead of a stronger match. No undocumented project scope is inferred.
+  const candidates = lexicalHits.map((hit) => {
+    const entry = byTag.get(hit.id);
+    const terms = documentTerms.get(hit.id);
+    return entry && terms ? { entry, support: queryTerms.filter((term) => terms.has(term)) } : null;
+  }).filter((candidate) => candidate && candidate.support.length);
+  const strongest = candidates.filter((candidate) => !candidates.some((other) =>
+    other !== candidate && other.support.length > candidate.support.length &&
+    candidate.support.every((term) => other.support.includes(term))));
   const hitTags = new Set();
   for (const tag of allCitedTags) {
     if (graph.excluded.has(tag) || !graph.byTag.has(tag)) continue;
@@ -337,11 +343,7 @@ function select(entries, graph, query, scan, limit) {
     const head = graph.headOf(tag);
     if (head && byTag.has(head)) hitTags.add(head);
   }
-  for (const found of lexicalHits) {
-    const entry = byTag.get(found.id);
-    const index = docs.findIndex((doc) => doc.id === found.id);
-    if (!entry || index < 0 || !evidenceTerms.some((term) => documentTerms[index].has(term)))
-      continue;
+  for (const { entry } of strongest) {
     hitTags.add(entry.tag);
     if (!ranked.includes(entry) && ranked.length < limit) ranked.push(entry);
   }

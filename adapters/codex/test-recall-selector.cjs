@@ -200,15 +200,25 @@ function assertItem(result, tag) {
   await check(async () => {
     const four = await recall({ memoryRoot: counted,
       query: 'z'.repeat(300) + ' ' + countedTags.slice(0, 4).join(' ') });
-    assert.equal(four.receipt.counts.matched, 4);
-    assert.equal(four.receipt.counts.matchedIdsNotListed,
-      four.receipt.counts.matched - four.receipt.counts.selected);
     const five = await recall({ memoryRoot: counted,
       query: 'lexical-overlap-token ' + 'z'.repeat(280) + ' ' +
         countedTags.concat(countedTags[0], 'demo:unknown').join(' ') });
-    assert.equal(five.receipt.counts.matched, 5);
-    assert.equal(five.receipt.counts.matchedIdsNotListed,
-      five.receipt.counts.matched - five.receipt.counts.selected);
+    for (const [found, expectedMatched] of [[four, 4], [five, 5]]) {
+      assert.equal(found.status, 'ok', JSON.stringify(found));
+      assert.equal(validateReceipt(found.receipt, found.items, counted), true);
+      assert.equal(found.receipt.counts.matched, expectedMatched);
+      assert(found.receipt.counts.selected >= 1 && found.receipt.counts.selected <= 3);
+      assert(found.receipt.counts.displayed >= 1, 'a short whole entry must fit');
+      assert.equal(found.receipt.counts.displayed + found.receipt.counts.omitted,
+        found.receipt.counts.selected);
+      assert.equal(found.receipt.counts.matchedIdsNotListed,
+        expectedMatched - found.receipt.counts.selected);
+      const tags = found.receipt.pointers.map((pointer) => pointer.tag);
+      assert(tags.every((tag) => countedTags.slice(0, 3).includes(tag)));
+      assert(tags.every((tag, i) => i === 0 ||
+        countedTags.indexOf(tags[i - 1]) < countedTags.indexOf(tag)));
+      for (const item of found.items) assert.equal(item.hash, sha(item.text));
+    }
   });
   const limitedEntries = Array.from({ length: 4 }, (_, i) =>
     entry('demo:limited-unsafe' + (i + 1), 'Limited unsafe ' + (i + 1),
@@ -305,6 +315,74 @@ function assertItem(result, tag) {
       query: '<!-- [demo:orbit] --> atlas-only scheduler' });
     assert.deepEqual(comment.items.map((item) => item.tag), ['demo:atlas']);
   });
+  // C2 main's cardinality counterexample: adding an unrelated third rule
+  // cannot turn two equally relevant valid matches from zero into two.
+  const cardinalityTwo = fixture('c2-cardinality-two', [
+    entry('demo:a', 'Capacity safeguard', 'Cardinality prevents mismatches.', '[trust:observed]'),
+    entry('demo:b', 'Relationship safeguard', 'Cardinality prevents broken links.', '[trust:observed]'),
+  ]);
+  const cardinalityThree = fixture('c2-cardinality-three', [
+    entry('demo:a', 'Capacity safeguard', 'Cardinality prevents mismatches.', '[trust:observed]'),
+    entry('demo:b', 'Relationship safeguard', 'Cardinality prevents broken links.', '[trust:observed]'),
+    entry('demo:stock', 'Stock room', 'Shelves hold boxes.', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    for (const memoryRoot of [cardinalityTwo, cardinalityThree]) {
+      const found = await recall({ memoryRoot, query: 'cardinality' });
+      assert.equal(found.status, 'ok', JSON.stringify(found));
+      assert.deepEqual(found.items.map((item) => item.tag), ['demo:a', 'demo:b']);
+      assert.equal(found.receipt.counts.matched, 2);
+      assert.equal(found.receipt.counts.selected, 2);
+      assert.equal(found.receipt.counts.displayed, 2);
+      assert.equal(validateReceipt(found.receipt, found.items, memoryRoot), true);
+    }
+  });
+  const sameChinese = fixture('c2-chinese', [
+    entry('demo:a', '租户检查', '租户隔离需要核验。', '[trust:observed]'),
+    entry('demo:b', '租户边界', '租户隔离需要保持。', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    const found = await recall({ memoryRoot: sameChinese, query: '租户隔离' });
+    assert.equal(found.status, 'ok', JSON.stringify(found));
+    assert.deepEqual(found.items.map((item) => item.tag), ['demo:a', 'demo:b']);
+    assert.equal(found.receipt.counts.matched, 2);
+    assert.equal(validateReceipt(found.receipt, found.items, sameChinese), true);
+  });
+  const dominance = fixture('c2-dominance', [
+    entry('demo:axmem', 'AxMem recall integrity', 'workflow release verification', '[trust:observed]'),
+    entry('demo:cargo', 'Cargo manifest verification', 'workflow release verification', '[trust:observed]'),
+    entry('demo:stock', 'Stock shelves', 'Inventory boxes', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    const found = await recall({ memoryRoot: dominance, query: 'AxMem verification' });
+    assert.equal(found.status, 'ok', JSON.stringify(found));
+    assert.deepEqual(found.items.map((item) => item.tag), ['demo:axmem']);
+    assert.equal(found.receipt.counts.matched, 1);
+    assert.equal(validateReceipt(found.receipt, found.items, dominance), true);
+    const anchored = await recall({ memoryRoot: dominance,
+      query: '[demo:cargo] AxMem verification' });
+    assert.equal(anchored.status, 'ok');
+    assert.equal(anchored.items[0].tag, 'demo:cargo', 'explicit valid anchor keeps precedence');
+    assert.equal(validateReceipt(anchored.receipt, anchored.items, dominance), true);
+    const comment = await recall({ memoryRoot: dominance,
+      query: '<!-- Cargo manifest verification [demo:cargo] --> AxMem verification' });
+    assert.deepEqual(comment.items.map((item) => item.tag), ['demo:axmem']);
+    assert.equal(validateReceipt(comment.receipt, comment.items, dominance), true);
+    assert.equal(comment.receipt.query.originalChars,
+      '<!-- Cargo manifest verification [demo:cargo] --> AxMem verification'.length);
+  });
+  const complementary = fixture('c2-complementary', [
+    entry('demo:left', 'Blue module', 'signalalpha direct relevance.', '[trust:observed]'),
+    entry('demo:right', 'Green module', 'signalbeta direct relevance.', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    const found = await recall({ memoryRoot: complementary, query: 'signalalpha signalbeta' });
+    assert.equal(found.status, 'ok', JSON.stringify(found));
+    assert.deepEqual(found.items.map((item) => item.tag), ['demo:left', 'demo:right']);
+    assert.equal(found.receipt.counts.matched, 2);
+    assert.equal(validateReceipt(found.receipt, found.items, complementary), true);
+  });
+
   // Budget selection may remove pointer overhead only if the full ranked
   // selection delivered ZERO bodies; selected/matched counts remain honest.
   const moderate = fixture('c1-moderate', [
