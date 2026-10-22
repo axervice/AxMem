@@ -284,19 +284,44 @@ const NEUTRAL_QUERY_WORDS = new Set([
   '自动', '一下', '麻烦', '谢谢', '帮忙', '吧', '了', '呢', '吗',
 ]);
 
-function hasSubstantiveTopic(text) {
+function topicalQueryTerms(text) {
   try {
     if (typeof Intl?.Segmenter !== 'function') return null;
-    const segments = new Intl.Segmenter('zh', { granularity: 'word' }).segment(text);
-    for (const part of segments) {
-      if (!part.isWordLike) continue;
-      const word = part.segment.normalize('NFC').toLowerCase();
-      // Punctuation-only and numerical segments carry no topic evidence.
-      if (/\p{L}/u.test(word) && !NEUTRAL_QUERY_WORDS.has(word)) return true;
+    const normalized = String(text).normalize('NFC').toLowerCase();
+    const parts = [...new Intl.Segmenter('zh', { granularity: 'word' }).segment(normalized)]
+      .filter((part) => part.isWordLike && /\p{L}/u.test(part.segment))
+      .map((part) => ({
+        start: part.index, end: part.index + part.segment.length,
+        topical: !NEUTRAL_QUERY_WORDS.has(part.segment),
+      }));
+    const relevant = parts.filter((part) => part.topical);
+    if (!relevant.length) return [];
+    const terms = new Set();
+    const overlaps = (start, end, part) => start < part.end && end > part.start;
+    // Use only original MiniSearch tokens, never rejoin word segments into
+    // new ASCII identifiers or Chinese tokens across query boundaries.
+    for (const match of normalized.matchAll(/[a-z0-9._:-]+/g)) {
+      const raw = match[0], word = raw.replace(/^[.:-]+|[.]+$/g, '');
+      if (word && relevant.some((part) => overlaps(match.index, match.index + raw.length, part)))
+        terms.add(word);
     }
-    return false;
+    for (const match of normalized.matchAll(/\p{Script=Han}+/gu)) {
+      const run = match[0];
+      for (let i = 0; i < (run.length === 1 ? 1 : run.length - 1); i++) {
+        const start = match.index + i, end = start + (run.length === 1 ? 1 : 2);
+        const covering = parts.filter((part) => overlaps(start, end, part));
+        // A two-character topic segment anchors its own intact bigram.
+        // A one-character substantive suffix (执行/官) may keep the original
+        // overlapping bigram 行官, not a manufactured lone 官 token.
+        if (covering.some((part) => part.topical) &&
+            (covering.every((part) => part.topical) ||
+             covering.some((part) => part.topical && part.end - part.start === 1)))
+          terms.add(run.slice(i, i + (run.length === 1 ? 1 : 2)));
+      }
+    }
+    return [...terms];
   } catch {
-    // No silent fallback to weak bigram admission if the native capability fails.
+    // A missing/failing native capability must not authorize generic matches.
     return null;
   }
 }
@@ -340,8 +365,10 @@ function select(entries, graph, query, scan, limit) {
   const lexicalText = query.replace(/<!--[\s\S]*?-->/g, ' ');
   const documentTerms = new Map(docs.map((doc) =>
     [doc.id, new Set(tokenize(doc.title + '\n' + doc.body))]));
-  const queryTerms = [...new Set(tokenize(lexicalText))].filter((term) =>
-    !GENERIC_QUERY_TERMS.has(term) && !/^\d+$/.test(term));
+  // Candidate support must actually include a topical query token. C2's
+  // original MiniSearch ranking and the receipt's original query stay intact.
+  const topicTerms = topicalQueryTerms(lexicalText);
+  const queryTerms = topicTerms === null ? [] : topicTerms;
   const allCitedTags = citedTags(scan, graph, Number.POSITIVE_INFINITY);
   const rankedCitedTags = allCitedTags.slice(0, 4);
   const ranked = [];
@@ -352,8 +379,7 @@ function select(entries, graph, query, scan, limit) {
     const head = graph.headOf(tag);
     if (head && byTag.has(head) && !ranked.includes(byTag.get(head))) ranked.push(byTag.get(head));
   }
-  const topic = hasSubstantiveTopic(lexicalText);
-  const lexicalHits = topic === true ? mini.search(lexicalText) : [];
+  const lexicalHits = queryTerms.length ? mini.search(lexicalText) : [];
   // Admission is independent of corpus cardinality. Equal or complementary
   // verified query evidence may coexist; strict subsets cannot occupy spare
   // slots ahead of a stronger match. No undocumented project scope is inferred.
@@ -383,7 +409,7 @@ function select(entries, graph, query, scan, limit) {
     if (head && head !== cited && byTag.has(head) && !fromTags.has(head)) fromTags.set(head, cited);
   }
   return { ranked: ranked.slice(0, limit), current, matched: hitTags.size, fromTags,
-    topicUnavailable: topic === null,
+    topicUnavailable: topicTerms === null,
     unknownTrustExcluded: entries.filter((e) => !TRUST.has(e.trust)).length };
 }
 

@@ -456,6 +456,77 @@ function assertItem(result, tag) {
     }
   });
 
+  // C5: a topic elsewhere in the task cannot authorize a candidate whose
+  // only overlap is neutral continuation wording from another project.
+  const sharedScaffold = '继续自动推进项目，检查验证完成状态。';
+  const c5Atlas = entry('demo:atlas', 'Atlas appointments',
+    'Atlas scheduling keeps tenant-guard.v2 safe. ' + sharedScaffold, '[trust:observed]');
+  const c5Orbit = entry('demo:orbit', 'Orbit invoices',
+    'Orbit billing reconciles blue.release-v2. ' + sharedScaffold, '[trust:observed]');
+  const c5Single = fixture('c5-single', [c5Atlas]);
+  const c5Double = fixture('c5-double', [c5Atlas, c5Orbit]);
+  const c5Unrelated = fixture('c5-extra-unrelated', [c5Atlas, c5Orbit,
+    entry('demo:stock', 'Stock shelves', 'Boxes are stored in bins.', '[trust:observed]')]);
+  await check(async () => {
+    const query = '未收录紫晶校准任务，继续自动推进项目，检查验证完成状态';
+    for (const memoryRoot of [c5Single, c5Double, c5Unrelated]) {
+      const found = await recall({ memoryRoot, query });
+      assert.equal(found.status, 'no-match', JSON.stringify(found));
+      assert.equal(found.reason, 'no-lexical-match');
+      assert.deepEqual(found.items, []);
+      assert.equal(found.receipt.counts.matched, 0);
+      assert.equal(found.receipt.counts.selected, 0);
+      assert.equal(found.receipt.counts.displayed, 0);
+      assert.equal(found.receipt.query.originalChars, query.length);
+      assert.equal(found.receipt.query.effectiveChars, query.length);
+      assert.equal(validateReceipt(found.receipt, found.items, memoryRoot), true);
+    }
+    const englishQuery = 'amethyst calibration continue work next';
+    for (const memoryRoot of [c5Single, c5Double, c5Unrelated]) {
+      const found = await recall({ memoryRoot, query: englishQuery });
+      assert.equal(found.status, 'no-match', JSON.stringify(found));
+      assert.equal(found.receipt.counts.matched, 0);
+      assert.equal(validateReceipt(found.receipt, found.items, memoryRoot), true);
+    }
+  });
+  const c5Topical = fixture('c5-topic', [
+    entry('demo:tenant', 'Atlas 租户隔离 执行官',
+      '租户隔离执行官核验。' + sharedScaffold, '[trust:observed]'),
+    entry('demo:schedule', 'Orbit 任务调度',
+      '任务调度处理队列。' + sharedScaffold, '[trust:observed]'),
+  ]);
+  await check(async () => {
+    for (const [query, tag] of [
+      ['租户隔离，' + sharedScaffold, 'demo:tenant'],
+      ['继续执行租户隔离验证，' + sharedScaffold, 'demo:tenant'],
+      ['执行官，' + sharedScaffold, 'demo:tenant'],
+      ['任务调度，' + sharedScaffold, 'demo:schedule'],
+    ]) {
+      const found = await recall({ memoryRoot: c5Topical, query });
+      assert.equal(found.status, 'ok', query + ' ' + JSON.stringify(found));
+      assert.deepEqual(found.items.map((item) => item.tag), [tag]);
+      assert.equal(found.receipt.counts.matched, 1);
+      assert.equal(validateReceipt(found.receipt, found.items, c5Topical), true);
+    }
+    const explicit = await recall({ memoryRoot: c5Topical,
+      query: '未收录紫晶校准任务。 [demo:schedule] ' + sharedScaffold });
+    assert.equal(explicit.status, 'ok');
+    assert.equal(explicit.items[0].tag, 'demo:schedule');
+    assert.equal(validateReceipt(explicit.receipt, explicit.items, c5Topical), true);
+  });
+  await check(async () => {
+    for (const [query, tag] of [
+      ['tenant-guard.v2 continue work next', 'demo:atlas'],
+      ['blue.release-v2 continue work next', 'demo:orbit'],
+    ]) {
+      const found = await recall({ memoryRoot: c5Double, query });
+      assert.equal(found.status, 'ok', query + ': ' + JSON.stringify(found));
+      assert.deepEqual(found.items.map((item) => item.tag), [tag]);
+      assert.equal(found.receipt.counts.matched, 1);
+      assert.equal(validateReceipt(found.receipt, found.items, c5Double), true);
+    }
+  });
+
   // Budget selection may remove pointer overhead only if the full ranked
   // selection delivered ZERO bodies; selected/matched counts remain honest.
   const moderate = fixture('c1-moderate', [

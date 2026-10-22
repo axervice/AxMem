@@ -1,5 +1,12 @@
 # AxMem CHANGELOG
 
+## 2026-10-22 — Basic recall C5 candidate topical evidence correction (NOT installed)
+
+- Require at least one **candidate-owned substantive query token** from verified title/prose before lexical admission; shared neutral Chinese/English continuation wording alone no longer fills spare slots when an unmatched topic appears elsewhere in the query.
+- Segment the bounded comment-free query only to identify topical spans, then project onto intact tokens from the original MiniSearch index (including Chinese bigrams and ASCII dotted/hyphen identifiers). Keep C2 equal/complementary support, C3 finite degradation, explicit known-tag precedence, original digest/counts and complete-entry packing unchanged.
+- Synthetic tests cover unmatched Chinese/English topics, one/extra unrelated-document invariance, topical Chinese compound positives and identifier/explicit-tag preservation. Candidate requires Main review and normal-client verification; no B/W integration or installation.
+
+
 ## 2026-10-22 — Basic recall C3 topic-free Chinese continuation guard (candidate; NOT installed)
 
 - Use native Intl.Segmenter('zh', {granularity:'word'}) only to reject wholly neutral Chinese/English continuation prompts before lexical fallback; unchanged original query/bigram search, digest, receipt metadata, explicit valid tag precedence, C2 relevance ranking and complete-entry packing remain intact.
