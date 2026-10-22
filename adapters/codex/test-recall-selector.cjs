@@ -383,6 +383,79 @@ function assertItem(result, tag) {
     assert.equal(validateReceipt(found.receipt, found.items, complementary), true);
   });
 
+  // C3: continuation scaffolding is not topical evidence even when two
+  // unrelated projects' verified prose contains the same Chinese bigrams.
+  const continuation = fixture('c3-continuation', [
+    entry('demo:atlas', 'Atlas 租户隔离 执行官 项目隔离',
+      '请继续执行任务；继续推进项目。租户隔离需要验证。执行官审查项目隔离。',
+      '[trust:observed]'),
+    entry('demo:orbit', 'Orbit 任务调度',
+      '请继续执行任务；继续推进项目。任务调度检查工作。',
+      '[trust:observed]'),
+  ]);
+  await check(async () => {
+    for (const query of [
+      '继续执行任务', '继续推进项目',
+      '请继续执行任务，Please continue workflow，谢谢！',
+      '请继续推进项目，检查状态一下。2026!!!',
+      'Please resume task; continue work.',
+    ]) {
+      const found = await recall({ memoryRoot: continuation, query });
+      assert.equal(found.status, 'no-match', query + ': ' + JSON.stringify(found));
+      assert.equal(found.reason, 'no-lexical-match');
+      assert.deepEqual(found.items, []);
+      assert.equal(found.receipt.counts.eligible, 2);
+      assert.deepEqual(found.receipt.counts,
+        { eligible: 2, matched: 0, selected: 0, displayed: 0,
+          omitted: 0, matchedIdsNotListed: 0 });
+      assert.equal(found.receipt.query.originalChars, query.length);
+      assert.equal(found.receipt.query.effectiveChars, query.length);
+      assert.equal(validateReceipt(found.receipt, found.items, continuation), true);
+      assert(!found.warnings.includes('lexical-historical-reference'));
+    }
+  });
+  await check(async () => {
+    const positive = [
+      ['租户隔离', 'demo:atlas'],
+      ['继续执行租户隔离验证', 'demo:atlas'],
+      ['执行官', 'demo:atlas'],
+      ['任务调度', 'demo:orbit'],
+      ['项目隔离', 'demo:atlas'],
+    ];
+    for (const [query, tag] of positive) {
+      const found = await recall({ memoryRoot: continuation, query });
+      assertItem(found, tag);
+      assert.deepEqual(found.items.map((item) => item.tag), [tag]);
+      assert.equal(validateReceipt(found.receipt, found.items, continuation), true);
+    }
+    const tagged = await recall({ memoryRoot: continuation,
+      query: '请继续执行任务。 [demo:orbit] 请继续推进项目！' });
+    assertItem(tagged, 'demo:orbit');
+    assert.equal(tagged.receipt.query.method, 'mixed');
+    assert.equal(validateReceipt(tagged.receipt, tagged.items, continuation), true);
+  });
+  await check(async () => {
+    // If the native capability disappears, return finite unavailable rather
+    // than falsely interpreting a Chinese generic query as topical.
+    const nativeSegmenter = Intl.Segmenter;
+    try {
+      Intl.Segmenter = undefined;
+      const missing = await recall({ memoryRoot: continuation,
+        query: '继续执行任务' });
+      assert.equal(missing.status, 'unavailable');
+      assert.equal(missing.reason, 'topic-segmentation-unavailable');
+      assert.deepEqual(missing.items, []);
+      assert(!Object.hasOwn(missing, 'receipt'));
+      const anchored = await recall({ memoryRoot: continuation,
+        query: '[demo:orbit] 继续执行任务' });
+      assertItem(anchored, 'demo:orbit');
+      assert.equal(validateReceipt(anchored.receipt, anchored.items, continuation), true);
+      assert(anchored.warnings.includes('topic-segmentation-unavailable'));
+    } finally {
+      Intl.Segmenter = nativeSegmenter;
+    }
+  });
+
   // Budget selection may remove pointer overhead only if the full ranked
   // selection delivered ZERO bodies; selected/matched counts remain honest.
   const moderate = fixture('c1-moderate', [

@@ -1,5 +1,12 @@
 # AxMem CHANGELOG
 
+## 2026-10-22 — Basic recall C3 topic-free Chinese continuation guard (candidate; NOT installed)
+
+- Use native Intl.Segmenter('zh', {granularity:'word'}) only to reject wholly neutral Chinese/English continuation prompts before lexical fallback; unchanged original query/bigram search, digest, receipt metadata, explicit valid tag precedence, C2 relevance ranking and complete-entry packing remain intact.
+- Chinese meaningful compounds (including 租户隔离、执行官、任务调度、项目隔离) retain lexical positives; native segmentation failure gives a finite unavailable result rather than an unrelated rule. Targeted synthetic tests include two unrelated projects with shared workflow prose, mixed polite continuation, meaningful-topic recovery, explicit tags and capability degradation.
+- Isolated candidate only; no structured project-scope resolver, PMM/live client test, configuration change, installation, or release. Main independent review required.
+
+
 ## 2026-10-22 — Basic recall C2 relevance correction (candidate only; NOT installed)
 
 - Replace C1 corpus-wide frequency admission with query-to-verified-title/prose support sets: equally supported all-topic and Chinese entries remain eligible, while strict-subset lexical hits yield to stronger verified query evidence without displacing valid explicit-tag anchors. Ignore HTML metadata comments in lexical matching without changing original-query receipt digest, windows or warnings.

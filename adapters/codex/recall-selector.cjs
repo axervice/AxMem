@@ -272,6 +272,35 @@ const GENERIC_QUERY_TERMS = new Set([
   'update', 'change', 'changes', 'fix', 'review', 'status', 'run',
   'start', 'check', 'test', 'tests', 'this', 'that', 'from', 'into',
 ]);
+// Topic-free continuation text may share Chinese bigrams with unrelated
+// project rules. This gate only classifies the bounded, comment-free query;
+// actual ranking still uses the unchanged original MiniSearch tokenization.
+const NEUTRAL_QUERY_WORDS = new Set([
+  ...GENERIC_QUERY_TERMS,
+  'continue', 'continuing', 'proceed', 'resume', 'please', 'now', 'ahead',
+  'work', 'do', 'go', 'next',
+  '请', '继续', '接着', '执行', '推进', '任务', '项目', '工作',
+  '开始', '完成', '检查', '审查', '修复', '验证', '更新', '状态',
+  '自动', '一下', '麻烦', '谢谢', '帮忙', '吧', '了', '呢', '吗',
+]);
+
+function hasSubstantiveTopic(text) {
+  try {
+    if (typeof Intl?.Segmenter !== 'function') return null;
+    const segments = new Intl.Segmenter('zh', { granularity: 'word' }).segment(text);
+    for (const part of segments) {
+      if (!part.isWordLike) continue;
+      const word = part.segment.normalize('NFC').toLowerCase();
+      // Punctuation-only and numerical segments carry no topic evidence.
+      if (/\p{L}/u.test(word) && !NEUTRAL_QUERY_WORDS.has(word)) return true;
+    }
+    return false;
+  } catch {
+    // No silent fallback to weak bigram admission if the native capability fails.
+    return null;
+  }
+}
+
 function citedTags(scan, graph, limit = 4) {
   const found = [];
   // A tag appearing only inside a metadata/comment quote is not a citation.
@@ -323,7 +352,8 @@ function select(entries, graph, query, scan, limit) {
     const head = graph.headOf(tag);
     if (head && byTag.has(head) && !ranked.includes(byTag.get(head))) ranked.push(byTag.get(head));
   }
-  const lexicalHits = mini.search(lexicalText);
+  const topic = hasSubstantiveTopic(lexicalText);
+  const lexicalHits = topic === true ? mini.search(lexicalText) : [];
   // Admission is independent of corpus cardinality. Equal or complementary
   // verified query evidence may coexist; strict subsets cannot occupy spare
   // slots ahead of a stronger match. No undocumented project scope is inferred.
@@ -353,6 +383,7 @@ function select(entries, graph, query, scan, limit) {
     if (head && head !== cited && byTag.has(head) && !fromTags.has(head)) fromTags.set(head, cited);
   }
   return { ranked: ranked.slice(0, limit), current, matched: hitTags.size, fromTags,
+    topicUnavailable: topic === null,
     unknownTrustExcluded: entries.filter((e) => !TRUST.has(e.trust)).length };
 }
 
@@ -550,6 +581,9 @@ async function recall({ memoryRoot, query = '', limit = 3, maxChars = 2400 } = {
     if (selected.unknownTrustExcluded) warnings.push('unknown-trust-excluded:' + selected.unknownTrustExcluded);
     const hasCites = citedTags(scan, graph, Number.POSITIVE_INFINITY)
       .some((tag) => !graph.excluded.has(tag));
+    if (selected.topicUnavailable && !hasCites)
+      return result('unavailable', 'topic-segmentation-unavailable', [], warnings);
+    if (selected.topicUnavailable) warnings.push('topic-segmentation-unavailable');
     const method = hasCites ? 'mixed' : 'lexical';
     const q = digestQuery(query, method);
     return wholeItems(selected.ranked,
