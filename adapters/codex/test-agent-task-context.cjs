@@ -354,6 +354,41 @@ async function main() {
       'agent-task invalid v1 receipt fails closed with task prefix unchanged');
   }
 
+
+  // C1 integration: actual prepared task text and v1 receipt retain a whole,
+  // hash-bound entry from the real selector, within the 8192-byte frame.
+  {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    const crypto = require('node:crypto');
+    const { recall, validateReceipt } = require('./recall-selector.cjs');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c1-task-synthetic-'));
+    const body = 'C1_TASK_WHOLE_' + 'T'.repeat(745);
+    try {
+      fs.writeFileSync(path.join(root, 'decisions.md'),
+        '## Index\n- 2026-01-01 Task rule [syn:task]\n\n## Entries\n' +
+        '**2026-01-01 — Task rule** [syn:task] [trust:observed]\n' + body + '\n');
+      fs.writeFileSync(path.join(root, 'lessons.md'), '## Index\n\n## Entries\n');
+      fs.writeFileSync(path.join(root, 'standinginstructions.md'), '## Index\n\n## Entries\n');
+      const task = 'Inspect the synthetic rule [syn:task] without changing product code.';
+      let original;
+      const response = await helper.prepareAgentTask({ memoryRoot: root, taskSpec: task },
+        { selector: async (input) => { original = await recall(input); return original; } });
+      const hash = crypto.createHash('sha256').update(original.items[0]?.text || '').digest('hex');
+      check(original.status === 'ok' && validateReceipt(original.receipt, original.items, root) &&
+        response.status === 'ok' && response.receipt?.event === 'agent-task' &&
+        response.receipt.counts.selected === 1 && response.receipt.counts.displayed === 1 &&
+        response.receipt.counts.omitted === 0 && response.receipt.pointers[0].fullEntrySha256 === hash &&
+        response.lessons[0].hash === hash && response.message.startsWith(task) &&
+        response.message.includes(body) && response.message.includes('stage=emitted selected=1 displayed=1 omitted=0') &&
+        Buffer.byteLength(response.message.slice(task.length), 'utf8') <= helper.MAX_BLOCK_BYTES,
+        'real selector to prepareAgentTask keeps exact whole body/hash and final truthful 8KiB counts');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' agent task context self-test ' + passed + '/' + total + '\n');
   if (passed !== total) process.exitCode = 1;
 }

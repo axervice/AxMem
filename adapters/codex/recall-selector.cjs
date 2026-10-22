@@ -247,15 +247,35 @@ function graphOf(entries, manifest) {
 
 function tokenize(text) {
   const normalized = String(text).normalize('NFC').toLowerCase();
-  const words = normalized.match(/[a-z0-9._:-]+/g) || [];
+  // Strip terminal sentence periods but keep internal dot/colon identifiers.
+  // Exact known dotted tags are separately resolved by citedTags.
+  const words = (normalized.match(/[a-z0-9._:-]+/g) || [])
+    .map((word) => word.replace(/^[.:-]+|[.]+$/g, '')).filter(Boolean);
   for (const run of normalized.match(/\p{Script=Han}+/gu) || []) {
     if (run.length === 1) words.push(run);
     else for (let i = 0; i < run.length - 1; i++) words.push(run.slice(i, i + 2));
   }
   return words;
 }
+
+// Never index metadata as lexical task evidence; all returned bytes remain
+// unchanged and manifest-bound.
+function searchableProse(entry) {
+  return entry.text.split('\n').slice(1)
+    .filter((line) => !/^\s*(?:Supersedes:|Class:|- 20)/i.test(line))
+    .join('\n').replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/\[\[[a-z][a-z0-9-]*:[A-Za-z0-9._-]+\]\]/g, ' ');
+}
+const GENERIC_QUERY_TERMS = new Set([
+  'the', 'and', 'for', 'with', 'please', 'use', 'task', 'tasks',
+  'project', 'projects', 'workflow', 'workflows', 'code', 'file', 'files',
+  'update', 'change', 'changes', 'fix', 'review', 'status', 'run',
+  'start', 'check', 'test', 'tests', 'this', 'that', 'from', 'into',
+]);
 function citedTags(scan, graph, limit = 4) {
   const found = [];
+  // A tag appearing only inside a metadata/comment quote is not a citation.
+  scan = scan.replace(/<!--[\s\S]*?-->/g, (comment) => ' '.repeat(comment.length));
   const left = (ch) => ch === undefined || /[\s"'([{,;，。；、\p{Script=Han}]/u.test(ch);
   const right = (ch) => ch === undefined || /[\s"')\]},;!?，。；、\p{Script=Han}]/u.test(ch);
   for (const match of scan.matchAll(/[a-z][a-z0-9-]*:[A-Za-z0-9._-]+/g)) {
@@ -279,10 +299,25 @@ function select(entries, graph, query, scan, limit) {
   const current = entries.filter((entry) => REQUIRED.has(entry.file) && !entry.archived && !graph.excluded.has(entry.tag) &&
     graph.byTag.get(entry.tag).length === 1 && !graph.next.has(entry.tag) && TRUST.has(entry.trust));
   const byTag = new Map(current.map((entry) => [entry.tag, entry]));
-  const docs = current.map((entry) => ({ id: entry.tag, title: entry.title || '', body: entry.text }));
+  const docs = current.map((entry) => ({
+    id: entry.tag, title: entry.title || '', body: searchableProse(entry),
+  }));
   const mini = new MiniSearch({ idField: 'id', fields: ['title', 'body'], storeFields: [],
     tokenize, processTerm: (term) => term, searchOptions: { combineWith: 'OR', prefix: false, fuzzy: false } });
   if (docs.length) mini.addAll(docs);
+  // Require distinctive lexical evidence in the verified local corpus. In the
+  // absence of actual structured project scope, common workflow words alone
+  // must not manufacture cross-project relevance.
+  const documentTerms = docs.map((doc) => new Set(tokenize(doc.title + '\n' + doc.body)));
+  const queryTerms = [...new Set(tokenize(query))].filter((term) =>
+    !GENERIC_QUERY_TERMS.has(term) && !/^\d+$/.test(term));
+  const frequency = new Map();
+  for (const terms of documentTerms) for (const term of terms)
+    frequency.set(term, (frequency.get(term) || 0) + 1);
+  const distinct = queryTerms.filter((term) => frequency.has(term) &&
+    (docs.length === 1 || frequency.get(term) < docs.length));
+  const evidenceTerms = distinct.length ? distinct : docs.length === 1
+    ? queryTerms.filter((term) => frequency.has(term)) : [];
   const allCitedTags = citedTags(scan, graph, Number.POSITIVE_INFINITY);
   const rankedCitedTags = allCitedTags.slice(0, 4);
   const ranked = [];
@@ -304,8 +339,11 @@ function select(entries, graph, query, scan, limit) {
   }
   for (const found of lexicalHits) {
     const entry = byTag.get(found.id);
-    if (entry) hitTags.add(entry.tag);
-    if (entry && !ranked.includes(entry) && ranked.length < limit) ranked.push(entry);
+    const index = docs.findIndex((doc) => doc.id === found.id);
+    if (!entry || index < 0 || !evidenceTerms.some((term) => documentTerms[index].has(term)))
+      continue;
+    hitTags.add(entry.tag);
+    if (!ranked.includes(entry) && ranked.length < limit) ranked.push(entry);
   }
   const fromTags = new Map();
   for (const cited of rankedCitedTags) {
@@ -392,7 +430,7 @@ function validateReceipt(receipt, items, memoryRoot) {
   return true;
 }
 function digestQuery(query, method) {
-  const scan = method === 'none' ? '' : query.slice(0, method === 'lexical' ? 256 : 8192);
+  const scan = method === 'none' ? '' : query.slice(0, 8192);
   return { method, originalChars: query.length, effectiveChars: scan.length,
     sha256: method === 'none' ? null : sha(Buffer.from('axmem-recall-q:v1\0' + scan, 'utf8')) };
 }
@@ -412,7 +450,7 @@ function entryPointer(entry, rank, memoryRoot, sources, fromTag) {
     scope: 'unknown', resolvedFromTag: fromTag || null, visibility: 'omitted', reason: 'selector-budget',
   };
 }
-function wholeItems(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags) {
+function packSelected(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags) {
   if (Buffer.byteLength(memoryRoot, 'utf8') > 512 || selected.some((e) => e.tag.length > 512))
     return outputLimit();
   const pointers = selected.map((entry, i) => entryPointer(entry, i + 1, memoryRoot, sources, fromTags.get(entry.tag)));
@@ -449,14 +487,37 @@ function wholeItems(selected, warnings, maxChars, memoryRoot, sources, queryInfo
   return compactReceiptResult(receipt, warnings, items, maxChars, status, reason) || outputLimit();
 }
 
+function wholeItems(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags) {
+  const full = packSelected(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags);
+  // Preserve all pointers when later short entries already fit after an
+  // oversized rank 1. Only reconsider a selection displaying zero bodies.
+  if (full.items.length || selected.length < 2) return full;
+  let best = null;
+  for (let mask = 1; mask < (1 << selected.length) - 1; mask++) {
+    const subset = selected.filter((_, i) => mask & (1 << i));
+    const candidate = packSelected(subset, warnings, maxChars, memoryRoot,
+      sources, queryInfo, eligible, matched, fromTags);
+    if (!candidate.items.length) continue;
+    const shown = candidate.items.length;
+    const rankSum = selected.reduce((sum, item, i) =>
+      sum + (candidate.items.some((whole) => whole.tag === item.tag) ? i : 0), 0);
+    if (!best || shown > best.shown ||
+        shown === best.shown && (subset.length < best.size ||
+          subset.length === best.size && rankSum < best.rankSum)) {
+      best = { candidate, shown, size: subset.length, rankSum };
+    }
+  }
+  return best ? best.candidate : full;
+}
+
 async function recall({ memoryRoot, query = '', limit = 3, maxChars = 2400 } = {}) {
   if (typeof query !== 'string' || Buffer.byteLength(query, 'utf8') > 64 * 1024 ||
       !Number.isInteger(limit) || limit < 1 ||
       !Number.isInteger(maxChars) || maxChars < 512 || maxChars > 4000)
     return result('unavailable', 'invalid-input');
   const boundedLimit = Math.min(limit, 3);
-  const lexicalQuery = query.slice(0, 256);
-  const scan = query.slice(0, 8192);
+  const lexicalQuery = query.slice(0, 8192);
+  const scan = lexicalQuery;
   try {
     const before = readSources(memoryRoot);
     const run = await runManifest(before.root);
@@ -470,7 +531,7 @@ async function recall({ memoryRoot, query = '', limit = 3, maxChars = 2400 } = {
     if (otherBlocking.length) fail('manifest-blocking');
     if ((run.code === 2) !== (manifest.blocking.length > 0)) fail('manifest-invalid');
     const warnings = [];
-    if (query.length > 256) warnings.push('query-limited');
+    if (query.length > 8192) warnings.push('query-limited');
     const b5 = manifest.blocking.filter((line) => /^B5\b/.test(line)).length;
     if (b5) warnings.push('b5-trigger-metadata-not-used:' + b5);
     const graph = graphOf(entries, manifest);

@@ -1,5 +1,12 @@
 # AxMem CHANGELOG
 
+## 2026-10-22 — Basic recall C1 isolated relevance/whole-entry candidate (NOT installed)
+
+- Normalize terminal sentence punctuation for lexical matching while retaining exact known dotted tags, Chinese bigrams and non-fuzzy/non-prefix search; exclude parser metadata from lexical evidence and require distinctive corroboration before admitting generic workflow-only candidates. No verified structured project scope is available in the current selector call contract, so unknown cross-project semantics remain for Main review.
+- At the unchanged 2400-character selector budget, if three ranked pointers leave zero whole bodies, consider bounded subsets to deliver an intact ranked entry. Preserve all-omitted/512 fallbacks, exact v1 receipts, original oversized-first/short-later behavior and separate 4096/8192 formatter integrity checks.
+- Synthetic targeted tests only; no live PMM, client wrapper proof, installed hook, source-proof worktree change, release, or global configuration change. Candidate awaits independent Main review.
+
+
 ## 2026-10-18 — Codex lifecycle identity labels; runtime diagnosis remains bounded
 
 - The validated SessionStart and SubagentStart branches now prepend fixed event identity lines to additionalContext. The existing startup source whitelist and human-readable headers remain. These labels identify the branch response; they do not assert successful host injection or exact runtime version.

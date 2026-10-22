@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { recall } = require('./recall-selector.cjs');
+const { recall, validateReceipt } = require('./recall-selector.cjs');
 
 // `bin/axmem selftest` discovers adapter tests by the literal --self-test.
 // Both direct invocation and that flag run this same isolated synthetic suite.
@@ -201,12 +201,14 @@ function assertItem(result, tag) {
     const four = await recall({ memoryRoot: counted,
       query: 'z'.repeat(300) + ' ' + countedTags.slice(0, 4).join(' ') });
     assert.equal(four.receipt.counts.matched, 4);
-    assert.equal(four.receipt.counts.matchedIdsNotListed, 1);
+    assert.equal(four.receipt.counts.matchedIdsNotListed,
+      four.receipt.counts.matched - four.receipt.counts.selected);
     const five = await recall({ memoryRoot: counted,
       query: 'lexical-overlap-token ' + 'z'.repeat(280) + ' ' +
         countedTags.concat(countedTags[0], 'demo:unknown').join(' ') });
     assert.equal(five.receipt.counts.matched, 5);
-    assert.equal(five.receipt.counts.matchedIdsNotListed, 2);
+    assert.equal(five.receipt.counts.matchedIdsNotListed,
+      five.receipt.counts.matched - five.receipt.counts.selected);
   });
   const limitedEntries = Array.from({ length: 4 }, (_, i) =>
     entry('demo:limited-unsafe' + (i + 1), 'Limited unsafe ' + (i + 1),
@@ -243,12 +245,87 @@ function assertItem(result, tag) {
   await check(async () => {
     const found = await recall({ memoryRoot: normal, query: 'x'.repeat(300) + ' [demo:old]' });
     assertItem(found, 'demo:new');
-    assert(found.warnings.includes('query-limited'));
+    assert(!found.warnings.includes('query-limited'));
+    const beyond = await recall({ memoryRoot: normal,
+      query: 'demo:old ' + 'x'.repeat(8195) });
+    assertItem(beyond, 'demo:new');
+    assert(beyond.warnings.includes('query-limited'));
+    assert.equal(beyond.receipt.query.effectiveChars, 8192);
   });
   await check(async () => {
     const found = await recall({ memoryRoot: normal, query: 'x'.repeat(65537) });
     assert.equal(found.status, 'unavailable');
     assert.equal(found.reason, 'invalid-input');
+  });
+
+
+  // C1: healthy punctuation control, bounded long-query recovery and
+  // explicit-tag override; all source bodies remain immutable for recall.
+  const punct = fixture('c1-punctuation', [
+    entry('demo:axmem', 'Violet atlas', 'Synthetic signal axmemneedle.'),
+    entry('demo:browser', 'Green browser', 'Synthetic signal browserlabel.'),
+  ]);
+  await check(async () => {
+    for (const query of ['axmemneedle', 'axmemneedle.']) {
+      const found = await recall({ memoryRoot: punct, query });
+      assertItem(found, 'demo:axmem');
+      assert.equal(validateReceipt(found.receipt, found.items, punct), true);
+    }
+    assertItem(await recall({ memoryRoot: punct, query: 'browserlabel.' }), 'demo:browser');
+    // Keep an actual lexical boundary before the tail; fused x...target
+    // is intentionally not a fuzzy or substring match.
+    const prefix = 'browserlabel. ' + 'x'.repeat(325) + ' ';
+    assert.equal(prefix.length, 340);
+    const spaced = await recall({ memoryRoot: punct,
+      query: ' '.repeat(340) + 'axmemneedle.' });
+    assert(spaced.items.some((item) => item.tag === 'demo:axmem'));
+    const distracted = await recall({ memoryRoot: punct,
+      query: prefix + 'axmemneedle.' });
+    assert(distracted.items.some((item) => item.tag === 'demo:axmem'));
+    const tagged = prefix.slice(0, 275) + ' [demo:axmem] ' + prefix.slice(289);
+    const explicit = await recall({ memoryRoot: punct, query: tagged + 'axmemneedle.' });
+    assert.equal(explicit.receipt.query.method, 'mixed');
+    assert.equal(explicit.receipt.pointers[0].tag, 'demo:axmem');
+    assert.equal(explicit.receipt.query.effectiveChars, 352);
+  });
+  // Generic workflow words cannot decide between unrelated projects in a
+  // manifest without verified scope; task-specific lexical evidence can.
+  const contextual = fixture('c1-contextual', [
+    entry('demo:atlas', 'Atlas workflow release', 'atlas-only scheduler action for violet appointments.'),
+    entry('demo:orbit', 'Orbit workflow release', 'orbit-only billing action for green invoices.'),
+  ]);
+  await check(async () => {
+    const generic = await recall({ memoryRoot: contextual, query: 'review workflow project change' });
+    assert.equal(generic.status, 'no-match');
+    assert.equal(generic.receipt.counts.matched, 0);
+    const related = await recall({ memoryRoot: contextual,
+      query: 'atlas-only scheduler workflow change' });
+    assert.deepEqual(related.items.map((item) => item.tag), ['demo:atlas']);
+    const comment = await recall({ memoryRoot: contextual,
+      query: '<!-- [demo:orbit] --> atlas-only scheduler' });
+    assert.deepEqual(comment.items.map((item) => item.tag), ['demo:atlas']);
+  });
+  // Budget selection may remove pointer overhead only if the full ranked
+  // selection delivered ZERO bodies; selected/matched counts remain honest.
+  const moderate = fixture('c1-moderate', [
+    entry('demo:one', 'Moderate one', 'A'.repeat(745)),
+    entry('demo:two', 'Moderate two', 'B'.repeat(745)),
+    entry('demo:three', 'Moderate three', 'C'.repeat(745)),
+  ]);
+  await check(async () => {
+    const found = await recall({ memoryRoot: moderate,
+      query: '[demo:one] [demo:two] [demo:three]', maxChars: 2400, limit: 3 });
+    assert.equal(found.status, 'ok', JSON.stringify(found));
+    assert.equal(found.receipt.counts.eligible, 3);
+    assert.equal(found.receipt.counts.matched, 3);
+    assert(found.receipt.counts.selected >= 1 && found.receipt.counts.selected <= 2);
+    assert(found.receipt.counts.displayed >= 1);
+    assert.equal(found.receipt.counts.matchedIdsNotListed,
+      3 - found.receipt.counts.selected);
+    assert.equal(validateReceipt(found.receipt, found.items, moderate), true);
+    for (const item of found.items)
+      assert.equal(item.hash, sha(item.text));
+    assert(JSON.stringify(found).length <= 2400);
   });
 
   const projection = fixture('projection', [entry('demo:dash', 'Numbered prose',

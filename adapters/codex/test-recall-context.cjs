@@ -380,6 +380,42 @@ async function main() {
       'unknown/malformed receipt never becomes a false bridge ok, no-match or private body projection');
   }
 
+
+  // C1 integration: the real selector supplies v1 pointers and whole source
+  // bytes to the actual event formatter (not a mocked result).
+  {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const crypto = require('node:crypto');
+    const { recall, validateReceipt } = require('./recall-selector.cjs');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c1-event-synthetic-'));
+    const body = 'C1_EVENT_WHOLE_' + 'Q'.repeat(745);
+    const source = '## Index\n- 2026-01-01 Event rule [syn:event]\n\n## Entries\n' +
+      '**2026-01-01 — Event rule** [syn:event] [trust:observed]\n' + body + '\n';
+    try {
+      fs.writeFileSync(path.join(root, 'decisions.md'), source);
+      fs.writeFileSync(path.join(root, 'lessons.md'), '## Index\n\n## Entries\n');
+      fs.writeFileSync(path.join(root, 'standinginstructions.md'), '## Index\n\n## Entries\n');
+      let original;
+      const output = await bridge.runHookInput(
+        { hook_event_name: 'UserPromptSubmit', prompt: 'syn:event' },
+        { memoryRoot: root, selector: async (input) => {
+          original = await recall(input); return original;
+        } });
+      const context = outputContext(output, 'UserPromptSubmit');
+      const hash = crypto.createHash('sha256').update(original.items[0]?.text || '').digest('hex');
+      check(original.status === 'ok' && validateReceipt(original.receipt, original.items, root) &&
+        original.receipt.counts.selected === 1 && original.receipt.counts.displayed === 1 &&
+        original.receipt.counts.omitted === 0 && original.items[0].hash === hash &&
+        context.includes(body) && context.includes('stage=emitted selected=1 displayed=1 omitted=0') &&
+        context.includes('fullEntrySHA256=' + hash) &&
+        Buffer.byteLength(context, 'utf8') <= bridge.MAX_CONTEXT_BYTES,
+      'real selector to event formatter retains whole verified body, exact hash and truthful emitted counts');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' codex recall context self-test ' + passed + '/' + total + '\n');
   if (passed !== total) process.exitCode = 1;
 }
