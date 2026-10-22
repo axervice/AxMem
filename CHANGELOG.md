@@ -1,5 +1,12 @@
 # AxMem CHANGELOG
 
+## 2026-10-22 — Basic recall C8 explicit action-context candidate (NOT installed)
+
+- C5/C6 reviewed local source fast-forward at 991a49eb90749d3d6d9cc4d1ff8bd346d2bdb67b retained. Main separately recorded a bounded native client/task-recipient whole-entry receipt (native RC 0), not SubagentStart proof or basic-stage completion.
+- Optional explicit caller-owned actionContext (tool, repo, path) in recall/prepareAgentTask binds mature PMM fence-aware parseFile blocks and pure bounded trigger-glob matching to verified manifest identities, safe supersession heads and v1 whole-entry receipts. New action-trigger digest is domain-separated canonical action JSON with a real NUL. Omitted context preserves lexical behavior; malformed context fails closed.
+- No ambient/cwd/hook-derived action, project-scope inference, live client installation, stateful trigger/ledger use, linked/class-member expansion, once-per-session parity or universal relevance claim. Main independent review is required.
+
+
 ## 2026-10-22 — Basic recall C5 candidate topical evidence correction (NOT installed)
 
 - Require at least one **candidate-owned substantive query token** from verified title/prose before lexical admission; shared neutral Chinese/English continuation wording alone no longer fills spare slots when an unmatched topic appears elsewhere in the query.

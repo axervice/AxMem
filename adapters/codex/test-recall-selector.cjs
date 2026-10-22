@@ -728,6 +728,251 @@ function assertItem(result, tag) {
     assert.deepEqual(before.map((name) => sha(fs.readFileSync(path.join(normal, name), 'utf8'))), hashes);
   });
 
+  // C8 predeclared red: accepted C6 lexical path ignores unknown actionContext.
+  // Two project rules intentionally share the SAME meaningful query evidence.
+  const actionBaseline = fixture('c8-action-baseline', [
+    entry('syn:atlas', 'Measurement action', 'measure calibration safely.\n<!-- trigger: tool=Edit; repo=atlas; path=src/measure.ts -->', '[trust:observed]'),
+    entry('syn:orbit', 'Measurement action', 'measure calibration safely.\n<!-- trigger: tool=Edit; repo=orbit; path=src/measure.ts -->', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    const chosen = await recall({ memoryRoot: actionBaseline, query: 'measurement calibration',
+      actionContext: { tool: 'Edit', repo: 'atlas', path: 'src/measure.ts' } });
+    assert.deepEqual(chosen.items.map((item) => item.tag), ['syn:atlas'],
+      'C8 explicit action may not admit unrelated same-topic project');
+    assert.equal(validateReceipt(chosen.receipt, chosen.items, actionBaseline), true);
+  });
+
+
+  // C8: separate explicit-caller action from identical topic prose and tags.
+  const action = (tool, repo, file) => ({ tool, repo, path: file });
+  await check(async () => {
+    const lexical = await recall({ memoryRoot: actionBaseline, query: 'measurement calibration' });
+    assert.equal(lexical.status, 'ok');
+    assert.equal(lexical.receipt.query.method, 'lexical');
+    assert.equal(lexical.receipt.counts.matched, 2);
+    for (const [ctx, expected] of [
+      [action('Edit', 'atlas', 'SRC/MEASURE.TS'), 'syn:atlas'],
+      [action('Edit', 'orbit', 'src/measure.ts'), 'syn:orbit'],
+    ]) {
+      const got = await recall({ memoryRoot: actionBaseline,
+        query: 'measurement calibration [syn:orbit]', actionContext: ctx });
+      assertItem(got, expected);
+      assert.equal(got.receipt.query.method, 'action-trigger');
+      assert.equal(got.receipt.counts.matched, 1);
+      assert.equal(validateReceipt(got.receipt, got.items, actionBaseline), true);
+      const normalized = { ...ctx, path: ctx.path.toLowerCase() };
+      const canonical = JSON.stringify(normalized);
+      const wantDigest = crypto.createHash('sha256').update(Buffer.concat([
+        Buffer.from('axmem-recall-action:v1'), Buffer.from([0]),
+        Buffer.from(canonical, 'utf8'),
+      ])).digest('hex');
+      assert.equal(got.receipt.query.sha256, wantDigest);
+      assert.equal(got.receipt.query.originalChars, canonical.length);
+      assert.equal(got.receipt.query.effectiveChars, canonical.length);
+      assert(!JSON.stringify(got.receipt).includes('measurement calibration'));
+      assert(!JSON.stringify(got.receipt).includes('src/measure.ts'));
+    }
+    const sameAction = action('Edit', 'atlas', 'src/measure.ts');
+    const a = await recall({ memoryRoot: actionBaseline, query: 'one prompt', actionContext: sameAction });
+    const b = await recall({ memoryRoot: actionBaseline, query: 'another prompt', actionContext: sameAction });
+    assert.equal(a.receipt.query.sha256, b.receipt.query.sha256);
+    for (const context of [
+      action('Write', 'atlas', 'src/measure.ts'),
+      action('Edit', 'other', 'src/measure.ts'),
+      action('Edit', 'atlas', 'src/other.ts'),
+    ]) {
+      const none = await recall({ memoryRoot: actionBaseline,
+        query: 'measurement calibration [syn:atlas]', actionContext: context });
+      assert.equal(none.status, 'no-match', JSON.stringify(none));
+      assert.equal(none.reason, 'no-action-match');
+      assert.equal(none.receipt.query.method, 'action-trigger');
+      assert.deepEqual(none.items, []);
+      assert.equal(none.receipt.counts.matched, 0);
+      assert.equal(validateReceipt(none.receipt, none.items, actionBaseline), true);
+    }
+  });
+  await check(async () => {
+    // Invalid explicit context fails BEFORE even touching a missing source.
+    const bad = [null, [], {}, {tool:'Edit',repo:'atlas'},
+      {tool:'Edit',repo:'atlas',path:'src/x',extra:1},
+      ...['C:/absolute/x', '/root/file', '\\\\server\\share',
+        'src\\file.ts','src//file','src/../file','src/./file',
+        'src/', 'src/**/file', 'src/?', 'src/\u0000x',
+        'x'.repeat(201)].map((file) => action('Edit','atlas',file)),
+      action('Edit','Invalid_Repo','src/x'),
+      action('Bash','atlas','src/x')];
+    const oldFs = fs.readFileSync;
+    let touches = 0;
+    fs.readFileSync = function (...args) { touches++; throw new Error('no source reads'); };
+    try {
+      for (const context of bad) {
+        const got = await recall({ memoryRoot: actionBaseline, query: 'measurement',
+          actionContext: context });
+        assert.equal(got.status, 'unavailable');
+        assert.equal(got.reason, 'invalid-input');
+        assert(!Object.hasOwn(got, 'receipt'));
+      }
+      assert.equal(touches, 0);
+    } finally { fs.readFileSync = oldFs; }
+  });
+  const actionGlob = fixture('c8-action-glob', [
+    entry('syn:prefix','Prefix', 'prefix whole.\n<!-- trigger: tool=Edit|Write; repo=atlas; path=src/prefix* -->', '[trust:observed]'),
+    entry('syn:middle','Middle', 'middle whole.\n<!-- trigger: tool=Edit; repo=atlas; path=src/**/service-*.ts -->', '[trust:observed]'),
+    entry('syn:literal','Literal', 'literal whole.\n<!-- trigger: tool=NotebookEdit; repo=atlas; path=notes/Exact.ipynb -->', '[trust:observed]'),
+    entry('syn:segment','Segment', 'segment whole.\n<!-- trigger: tool=Edit; repo=atlas; path=src/service-*.ts -->', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    for (const [ctx, tag] of [
+      [action('Write','atlas','src/prefix/nested.ts'),'syn:prefix'],
+      [action('Edit','atlas','src/lib/deep/service-main.ts'),'syn:middle'],
+      [action('NotebookEdit','atlas','NOTES/exact.IPYNB'),'syn:literal'],
+      [action('Edit','atlas','src/service-foo.ts'),'syn:middle'],
+    ]) {
+      const got = await recall({ memoryRoot: actionGlob, query: '', actionContext: ctx });
+      assertItem(got, tag);
+      assert.equal(validateReceipt(got.receipt, got.items, actionGlob), true);
+      if (ctx.path === 'src/service-foo.ts') {
+        // Mature **/ semantics include zero directory components.
+        assert.deepEqual(got.receipt.pointers.map((pointer) => pointer.tag),
+          ['syn:middle','syn:segment']);
+        assert.equal(got.receipt.counts.matched, 2);
+      }
+    }
+    const noCross = await recall({ memoryRoot: actionGlob, query:'syn:segment',
+      actionContext: action('Edit','atlas','src/service-sub/other.ts') });
+    assert.equal(noCross.status,'no-match');
+    assert.equal(noCross.reason,'no-action-match');
+  });
+  const actionSafety = fixture('c8-action-safety', [
+    entry('syn:fenced','Fence','Fenced trigger is an example only.\n' +
+      '~~~md\n<!-- trigger: tool=Edit; repo=atlas; path=src/fenced.ts -->\n~~~', '[trust:observed]'),
+    entry('syn:malformed','Bad trigger','Malformed must not fire.\n' +
+      '<!-- trigger: tool=Edit; repo=atlas; path=src//broken.ts -->', '[trust:observed]'),
+    entry('syn:duplicate','Duplicate','Two matching trigger lines, one entry.\n' +
+      '<!-- trigger: tool=Edit; repo=atlas; path=src/duplicated.ts -->\n' +
+      '<!-- trigger: tool=Edit|Write; repo=atlas; path=src/duplicated.ts -->', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    for (const file of ['src/fenced.ts','src//broken.ts']) {
+      const got = await recall({memoryRoot: actionSafety, query:'syn:fenced',
+        actionContext:action('Edit','atlas',file)});
+      assert.equal(got.status, file.includes('//') ? 'unavailable' : 'no-match');
+      if (file.includes('//')) assert.equal(got.reason,'invalid-input');
+      else assert.equal(got.reason,'no-action-match');
+    }
+    const duplicate = await recall({memoryRoot:actionSafety,query:'',
+      actionContext:action('Edit','atlas','src/duplicated.ts')});
+    assertItem(duplicate,'syn:duplicate');
+    assert.equal(duplicate.receipt.counts.matched,1);
+    assert.equal(validateReceipt(duplicate.receipt,duplicate.items,actionSafety),true);
+  });
+  const actionOld = fixture('c8-archive-redirect', [
+    entry('syn:new','Current','Current verified whole body.\nSupersedes: [[syn:old]]','[trust:observed]'),
+  ]);
+  fs.writeFileSync(path.join(actionOld,'decisions-archive.md'),render([
+    entry('syn:old','Archived','Historical rule only.\n' +
+      '<!-- trigger: tool=Edit; repo=atlas; path=src/historical.ts -->','[trust:observed]'),
+  ]));
+  await check(async()=>{
+    const r=await recall({memoryRoot:actionOld,query:'',actionContext:action('Edit','atlas','src/historical.ts')});
+    assertItem(r,'syn:new');
+    assert.equal(r.receipt.pointers[0].resolvedFromTag,'syn:old');
+    assert(!r.items.some(x=>x.tag==='syn:old'));
+    assert.equal(validateReceipt(r.receipt,r.items,actionOld),true);
+  });
+  const manyAction = fixture('c8-many-action',[
+    ...['one','two','three','four'].map((id)=>entry('syn:'+id,'Rank '+id,
+      'Short intact rule '+id+'.\n<!-- trigger: tool=Edit; repo=atlas; path=src/shared.ts -->','[trust:observed]')),
+  ]);
+  await check(async()=>{
+    const r=await recall({memoryRoot:manyAction,query:'',
+      actionContext:action('Edit','atlas','src/shared.ts')});
+    assert.equal(r.receipt.counts.matched,4);
+    assert(r.receipt.counts.selected>=1 && r.receipt.counts.selected<=3);
+    assert.equal(r.receipt.counts.matchedIdsNotListed,4-r.receipt.counts.selected);
+    const ordered=['syn:one','syn:two','syn:three'];
+    const selectedTags=r.receipt.pointers.map(x=>x.tag);
+    assert(selectedTags.every((tag)=>ordered.includes(tag)));
+    assert(selectedTags.every((tag,i)=>i===0 ||
+      ordered.indexOf(selectedTags[i-1])<ordered.indexOf(tag)));
+    assert(r.receipt.counts.displayed>=1);
+    assert.equal(validateReceipt(r.receipt,r.items,manyAction),true);
+    const small=await recall({memoryRoot:manyAction,query:'',maxChars:512,
+      actionContext:action('Edit','atlas','src/shared.ts')});
+    assert.equal(small.status,'unavailable');
+    assert.equal(small.reason,'output-limit');
+  });
+  const longAction=fixture('c8-long-packing',[
+    entry('syn:huge','Huge','H'.repeat(3100)+'\n<!-- trigger: tool=Edit; repo=atlas; path=src/pack.ts -->','[trust:observed]'),
+    entry('syn:short1','Short1','short whole one\n<!-- trigger: tool=Edit; repo=atlas; path=src/pack.ts -->','[trust:observed]'),
+    entry('syn:short2','Short2','short whole two\n<!-- trigger: tool=Edit; repo=atlas; path=src/pack.ts -->','[trust:observed]'),
+  ]);
+  await check(async()=>{
+    const r=await recall({memoryRoot:longAction,query:'',actionContext:action('Edit','atlas','src/pack.ts')});
+    assert.equal(r.receipt.counts.matched,3);
+    assert(r.items.some(x=>x.tag==='syn:short1'));
+    assert(r.items.some(x=>x.tag==='syn:short2'));
+    assert(!r.items.some(x=>x.tag==='syn:huge'));
+    assert.equal(validateReceipt(r.receipt,r.items,longAction),true);
+  });
+
+  // C8 pure parser: malformed mixed metadata invalidates that entire source
+  // block, while unknown trust and ambiguous forks do not leak via redirect.
+  const mixedBad = fixture('c8-invalid-trigger-block', [
+    entry('syn:bad', 'Bad mixed metadata',
+      'one valid path\n<!-- trigger: tool=Edit; repo=atlas; path=src/valid.ts -->\n' +
+      '<!-- trigger: tool=Edit; repo=atlas; path=src//invalid.ts -->', '[trust:observed]'),
+  ]);
+  await check(async () => {
+    const got=await recall({memoryRoot:mixedBad,query:'[syn:bad]',
+      actionContext:action('Edit','atlas','src/valid.ts')});
+    assert.equal(got.status,'no-match');
+    assert.equal(got.reason,'no-action-match');
+    assert.equal(got.receipt.counts.matched,0);
+    assert(got.warnings.some(x=>x.startsWith('action-trigger-metadata-excluded:')));
+    assert.equal(validateReceipt(got.receipt,got.items,mixedBad),true);
+  });
+  const unknownAction=fixture('c8-unknown-action',[
+    entry('syn:untrusted','Untrusted','Unsafe rule\n' +
+      '<!-- trigger: tool=Edit; repo=atlas; path=src/untrusted.ts -->','[trust:future]'),
+  ]);
+  const ambiguousAction=fixture('c8-ambiguous-action',[
+    entry('syn:ancestor','Old','Historical\n' +
+      '<!-- trigger: tool=Edit; repo=atlas; path=src/fork.ts -->','[trust:observed]'),
+    entry('syn:fork1','Fork A','Supersedes: [[syn:ancestor]]','[trust:observed]'),
+    entry('syn:fork2','Fork B','Supersedes: [[syn:ancestor]]','[trust:observed]'),
+  ]);
+  await check(async()=>{
+    const untrusted=await recall({memoryRoot:unknownAction,query:'',
+      actionContext:action('Edit','atlas','src/untrusted.ts')});
+    assert.equal(untrusted.status,'no-match');
+    assert(untrusted.warnings.includes('unknown-trust-excluded:1'));
+    assert.equal(validateReceipt(untrusted.receipt,untrusted.items,unknownAction),true);
+    const fork=await recall({memoryRoot:ambiguousAction,query:'',
+      actionContext:action('Edit','atlas','src/fork.ts')});
+    assert.equal(fork.status,'no-match');
+    assert(fork.warnings.some(x=>x.startsWith('graph-ambiguous-excluded:')));
+    assert.equal(validateReceipt(fork.receipt,fork.items,ambiguousAction),true);
+  });
+  const boundary=fixture('c8-fenced-heading',[
+    entry('syn:outer','Outer','A valid trigger in an ambiguous legacy span.\n' +
+      '<!-- trigger: tool=Edit; repo=atlas; path=src/boundary.ts -->\n' +
+      '~~~md\n**2026-01-01 — Fake fenced title** [syn:fake]\nNot a real block.\n~~~',
+      '[trust:observed]'),
+  ]);
+  // Satisfy the OLD unfenced manifest's index check, while the mature
+  // parser must still regard syn:fake as only a fenced demonstration.
+  const boundaryFile=path.join(boundary,'decisions.md');
+  fs.writeFileSync(boundaryFile,fs.readFileSync(boundaryFile,'utf8')
+    .replace('## Index\n','## Index\n- 2026-01-01 Fake fenced title [syn:fake]\n'));
+  await check(async()=>{
+    const got=await recall({memoryRoot:boundary,query:'',
+      actionContext:action('Edit','atlas','src/boundary.ts')});
+    assert.equal(got.status,'no-match',JSON.stringify(got));
+    assert.equal(got.receipt.counts.matched,0);
+    assert(got.warnings.some(x=>x.startsWith('action-trigger-boundary-excluded:')));
+  });
+
   process.stdout.write('PASS recall-selector synthetic ' + passed + '/' + passed + '\n');
 })().catch((error) => { process.stderr.write(String(error.stack || error) + '\n'); process.exitCode = 1; })
   .finally(() => { fs.rmSync(temp, { recursive: true, force: true }); });

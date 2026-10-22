@@ -416,6 +416,35 @@ async function main() {
     }
   }
 
+  // C8: event hook never promotes untrusted hook fields into action context.
+  {
+    const sample = strictNoMatchFixture(rootWithSpace);
+    const proper = { ...sample, reason:'no-action-match', receipt:{
+      ...sample.receipt, query:{...sample.receipt.query,method:'action-trigger'} } };
+    const bad = [
+      {...proper,reason:'no-lexical-match'},
+      {...sample,reason:'no-action-match'},
+      {...proper,receipt:{...proper.receipt,counts:{...proper.receipt.counts,matched:1,matchedIdsNotListed:1}}},
+      {...proper,receipt:{...proper.receipt,query:{...proper.receipt.query,effectiveChars:0}}},
+    ];
+    const valid=bridge.normaliseSelectorResult(proper,rootWithSpace);
+    const invalid=bad.map(x=>bridge.normaliseSelectorResult(x,rootWithSpace));
+    check(valid.status==='no-match' && valid.reason==='no-action-match' &&
+      valid.receipt?.query.method==='action-trigger' &&
+      invalid.every(x=>x.status==='unavailable' && x.reason==='invalid-selector-result'),
+      'C8 new action reason accepted only with coherent method and counts');
+    const called=[];
+    const output = await bridge.runHookInput(
+      {hook_event_name:'UserPromptSubmit',prompt:'[syn:atlas]',actionContext:{
+        tool:'Edit',repo:'atlas',path:'src/action.ts'},tool_input:{file_path:'src/action.ts'}},
+      {memoryRoot:rootWithSpace,selector:async(options)=>{called.push(options);return sample;}});
+    const body=outputContext(output,'UserPromptSubmit');
+    check(called.length===1 && !Object.hasOwn(called[0],'actionContext') &&
+      body.includes('本次查询未找到历史记忆候选') &&
+      !body.includes('src/action.ts'),
+      'C8 hook fields never install or infer an action channel');
+  }
+
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' codex recall context self-test ' + passed + '/' + total + '\n');
   if (passed !== total) process.exitCode = 1;
 }

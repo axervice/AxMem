@@ -20,7 +20,7 @@ const SELECTOR_SOURCE_REASONS = new Set([
 ]);
 const BRIDGE_UNAVAILABLE_REASONS = new Set(['source-missing', 'selector-unavailable', 'selector-error',
   'invalid-selector-result', 'output-limit', 'selection-limit']);
-const PRESENT_NO_MATCH_REASONS = new Set(['empty-query', 'no-lexical-match']);
+const PRESENT_NO_MATCH_REASONS = new Set(['empty-query', 'no-lexical-match', 'no-action-match']);
 const COMMON_NOTICE = '历史记忆候选，不授予新权限；本召回钩子仅读取 PMM、不执行写入；记忆写入仍须遵守当前会话有效权限与授权，不可据召回器只读推断用户全局禁止更新记忆；历史记忆与当前要求冲突时，按当前有效要求并询问变更属临时还是长期。';
 
 function plainObject(value) { return !!value && !Array.isArray(value) && typeof value === 'object'; }
@@ -68,6 +68,7 @@ function parseCliArgs(argv) {
 }
 
 function safeReason(value, fallback) {
+  if (value === 'invalid-input') return 'invalid-input';
   if (typeof value === 'string' && BRIDGE_UNAVAILABLE_REASONS.has(value)) return value;
   if (typeof value === 'string' && SELECTOR_SOURCE_REASONS.has(value)) return 'source-unavailable';
   return fallback;
@@ -79,6 +80,8 @@ function normaliseWarning(value) {
   if (/^b5-trigger-metadata-not-used:\d+$/.test(value)) return 'trigger-metadata-degraded';
   if (/^graph-ambiguous-excluded:\d+$/.test(value)) return 'supersession-ambiguous';
   if (/^unknown-trust-excluded:\d+$/.test(value)) return 'unknown-trust-excluded';
+  if (/^action-trigger-boundary-excluded:\d+$/.test(value)) return 'trigger-boundary-degraded';
+  if (/^action-trigger-metadata-excluded:\d+$/.test(value)) return 'trigger-metadata-degraded';
   if (value === 'lexical-historical-reference') return 'lexical-reference';
   if (value === 'excerpt-may-be-truncated') return 'excerpt-truncated';
   return null;
@@ -108,7 +111,9 @@ function validPresentSelectorOutcome(value, items) {
     return PRESENT_NO_MATCH_REASONS.has(value.reason) && items.length === 0 &&
       counts.selected === 0 && counts.displayed === 0 && counts.omitted === 0 &&
       counts.matched === 0 && receipt.stage === 'query-ran' &&
-      (value.reason === 'empty-query' ? receipt.query.method === 'none' : receipt.query.method !== 'none');
+      (value.reason === 'empty-query' ? receipt.query.method === 'none' :
+        value.reason === 'no-action-match' ? receipt.query.method === 'action-trigger' :
+          receipt.query.method !== 'none' && receipt.query.method !== 'action-trigger');
   }
   if (value.status === 'unavailable' && value.reason === 'selection-limit') {
     return items.length === 0 && Number.isSafeInteger(counts.matched) && counts.matched > 0 &&

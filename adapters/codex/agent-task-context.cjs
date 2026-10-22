@@ -18,10 +18,10 @@ const SOURCE_REASONS = new Set([
   'source-too-large', 'source-changed', 'manifest-timeout', 'manifest-invalid', 'internal-error',
 ]);
 const BRIDGE_REASONS = new Set([
-  'source-missing', 'selector-unavailable', 'selector-error', 'invalid-selector-result',
+  'invalid-input', 'source-missing', 'selector-unavailable', 'selector-error', 'invalid-selector-result',
   'task-too-large', 'invalid-task-spec', 'invalid-task-frame', 'output-limit', 'selection-limit',
 ]);
-const PRESENT_NO_MATCH_REASONS = new Set(['empty-query', 'no-lexical-match']);
+const PRESENT_NO_MATCH_REASONS = new Set(['empty-query', 'no-lexical-match', 'no-action-match']);
 
 function plainObject(value) {
   return !!value && !Array.isArray(value) && typeof value === 'object';
@@ -71,12 +71,15 @@ function normaliseWarning(value) {
   if (/^b5-trigger-metadata-not-used:\d+$/.test(value)) return 'trigger-metadata-degraded';
   if (/^graph-ambiguous-excluded:\d+$/.test(value)) return 'supersession-ambiguous';
   if (/^unknown-trust-excluded:\d+$/.test(value)) return 'unknown-trust-excluded';
+  if (/^action-trigger-boundary-excluded:\d+$/.test(value)) return 'trigger-boundary-degraded';
+  if (/^action-trigger-metadata-excluded:\d+$/.test(value)) return 'trigger-metadata-degraded';
   if (value === 'lexical-historical-reference') return 'lexical-reference';
   if (value === 'excerpt-may-be-truncated') return 'excerpt-truncated';
   return null;
 }
 
 function safeReason(value, fallback) {
+  if (value === 'invalid-input') return 'invalid-input';
   if (typeof value === 'string' && BRIDGE_REASONS.has(value)) return value;
   if (typeof value === 'string' && SOURCE_REASONS.has(value)) return 'source-unavailable';
   return fallback;
@@ -106,7 +109,9 @@ function validPresentSelectorOutcome(value, items) {
     return PRESENT_NO_MATCH_REASONS.has(value.reason) && items.length === 0 &&
       counts.selected === 0 && counts.displayed === 0 && counts.omitted === 0 &&
       counts.matched === 0 && receipt.stage === 'query-ran' &&
-      (value.reason === 'empty-query' ? receipt.query.method === 'none' : receipt.query.method !== 'none');
+      (value.reason === 'empty-query' ? receipt.query.method === 'none' :
+        value.reason === 'no-action-match' ? receipt.query.method === 'action-trigger' :
+          receipt.query.method !== 'none' && receipt.query.method !== 'action-trigger');
   }
   if (value.status === 'unavailable' && value.reason === 'selection-limit') {
     return items.length === 0 && Number.isSafeInteger(counts.matched) && counts.matched > 0 &&
@@ -158,7 +163,7 @@ function loadDefaultSelector() {
   }
 }
 
-async function callSelector(selector, memoryRoot, taskSpec) {
+async function callSelector(selector, memoryRoot, taskSpec, source) {
   if (!isAbsoluteMemoryRoot(memoryRoot)) {
     return { status: 'unavailable', reason: 'source-missing', items: [], warnings: [] };
   }
@@ -166,12 +171,11 @@ async function callSelector(selector, memoryRoot, taskSpec) {
     return { status: 'unavailable', reason: 'selector-unavailable', items: [], warnings: [] };
   }
   try {
-    return normaliseSelectorResult(await selector({
-      memoryRoot,
-      query: taskSpec,
-      limit: SELECTOR_LIMIT,
-      maxChars: SELECTOR_MAX_CHARS,
-    }), memoryRoot);
+    const args = { memoryRoot, query: taskSpec,
+      limit: SELECTOR_LIMIT, maxChars: SELECTOR_MAX_CHARS };
+    // Forward explicit own actionContext only, including invalid null.
+    if (Object.hasOwn(source, 'actionContext')) args.actionContext = source.actionContext;
+    return normaliseSelectorResult(await selector(args), memoryRoot);
   } catch {
     return { status: 'unavailable', reason: 'selector-error', items: [], warnings: [] };
   }
@@ -385,7 +389,7 @@ async function prepareAgentTask(input, dependencies) {
   const selector = dependencies && Object.prototype.hasOwnProperty.call(dependencies, 'selector')
     ? dependencies.selector
     : loadDefaultSelector();
-  const result = await callSelector(selector, source.memoryRoot, unwrapped.original);
+  const result = await callSelector(selector, source.memoryRoot, unwrapped.original, source);
   return responseFor(unwrapped.original, result, source.memoryRoot);
 }
 

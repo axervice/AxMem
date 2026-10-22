@@ -389,6 +389,67 @@ async function main() {
     }
   }
 
+  // C8: real prepareAgentTask forwards only owned actionContext; verified
+  // source bytes, full-body receipt, task prefix and frame hash survive.
+  {
+    const fs = require('node:fs'), os = require('node:os');
+    const path = require('node:path'), crypto = require('node:crypto');
+    const { recall, validateReceipt } = require('./recall-selector.cjs');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c8-task-action-'));
+    const bodyA = 'C8_TASK_VERIFIED_ATLAS';
+    const bodyB = 'C8_TASK_VERIFIED_ORBIT';
+    try {
+      fs.writeFileSync(path.join(root, 'decisions.md'),
+        '## Index\n- 2026-01-01 Atlas [syn:atlas]\n- 2026-01-01 Orbit [syn:orbit]\n\n## Entries\n' +
+        '**2026-01-01 — Atlas** [syn:atlas] [trust:observed]\n' + bodyA +
+        '\n<!-- trigger: tool=Edit; repo=atlas; path=src/action.ts -->\n' +
+        '**2026-01-01 — Orbit** [syn:orbit] [trust:observed]\n' + bodyB +
+        '\n<!-- trigger: tool=Edit; repo=orbit; path=src/action.ts -->\n');
+      for (const name of ['lessons.md','standinginstructions.md'])
+        fs.writeFileSync(path.join(root,name),'## Index\n\n## Entries\n');
+      const task = 'Inspect synthetic [syn:orbit] for the current explicit action.';
+      const ctx = { tool:'Edit',repo:'atlas',path:'SRC/ACTION.TS' };
+      const calls=[];
+      const selector = async (options) => { calls.push(options); return recall(options); };
+      const supplied = await helper.prepareAgentTask({memoryRoot:root,taskSpec:task,actionContext:ctx},
+        {selector});
+      const taskHash = crypto.createHash('sha256').update(task,'utf8').digest('hex');
+      check(calls.length===1 && Object.hasOwn(calls[0],'actionContext') &&
+        calls[0].actionContext === ctx && supplied.status === 'ok' &&
+        supplied.receipt?.query.method === 'action-trigger' &&
+        supplied.receipt.pointers[0]?.tag === 'syn:atlas' &&
+        supplied.receipt.counts.matched === 1 &&
+        supplied.message.startsWith(task) &&
+        supplied.message.includes('task-sha256='+taskHash) &&
+        supplied.message.includes(bodyA) && !supplied.message.includes(bodyB) &&
+        supplied.message.includes('stage=emitted selected=1 displayed=1 omitted=0') &&
+        Buffer.byteLength(supplied.message.slice(task.length),'utf8')<=helper.MAX_BLOCK_BYTES,
+        'C8 explicit owned context reaches real selector and whole task frame/hash');
+      const direct = await recall({memoryRoot:root,query:task,actionContext:ctx});
+      check(validateReceipt(direct.receipt,direct.items,root) &&
+        direct.items[0].hash === supplied.lessons[0]?.hash,
+        'C8 helper source pointer is bound to direct selector entry');
+      const absent=[];
+      await helper.prepareAgentTask({memoryRoot:root,taskSpec:task},
+        {selector:async(options)=>{absent.push(options);return {status:'no-match',reason:'no-lexical-match',
+          items:[],warnings:[]};}});
+      check(absent.length===1 && !Object.hasOwn(absent[0],'actionContext'),
+        'C8 omitted context is not inferred from task text');
+      const invalid = await helper.prepareAgentTask(
+        {memoryRoot:root,taskSpec:task,actionContext:null},{selector});
+      check(invalid.status==='unavailable' && invalid.reason==='invalid-input' &&
+        !invalid.message.includes(bodyA) && !invalid.message.includes(bodyB),
+        'C8 invalid owned context fails finite without lexical fallback');
+      const noMatch = await helper.prepareAgentTask(
+        {memoryRoot:root,taskSpec:task,actionContext:{tool:'Edit',repo:'wrong',path:'src/action.ts'}},
+        {selector});
+      check(noMatch.status==='no-match' && noMatch.reason==='no-action-match' &&
+        noMatch.receipt?.query.method==='action-trigger' && noMatch.receipt.counts.matched===0 &&
+        !noMatch.message.includes(bodyA),
+        'C8 no action match keeps a valid coherent agent-task receipt');
+    } finally { fs.rmSync(root,{recursive:true,force:true}); }
+  }
+
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' agent task context self-test ' + passed + '/' + total + '\n');
   if (passed !== total) process.exitCode = 1;
 }

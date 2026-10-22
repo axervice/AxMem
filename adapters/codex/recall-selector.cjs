@@ -8,6 +8,11 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const MiniSearch = require('../../guards/vendor/minisearch/index.cjs');
+// Pure mature PMM parser and bounded glob leaf only; never import stateful
+// trigger-recall or invoke snapshots/ledger.
+const { parseFile } = require('../../guards/pmm-core.cjs');
+const { compileTriggerPath, testTriggerPath, MAX_CANDIDATE_PATH_LEN } =
+  require('../../guards/pmm-trigger-glob.cjs');
 
 const MANIFEST = path.resolve(__dirname, '../../core/manifest.cjs');
 const REPO = path.resolve(__dirname, '../..');
@@ -78,7 +83,7 @@ function readSources(memoryRoot) {
     total += bytes.length;
     if (total > MAX_TOTAL_BYTES) fail('source-too-large');
     files.set(name, { hash: sha(bytes), size: bytes.length, dev: after.dev, ino: after.ino,
-      lines: bytes.toString('utf8').split(/\r?\n/) });
+      bytes, lines: bytes.toString('utf8').split(/\r?\n/) });
   }
   return { root, rootDev: rootStat.dev, rootIno: rootStat.ino, files };
 }
@@ -414,11 +419,89 @@ function select(entries, graph, query, scan, limit) {
 }
 
 
+const ACTION_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const ACTION_KEYS = ['tool', 'repo', 'path'];
+// Only an explicit caller can assert an action: never infer from hooks, text,
+// current working directory or repository configuration.
+function normalizeActionContext(value) {
+  if (!exactKeys(value, ACTION_KEYS) ||
+      typeof value.tool !== 'string' || !ACTION_TOOLS.has(value.tool) ||
+      typeof value.repo !== 'string' || !/^[a-z0-9-]{1,80}$/.test(value.repo) ||
+      typeof value.path !== 'string' || !value.path ||
+      value.path.length > MAX_CANDIDATE_PATH_LEN ||
+      /[\\:*?\u0000-\u001f\u007f]/.test(value.path) ||
+      value.path.startsWith('/') || value.path.endsWith('/') ||
+      value.path.split('/').some((segment) => !segment || segment === '.' || segment === '..'))
+    return null;
+  return { tool: value.tool, repo: value.repo, path: value.path.toLowerCase() };
+}
+function digestAction(action) {
+  const canonical = JSON.stringify({ tool: action.tool, repo: action.repo, path: action.path });
+  // Domain-separated canonical context digest, with a real NUL byte.
+  const bytes = Buffer.concat([Buffer.from('axmem-recall-action:v1'), Buffer.from([0]),
+    Buffer.from(canonical, 'utf8')]);
+  return { method: 'action-trigger', originalChars: canonical.length,
+    effectiveChars: canonical.length, sha256: sha(bytes) };
+}
+function sourceBlockText(text) {
+  // Allow only trailing blank normalization between the mature and P1 bounds.
+  return text.replace(/\r\n?/g, '\n').replace(/[ \t\n]+$/, '');
+}
+function selectByAction(entries, graph, sources, action, limit) {
+  const current = entries.filter((entry) =>
+    REQUIRED.has(entry.file) && !entry.archived && !graph.excluded.has(entry.tag) &&
+    graph.byTag.get(entry.tag).length === 1 && !graph.next.has(entry.tag) &&
+    TRUST.has(entry.trust));
+  const byTag = new Map(current.map((entry) => [entry.tag, entry]));
+  const byLocation = new Map(entries.map((entry) => [entry.file + ':' + entry.line, entry]));
+  const matched = new Map(), fromTags = new Map();
+  let disagreement = 0, malformed = 0;
+  for (const [file, source] of sources.files) {
+    // Buffer-only mature PMM grammar: no snapshot, ledger, or live trigger run.
+    const parsed = parseFile(file, source.bytes);
+    const invalidTriggerLines = new Set(parsed.diagnostics.filter((d) => d.code === 'B5')
+      .map((d) => d.line));
+    malformed += invalidTriggerLines.size;
+    for (const block of parsed.entries) {
+      if (!block.triggers.some((trigger) => trigger.kind === 'path')) continue;
+      const old = byLocation.get(file + ':' + block.titleLineNo);
+      if (!old || old.tag !== block.id || old.archived !== block.archived ||
+          sourceBlockText(old.text) !== sourceBlockText(block.body)) {
+        disagreement++;
+        continue;
+      }
+      if ([...invalidTriggerLines].some((line) =>
+        line >= block.lineRange[0] && line <= block.lineRange[1])) continue;
+      if (!TRUST.has(old.trust) || graph.excluded.has(old.tag) ||
+          graph.byTag.get(old.tag)?.length !== 1) continue;
+      let fired = false;
+      for (const trigger of block.triggers) {
+        if (trigger.kind !== 'path' || trigger.repo !== action.repo ||
+            !trigger.tools.includes(action.tool)) continue;
+        try {
+          if (testTriggerPath(compileTriggerPath(trigger.path), action.path)) fired = true;
+        } catch { malformed++; }
+      }
+      if (!fired) continue;
+      const head = graph.headOf(old.tag);
+      if (!head || !byTag.has(head)) continue;
+      if (!matched.has(head)) matched.set(head, byTag.get(head));
+      if (head !== old.tag && !fromTags.has(head)) fromTags.set(head, old.tag);
+    }
+  }
+  const warnings = [];
+  if (disagreement) warnings.push('action-trigger-boundary-excluded:' + disagreement);
+  if (malformed) warnings.push('action-trigger-metadata-excluded:' + malformed);
+  return { ranked: [...matched.values()].slice(0, limit), current, matched: matched.size,
+    fromTags, warnings, unknownTrustExcluded: entries.filter((e) => !TRUST.has(e.trust)).length };
+}
+
+
 const HEX64 = /^[a-f0-9]{64}$/;
 const ITEM_FILES = new Set(FILES.slice(0, 3));
 const RECEIPT_EVENTS = new Set(['selector', 'SessionStart', 'UserPromptSubmit', 'SubagentStart', 'agent-task']);
 const RECEIPT_STAGES = new Set(['source-probed', 'query-ran', 'candidates-selected', 'emitted', 'omitted', 'unavailable']);
-const QUERY_METHODS = new Set(['none', 'lexical', 'explicit-tag', 'mixed']);
+const QUERY_METHODS = new Set(['none', 'lexical', 'explicit-tag', 'mixed', 'action-trigger']);
 const VISIBILITIES = new Set(['whole', 'omitted']);
 const OMISSION_REASONS = new Set(['none', 'selector-budget', 'bridge-budget', 'task-budget']);
 function exactKeys(value, keys) {
@@ -447,7 +530,8 @@ function validateReceipt(receipt, items, memoryRoot) {
       !integer(q.effectiveChars, 65536) || q.effectiveChars > q.originalChars ||
       !(q.sha256 === null || typeof q.sha256 === 'string' && HEX64.test(q.sha256)) ||
       (q.method === 'none' && (q.effectiveChars !== 0 || q.sha256 !== null)) ||
-      (q.method !== 'none' && (q.effectiveChars === 0 || q.sha256 === null))) return false;
+      (q.method !== 'none' && (q.effectiveChars === 0 || q.sha256 === null)) ||
+      (q.method === 'action-trigger' && q.originalChars !== q.effectiveChars)) return false;
   if (!integer(c.eligible, 5000) || !(c.matched === null || integer(c.matched, 5000)) ||
       !integer(c.selected, 3) || !integer(c.displayed, 3) || !integer(c.omitted, 3) ||
       c.displayed + c.omitted !== c.selected || c.selected > c.eligible ||
@@ -509,7 +593,7 @@ function entryPointer(entry, rank, memoryRoot, sources, fromTag) {
     scope: 'unknown', resolvedFromTag: fromTag || null, visibility: 'omitted', reason: 'selector-budget',
   };
 }
-function packSelected(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags) {
+function packSelected(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags, noMatchReason = 'no-lexical-match') {
   if (Buffer.byteLength(memoryRoot, 'utf8') > 512 || selected.some((e) => e.tag.length > 512))
     return outputLimit();
   const pointers = selected.map((entry, i) => entryPointer(entry, i + 1, memoryRoot, sources, fromTags.get(entry.tag)));
@@ -521,7 +605,7 @@ function packSelected(selected, warnings, maxChars, memoryRoot, sources, queryIn
     query: queryInfo, counts, pointers };
   // Integrity-critical metadata must fit before any body. Never truncate a pointer.
   const emptyStatus = selected.length || selectionLimited ? 'unavailable' : 'no-match';
-  const emptyReason = selected.length ? 'output-limit' : selectionLimited ? 'selection-limit' : 'no-lexical-match';
+  const emptyReason = selected.length ? 'output-limit' : selectionLimited ? 'selection-limit' : noMatchReason;
   if (!compactReceiptResult(receipt, warnings, [], maxChars, emptyStatus, emptyReason)) return outputLimit();
   const items = [];
   for (let i = 0; i < selected.length; i++) {
@@ -541,13 +625,14 @@ function packSelected(selected, warnings, maxChars, memoryRoot, sources, queryIn
     counts.displayed ? 'candidates-selected' : 'omitted';
   const status = !selected.length ? (selectionLimited ? 'unavailable' : 'no-match') :
     counts.displayed ? 'ok' : 'unavailable';
-  const reason = !selected.length ? (selectionLimited ? 'selection-limit' : 'no-lexical-match') :
+  const reason = !selected.length ? (selectionLimited ? 'selection-limit' : noMatchReason) :
     counts.displayed ? null : 'output-limit';
   return compactReceiptResult(receipt, warnings, items, maxChars, status, reason) || outputLimit();
 }
 
-function wholeItems(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags) {
-  const full = packSelected(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags);
+function wholeItems(selected, warnings, maxChars, memoryRoot, sources, queryInfo, eligible, matched, fromTags, noMatchReason = 'no-lexical-match') {
+  const full = packSelected(selected, warnings, maxChars, memoryRoot, sources, queryInfo,
+    eligible, matched, fromTags, noMatchReason);
   // Preserve all pointers when later short entries already fit after an
   // oversized rank 1. Only reconsider a selection displaying zero bodies.
   if (full.items.length || selected.length < 2) return full;
@@ -555,7 +640,7 @@ function wholeItems(selected, warnings, maxChars, memoryRoot, sources, queryInfo
   for (let mask = 1; mask < (1 << selected.length) - 1; mask++) {
     const subset = selected.filter((_, i) => mask & (1 << i));
     const candidate = packSelected(subset, warnings, maxChars, memoryRoot,
-      sources, queryInfo, eligible, matched, fromTags);
+      sources, queryInfo, eligible, matched, fromTags, noMatchReason);
     if (!candidate.items.length) continue;
     const shown = candidate.items.length;
     const rankSum = selected.reduce((sum, item, i) =>
@@ -569,7 +654,14 @@ function wholeItems(selected, warnings, maxChars, memoryRoot, sources, queryInfo
   return best ? best.candidate : full;
 }
 
-async function recall({ memoryRoot, query = '', limit = 3, maxChars = 2400 } = {}) {
+async function recall(options = {}) {
+  if (!options || typeof options !== 'object' || Array.isArray(options))
+    return result('unavailable', 'invalid-input');
+  const { memoryRoot, query = '', limit = 3, maxChars = 2400 } = options;
+  const actionPresent = Object.hasOwn(options, 'actionContext');
+  const action = actionPresent ? normalizeActionContext(options.actionContext) : null;
+  // Reject malformed explicit action BEFORE any PMM I/O.
+  if (actionPresent && !action) return result('unavailable', 'invalid-input');
   if (typeof query !== 'string' || Buffer.byteLength(query, 'utf8') > 64 * 1024 ||
       !Number.isInteger(limit) || limit < 1 ||
       !Number.isInteger(maxChars) || maxChars < 512 || maxChars > 4000)
@@ -596,6 +688,14 @@ async function recall({ memoryRoot, query = '', limit = 3, maxChars = 2400 } = {
     const graph = graphOf(entries, manifest);
     const graphCount = entries.filter((entry) => graph.excluded.has(entry.tag)).length;
     if (graphCount) warnings.push('graph-ambiguous-excluded:' + graphCount);
+    if (actionPresent) {
+      const selected = selectByAction(entries, graph, before, action, boundedLimit);
+      if (selected.unknownTrustExcluded)
+        warnings.push('unknown-trust-excluded:' + selected.unknownTrustExcluded);
+      return wholeItems(selected.ranked, warnings.concat(selected.warnings), maxChars,
+        memoryRoot, before, digestAction(action), selected.current.length,
+        selected.matched, selected.fromTags, 'no-action-match');
+    }
     if (!query.trim()) {
       const empty = select(entries, graph, '', '', boundedLimit);
       const r = { v: 1, event: 'selector', stage: 'query-ran', query: digestQuery(query, 'none'),
