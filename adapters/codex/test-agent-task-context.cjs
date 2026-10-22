@@ -450,6 +450,25 @@ async function main() {
     } finally { fs.rmSync(root,{recursive:true,force:true}); }
   }
 
+  // C8-R2: task recipient must see an unverified-redirect degradation.
+  {
+    const memoryRoot = process.platform === 'win32'
+      ? 'C:\\PMM Fixture Root\\memory' : '/tmp/pmm-fixture-root/memory';
+    const actionNoMatch = strictNoMatchFixture(memoryRoot);
+    actionNoMatch.reason = 'no-action-match';
+    actionNoMatch.receipt.query.method = 'action-trigger';
+    actionNoMatch.warnings = ['action-trigger-redirect-unverified:2'];
+    const got = await helper.prepareAgentTask(
+      { memoryRoot, taskSpec: 'Synthetic filtered action task.', actionContext:
+        { tool: 'Edit', repo: 'atlas', path: 'src/action.ts' } },
+      { selector: async () => actionNoMatch });
+    check(got.status === 'no-match' && got.reason === 'no-action-match' &&
+      got.warnings.includes('redirect-unverified') &&
+      got.message.includes('redirect-unverified') &&
+      got.receipt?.counts.matched === 0,
+      'C8-R2 task helper preserves unverified-redirect warning');
+  }
+
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' agent task context self-test ' + passed + '/' + total + '\n');
   if (passed !== total) process.exitCode = 1;
 }

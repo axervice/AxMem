@@ -1,5 +1,11 @@
 # AxMem CHANGELOG
 
+## 2026-10-22 — C8 R2 redirect source-provenance repair (candidate only)
+
+- Main REQUEST_CHANGES F1/F2: a fenced pseudo-successor was emitted as current, and a real successor with only a fenced Supersedes example was incorrectly reachable. R2 binds every action root/intermediate/head to mature fence-aware parser identity, trust, title line, full block and date, and checks every traversed edge against the verified successor's unfenced Supersedes metadata.
+- Valid ordinary and cross-file successors with no own trigger, including unfenced archived multi-hop links, remain addressable. Legacy index-only or collapsed redirects lacking source-bound successor declarations fail closed with finite action-trigger-redirect-unverified warning, retained by both consumers. Original lexical retrieval and receipt budgets unchanged.
+- Synthetic regression and candidate source only; NOT installed, no live action-channel authority, no linked/class-member/session-state parity or basic-stage acceptance.
+
 ## 2026-10-22 — Basic recall C8 explicit action-context candidate (NOT installed)
 
 - C5/C6 reviewed local source fast-forward at 991a49eb90749d3d6d9cc4d1ff8bd346d2bdb67b retained. Main separately recorded a bounded native client/task-recipient whole-entry receipt (native RC 0), not SubagentStart proof or basic-stage completion.

@@ -448,50 +448,84 @@ function sourceBlockText(text) {
   return text.replace(/\r\n?/g, '\n').replace(/[ \t\n]+$/, '');
 }
 function selectByAction(entries, graph, sources, action, limit) {
-  const current = entries.filter((entry) =>
-    REQUIRED.has(entry.file) && !entry.archived && !graph.excluded.has(entry.tag) &&
-    graph.byTag.get(entry.tag).length === 1 && !graph.next.has(entry.tag) &&
-    TRUST.has(entry.trust));
-  const byTag = new Map(current.map((entry) => [entry.tag, entry]));
+  // Action-only source proof covers ALL mature-parser blocks, even successor
+  // heads and intermediate archived nodes without their own path trigger.
   const byLocation = new Map(entries.map((entry) => [entry.file + ':' + entry.line, entry]));
-  const matched = new Map(), fromTags = new Map();
-  let disagreement = 0, malformed = 0;
+  const bound = new Map(), triggerRoots = [];
+  let disagreement = 0, malformed = 0, unverifiedRedirect = 0;
   for (const [file, source] of sources.files) {
-    // Buffer-only mature PMM grammar: no snapshot, ledger, or live trigger run.
+    // Pure buffer parseFile: no snapshot, ledger, or stateful trigger entrypoint.
     const parsed = parseFile(file, source.bytes);
     const invalidTriggerLines = new Set(parsed.diagnostics.filter((d) => d.code === 'B5')
       .map((d) => d.line));
     malformed += invalidTriggerLines.size;
     for (const block of parsed.entries) {
-      if (!block.triggers.some((trigger) => trigger.kind === 'path')) continue;
-      const old = byLocation.get(file + ':' + block.titleLineNo);
-      if (!old || old.tag !== block.id || old.archived !== block.archived ||
-          sourceBlockText(old.text) !== sourceBlockText(block.body)) {
+      const legacy = byLocation.get(file + ':' + block.titleLineNo);
+      if (!legacy || legacy.tag !== block.id || legacy.archived !== block.archived ||
+          legacy.trust !== block.trust || legacy.date !== block.dateISO ||
+          sourceBlockText(legacy.text) !== sourceBlockText(block.body)) {
         disagreement++;
         continue;
       }
       if ([...invalidTriggerLines].some((line) =>
         line >= block.lineRange[0] && line <= block.lineRange[1])) continue;
-      if (!TRUST.has(old.trust) || graph.excluded.has(old.tag) ||
-          graph.byTag.get(old.tag)?.length !== 1) continue;
-      let fired = false;
-      for (const trigger of block.triggers) {
-        if (trigger.kind !== 'path' || trigger.repo !== action.repo ||
-            !trigger.tools.includes(action.tool)) continue;
-        try {
-          if (testTriggerPath(compileTriggerPath(trigger.path), action.path)) fired = true;
-        } catch { malformed++; }
-      }
-      if (!fired) continue;
-      const head = graph.headOf(old.tag);
-      if (!head || !byTag.has(head)) continue;
-      if (!matched.has(head)) matched.set(head, byTag.get(head));
-      if (head !== old.tag && !fromTags.has(head)) fromTags.set(head, old.tag);
+      if (!TRUST.has(legacy.trust) || graph.excluded.has(legacy.tag) ||
+          graph.byTag.get(legacy.tag)?.length !== 1 || bound.has(legacy.tag)) continue;
+      const verified = { legacy, block };
+      bound.set(legacy.tag, verified);
+      if (block.triggers.some((trigger) => trigger.kind === 'path')) triggerRoots.push(verified);
     }
+  }
+  const current = entries.filter((entry) =>
+    REQUIRED.has(entry.file) && !entry.archived && !graph.excluded.has(entry.tag) &&
+    graph.byTag.get(entry.tag).length === 1 && !graph.next.has(entry.tag) &&
+    TRUST.has(entry.trust) && bound.get(entry.tag)?.legacy === entry);
+  const byTag = new Map(current.map((entry) => [entry.tag, entry]));
+  const matched = new Map(), fromTags = new Map();
+
+  // A legacy index head or collapsed manifest.heads value is NOT proof of an
+  // edge. Every traversed transition must be a real, unfenced Supersedes
+  // declaration on the verified successor block. Unknown intermediates fail.
+  function verifiedHead(rootTag) {
+    const seen = new Set();
+    let cursor = rootTag;
+    for (let depth = 0; depth <= 8; depth++) {
+      const node = bound.get(cursor);
+      if (!node || seen.has(cursor) || graph.excluded.has(cursor)) return null;
+      seen.add(cursor);
+      const next = graph.next.get(cursor);
+      if (!next || next.size === 0) return cursor;
+      if (next.size !== 1 || depth === 8) return null;
+      const successor = [...next][0];
+      const proved = bound.get(successor);
+      if (!proved || !proved.block.supersedes.includes(cursor)) return null;
+      cursor = successor;
+    }
+    return null;
+  }
+
+  for (const { legacy, block } of triggerRoots) {
+    let fired = false;
+    for (const trigger of block.triggers) {
+      if (trigger.kind !== 'path' || trigger.repo !== action.repo ||
+          !trigger.tools.includes(action.tool)) continue;
+      try {
+        if (testTriggerPath(compileTriggerPath(trigger.path), action.path)) fired = true;
+      } catch { malformed++; }
+    }
+    if (!fired) continue;
+    const head = graph.headOf(legacy.tag);
+    if (!head) continue;
+    if (!byTag.has(head)) { unverifiedRedirect++; continue; }
+    const verified = verifiedHead(legacy.tag);
+    if (verified !== head) { unverifiedRedirect++; continue; }
+    if (!matched.has(head)) matched.set(head, byTag.get(head));
+    if (head !== legacy.tag && !fromTags.has(head)) fromTags.set(head, legacy.tag);
   }
   const warnings = [];
   if (disagreement) warnings.push('action-trigger-boundary-excluded:' + disagreement);
   if (malformed) warnings.push('action-trigger-metadata-excluded:' + malformed);
+  if (unverifiedRedirect) warnings.push('action-trigger-redirect-unverified:' + unverifiedRedirect);
   return { ranked: [...matched.values()].slice(0, limit), current, matched: matched.size,
     fromTags, warnings, unknownTrustExcluded: entries.filter((e) => !TRUST.has(e.trust)).length };
 }

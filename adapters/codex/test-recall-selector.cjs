@@ -973,6 +973,115 @@ function assertItem(result, tag) {
     assert(got.warnings.some(x=>x.startsWith('action-trigger-boundary-excluded:')));
   });
 
+
+  // C8-R2: archived triggers must never redirect to an unbound fenced
+  // pseudo-head, a fenced-only edge, or an unverified intermediate.
+  // These were independently red on the reviewed R1 selector.
+  function c8Archive(root, tag = 'syn:old', filename = 'src/ledger.ts') {
+    fs.writeFileSync(path.join(root, 'decisions-archive.md'), render([
+      entry(tag, 'Archived action source', 'Old source only.\n' +
+        '<!-- trigger: tool=Edit; repo=atlas; path=' + filename + ' -->', '[trust:observed]'),
+    ]));
+    return root;
+  }
+  const r2Action = { tool: 'Edit', repo: 'atlas', path: 'src/ledger.ts' };
+  const r2FencedHead = c8Archive(fixture('c8-r2-f1-fenced-head', [
+    entry('syn:wrapper', 'Outer valid heading', 'Real wrapper only.\n~~~md\n' +
+      '**2026-01-01 — Fenced successor** [syn:successor] [trust:observed]\n' +
+      'Supersedes: [[syn:old]]\nUntrusted apparent successor body.\n~~~',
+      '[trust:observed]'),
+  ]));
+  const f1file = path.join(r2FencedHead, 'decisions.md');
+  fs.writeFileSync(f1file, fs.readFileSync(f1file, 'utf8').replace(
+    '## Index\n', '## Index\n- 2026-01-01 Fenced successor [syn:successor]\n'));
+  await check(async () => {
+    const got = await recall({memoryRoot: r2FencedHead,
+      query: '[syn:successor]', actionContext: r2Action});
+    assert.equal(got.status, 'no-match', JSON.stringify(got));
+    assert.equal(got.reason, 'no-action-match');
+    assert.equal(got.receipt.counts.matched, 0);
+    assert(!got.items.some((item) => item.tag === 'syn:successor'));
+    assert(got.warnings.some((w) => /action-trigger-(?:boundary|redirect)-/.test(w)));
+    assert.equal(validateReceipt(got.receipt, got.items, r2FencedHead), true);
+  });
+  const r2FencedEdge = c8Archive(fixture('c8-r2-f2-fenced-edge', [
+    entry('syn:successor', 'Real successor, fake edge', 'Real head body.\n' +
+      '~~~md\nSupersedes: [[syn:old]]\n~~~', '[trust:observed]'),
+  ]));
+  await check(async () => {
+    const got = await recall({memoryRoot: r2FencedEdge,
+      query: 'syn:successor', actionContext: r2Action});
+    assert.equal(got.status, 'no-match', JSON.stringify(got));
+    assert.equal(got.reason, 'no-action-match');
+    assert.equal(got.receipt.counts.matched, 0);
+    assert(got.warnings.some((w) => /action-trigger-(?:boundary|redirect)-/.test(w)));
+    assert.equal(validateReceipt(got.receipt, got.items, r2FencedEdge), true);
+  });
+  const r2Mid = c8Archive(fixture('c8-r2-fenced-intermediate', [
+    entry('syn:head', 'True head', 'Full current head body.\n' +
+      'Supersedes: [[syn:mid]]', '[trust:observed]'),
+  ]));
+  fs.writeFileSync(path.join(r2Mid, 'lessons-archive.md'), render([
+    entry('syn:mid', 'Old intermediate', '~~~md\n' +
+      'Supersedes: [[syn:old]]\n~~~', '[trust:observed]'),
+  ]));
+  await check(async () => {
+    const got = await recall({memoryRoot: r2Mid,
+      query: 'syn:head', actionContext: r2Action});
+    assert.equal(got.status, 'no-match', JSON.stringify(got));
+    assert.equal(got.receipt.counts.matched, 0);
+    assert(got.warnings.some((w) => /action-trigger-(?:boundary|redirect)-/.test(w)));
+    assert.equal(validateReceipt(got.receipt, got.items, r2Mid), true);
+  });
+  const r2GoodMid = c8Archive(fixture('c8-r2-valid-multihop', [
+    entry('syn:head', 'Valid final head',
+      'Whole current head without trigger.\nSupersedes: [[syn:mid]]',
+      '[trust:observed]'),
+  ]));
+  fs.writeFileSync(path.join(r2GoodMid, 'lessons-archive.md'), render([
+    entry('syn:mid', 'Valid archived bridge',
+      'Unfenced edge source.\nSupersedes: [[syn:old]]', '[trust:observed]'),
+  ]));
+  await check(async () => {
+    const got = await recall({memoryRoot: r2GoodMid, query: '',
+      actionContext: r2Action});
+    assert.equal(got.status, 'ok', JSON.stringify(got));
+    assert.equal(got.items[0].tag, 'syn:head');
+    assert.equal(got.receipt.pointers[0].resolvedFromTag, 'syn:old');
+    assert.equal(got.receipt.counts.matched, 1);
+    assert.equal(validateReceipt(got.receipt, got.items, r2GoodMid), true);
+  });
+  const r2CrossFile = c8Archive(fixture('c8-r2-crossfile-head', [], [
+    entry('syn:successor', 'Actual no-trigger head',
+      'Verified lesson without its own trigger.\nSupersedes: [[syn:old]]',
+      '[trust:observed]'),
+  ]));
+  await check(async () => {
+    const got = await recall({memoryRoot: r2CrossFile,
+      query: '', actionContext: r2Action});
+    assert.equal(got.status, 'ok', JSON.stringify(got));
+    assert.equal(got.items.length, 1);
+    assert.equal(got.items[0].tag, 'syn:successor');
+    assert.equal(got.items[0].file, 'lessons.md');
+    assert.equal(got.receipt.pointers[0].resolvedFromTag, 'syn:old');
+    assert.equal(got.receipt.counts.matched, 1);
+    assert.equal(validateReceipt(got.receipt, got.items, r2CrossFile), true);
+  });
+  const r2IndexOnly = c8Archive(fixture('c8-r2-index-only', [
+    entry('syn:head', 'Marker only head', 'There is no actual supersession declaration.',
+      '[trust:observed]'),
+  ]));
+  const indexOld = path.join(r2IndexOnly, 'decisions-archive.md');
+  fs.writeFileSync(indexOld, fs.readFileSync(indexOld, 'utf8')
+    .replace('[syn:old]\n', '[syn:old] superseded→[syn:head]\n'));
+  await check(async () => {
+    const got = await recall({memoryRoot: r2IndexOnly, query: '',
+      actionContext: r2Action});
+    assert.equal(got.status, 'no-match', JSON.stringify(got));
+    assert.equal(got.receipt.counts.matched, 0);
+    assert(got.warnings.some((w) => /action-trigger-(?:boundary|redirect)-/.test(w)));
+  });
+
   process.stdout.write('PASS recall-selector synthetic ' + passed + '/' + passed + '\n');
 })().catch((error) => { process.stderr.write(String(error.stack || error) + '\n'); process.exitCode = 1; })
   .finally(() => { fs.rmSync(temp, { recursive: true, force: true }); });

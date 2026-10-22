@@ -81,6 +81,7 @@ function normaliseWarning(value) {
   if (/^graph-ambiguous-excluded:\d+$/.test(value)) return 'supersession-ambiguous';
   if (/^unknown-trust-excluded:\d+$/.test(value)) return 'unknown-trust-excluded';
   if (/^action-trigger-boundary-excluded:\d+$/.test(value)) return 'trigger-boundary-degraded';
+  if (/^action-trigger-redirect-unverified:\d+$/.test(value)) return 'redirect-unverified';
   if (/^action-trigger-metadata-excluded:\d+$/.test(value)) return 'trigger-metadata-degraded';
   if (value === 'lexical-historical-reference') return 'lexical-reference';
   if (value === 'excerpt-may-be-truncated') return 'excerpt-truncated';

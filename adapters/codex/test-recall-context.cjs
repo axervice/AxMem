@@ -445,6 +445,22 @@ async function main() {
       'C8 hook fields never install or infer an action channel');
   }
 
+  // C8-R2 explicit unverified supersession warning remains visible.
+  {
+    const actionNoMatch = strictNoMatchFixture(rootWithSpace);
+    actionNoMatch.reason = 'no-action-match';
+    actionNoMatch.receipt.query.method = 'action-trigger';
+    actionNoMatch.warnings = ['action-trigger-redirect-unverified:2'];
+    const accepted = bridge.normaliseSelectorResult(actionNoMatch, rootWithSpace);
+    const visible = await bridge.runHookInput(
+      { hook_event_name: 'UserPromptSubmit', prompt: 'synthetic' },
+      { memoryRoot: rootWithSpace, selector: async () => actionNoMatch });
+    check(accepted.status === 'no-match' &&
+      accepted.warnings.includes('redirect-unverified') &&
+      outputContext(visible, 'UserPromptSubmit').includes('redirect-unverified'),
+      'C8-R2 bridge preserves finite unverified-redirect warning, not silent no-match');
+  }
+
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' codex recall context self-test ' + passed + '/' + total + '\n');
   if (passed !== total) process.exitCode = 1;
 }
