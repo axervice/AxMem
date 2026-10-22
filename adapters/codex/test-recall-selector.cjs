@@ -458,7 +458,7 @@ function assertItem(result, tag) {
 
   // C5: a topic elsewhere in the task cannot authorize a candidate whose
   // only overlap is neutral continuation wording from another project.
-  const sharedScaffold = '继续自动推进项目，检查验证完成状态。';
+  const sharedScaffold = '继续自动推进项目，检查验证完成状态。 continue work next';
   const c5Atlas = entry('demo:atlas', 'Atlas appointments',
     'Atlas scheduling keeps tenant-guard.v2 safe. ' + sharedScaffold, '[trust:observed]');
   const c5Orbit = entry('demo:orbit', 'Orbit invoices',
