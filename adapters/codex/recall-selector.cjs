@@ -331,7 +331,7 @@ function topicalQueryTerms(text) {
   }
 }
 
-function citedTags(scan, graph, limit = 4) {
+function citedTags(scan, graph, limit = 4, strictBracketSuffix = false) {
   const found = [];
   // A tag appearing only inside a metadata/comment quote is not a citation.
   scan = scan.replace(/<!--[\s\S]*?-->/g, (comment) => ' '.repeat(comment.length));
@@ -341,6 +341,10 @@ function citedTags(scan, graph, limit = 4) {
     const start = match.index;
     const end = start + match[0].length;
     if (!left(scan[start - 1]) || !right(scan[end])) continue;
+    // Automatic citation mode rejects an ASCII identifier glued to the closing
+    // bracket. Han prose is a valid boundary; manual mode keeps legacy behavior.
+    if (strictBracketSuffix && (scan[end] === ']' || scan[end] === ')') &&
+        /[A-Za-z0-9_]/.test(scan[end + 1] || '')) continue;
     let tag = match[0];
     if (!graph.byTag.has(tag) && /\.$/.test(tag)) {
       // A complete known tag ending in a dot wins. Only otherwise interpret
@@ -354,6 +358,29 @@ function citedTags(scan, graph, limit = 4) {
   }
   return found;
 }
+
+// Explicit, source-bound citations only. No lexical search or action inference.
+function selectByCitations(entries, graph, sources, scan, limit) {
+  const proof = verifiedSourceGraph(entries, graph, sources);
+  const { current, byTag, verifiedHead } = proof;
+  const cited = citedTags(scan, graph, Number.POSITIVE_INFINITY, true);
+  const heads = new Map(), fromTags = new Map();
+  let unverifiedRedirect = 0;
+  for (const tag of cited) {
+    const head = verifiedHead(tag);
+    if (!head || !byTag.has(head)) { unverifiedRedirect++; continue; }
+    if (!heads.has(head)) heads.set(head, byTag.get(head));
+    if (head !== tag && !fromTags.has(head)) fromTags.set(head, tag);
+  }
+  const warnings = [];
+  if (proof.disagreement) warnings.push('citation-boundary-excluded:' + proof.disagreement);
+  if (proof.malformed) warnings.push('citation-metadata-excluded:' + proof.malformed);
+  if (unverifiedRedirect) warnings.push('citation-redirect-unverified:' + unverifiedRedirect);
+  return { ranked: [...heads.values()].slice(0, limit), current, matched: heads.size,
+    fromTags, warnings, foundKnownCitation: cited.length > 0,
+    unknownTrustExcluded: entries.filter((e) => !TRUST.has(e.trust)).length };
+}
+
 function select(entries, graph, query, scan, limit) {
   const current = entries.filter((entry) => REQUIRED.has(entry.file) && !entry.archived && !graph.excluded.has(entry.tag) &&
     graph.byTag.get(entry.tag).length === 1 && !graph.next.has(entry.tag) && TRUST.has(entry.trust));
@@ -447,12 +474,12 @@ function sourceBlockText(text) {
   // Allow only trailing blank normalization between the mature and P1 bounds.
   return text.replace(/\r\n?/g, '\n').replace(/[ \t\n]+$/, '');
 }
-function selectByAction(entries, graph, sources, action, limit) {
-  // Action-only source proof covers ALL mature-parser blocks, even successor
+function verifiedSourceGraph(entries, graph, sources) {
+  // Shared citation/action source proof covers ALL mature-parser blocks, including
   // heads and intermediate archived nodes without their own path trigger.
   const byLocation = new Map(entries.map((entry) => [entry.file + ':' + entry.line, entry]));
   const bound = new Map(), triggerRoots = [];
-  let disagreement = 0, malformed = 0, unverifiedRedirect = 0;
+  let disagreement = 0, malformed = 0;
   for (const [file, source] of sources.files) {
     // Pure buffer parseFile: no snapshot, ledger, or stateful trigger entrypoint.
     const parsed = parseFile(file, source.bytes);
@@ -481,7 +508,6 @@ function selectByAction(entries, graph, sources, action, limit) {
     graph.byTag.get(entry.tag).length === 1 && !graph.next.has(entry.tag) &&
     TRUST.has(entry.trust) && bound.get(entry.tag)?.legacy === entry);
   const byTag = new Map(current.map((entry) => [entry.tag, entry]));
-  const matched = new Map(), fromTags = new Map();
 
   // A legacy index head or collapsed manifest.heads value is NOT proof of an
   // edge. Every traversed transition must be a real, unfenced Supersedes
@@ -504,6 +530,14 @@ function selectByAction(entries, graph, sources, action, limit) {
     return null;
   }
 
+  return { current, byTag, triggerRoots, verifiedHead, disagreement, malformed };
+}
+
+function selectByAction(entries, graph, sources, action, limit) {
+  const proof = verifiedSourceGraph(entries, graph, sources);
+  const { current, byTag, triggerRoots, verifiedHead, disagreement } = proof;
+  let malformed = proof.malformed, unverifiedRedirect = 0;
+  const matched = new Map(), fromTags = new Map();
   for (const { legacy, block } of triggerRoots) {
     let fired = false;
     for (const trigger of block.triggers) {
@@ -564,7 +598,8 @@ function validateReceipt(receipt, items, memoryRoot) {
       !integer(q.effectiveChars, 65536) || q.effectiveChars > q.originalChars ||
       !(q.sha256 === null || typeof q.sha256 === 'string' && HEX64.test(q.sha256)) ||
       (q.method === 'none' && (q.effectiveChars !== 0 || q.sha256 !== null)) ||
-      (q.method !== 'none' && (q.effectiveChars === 0 || q.sha256 === null)) ||
+      (q.method !== 'none' && (q.sha256 === null ||
+        (q.effectiveChars === 0 && q.method !== 'explicit-tag'))) ||
       (q.method === 'action-trigger' && q.originalChars !== q.effectiveChars)) return false;
   if (!integer(c.eligible, 5000) || !(c.matched === null || integer(c.matched, 5000)) ||
       !integer(c.selected, 3) || !integer(c.displayed, 3) || !integer(c.omitted, 3) ||
@@ -693,6 +728,9 @@ async function recall(options = {}) {
     return result('unavailable', 'invalid-input');
   const { memoryRoot, query = '', limit = 3, maxChars = 2400 } = options;
   const actionPresent = Object.hasOwn(options, 'actionContext');
+  const modePresent = Object.hasOwn(options, 'selectionMode');
+  if (modePresent && (options.selectionMode !== 'citation-only' || actionPresent))
+    return result('unavailable', 'invalid-input');
   const action = actionPresent ? normalizeActionContext(options.actionContext) : null;
   // Reject malformed explicit action BEFORE any PMM I/O.
   if (actionPresent && !action) return result('unavailable', 'invalid-input');
@@ -729,6 +767,15 @@ async function recall(options = {}) {
       return wholeItems(selected.ranked, warnings.concat(selected.warnings), maxChars,
         memoryRoot, before, digestAction(action), selected.current.length,
         selected.matched, selected.fromTags, 'no-action-match');
+    }
+    if (modePresent) {
+      const selected = selectByCitations(entries, graph, before, scan, boundedLimit);
+      if (selected.unknownTrustExcluded)
+        warnings.push('unknown-trust-excluded:' + selected.unknownTrustExcluded);
+      const reason = selected.foundKnownCitation ? 'no-citation-match' : 'no-explicit-citation';
+      return wholeItems(selected.ranked, warnings.concat(selected.warnings), maxChars, memoryRoot, before,
+        digestQuery(query, 'explicit-tag'), selected.current.length, selected.matched,
+        selected.fromTags, reason);
     }
     if (!query.trim()) {
       const empty = select(entries, graph, '', '', boundedLimit);

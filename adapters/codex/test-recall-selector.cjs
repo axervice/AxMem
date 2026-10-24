@@ -908,7 +908,15 @@ function assertItem(result, tag) {
     entry('syn:short2','Short2','short whole two\n<!-- trigger: tool=Edit; repo=atlas; path=src/pack.ts -->','[trust:observed]'),
   ]);
   await check(async()=>{
-    const r=await recall({memoryRoot:longAction,query:'',actionContext:action('Edit','atlas','src/pack.ts')});
+    const bounded=await recall({memoryRoot:longAction,query:'',actionContext:action('Edit','atlas','src/pack.ts')});
+    assert.equal(bounded.receipt.counts.matched,3);
+    assert(bounded.items.some(x=>x.tag==='syn:short1'));
+    assert(!bounded.items.some(x=>x.tag==='syn:huge'));
+    assert.equal(validateReceipt(bounded.receipt,bounded.items,longAction),true);
+    // Long Windows sourceRoot pointers consume the same budget in old and new
+    // code. Reserve enough for both short entries, still below the huge body.
+    const r=await recall({memoryRoot:longAction,query:'',maxChars:3000,
+      actionContext:action('Edit','atlas','src/pack.ts')});
     assert.equal(r.receipt.counts.matched,3);
     assert(r.items.some(x=>x.tag==='syn:short1'));
     assert(r.items.some(x=>x.tag==='syn:short2'));
@@ -1082,6 +1090,237 @@ function assertItem(result, tag) {
     assert(got.warnings.some((w) => /action-trigger-(?:boundary|redirect)-/.test(w)));
   });
 
+
+  // C18: automatic admission requires source-bound explicit citations.
+  const citationOnly = (memoryRoot, query, rest = {}) => recall({
+    memoryRoot, query, selectionMode: 'citation-only', ...rest });
+  await check(async () => {
+    for (const query of ['', 'auto proceed', 'stage review reminder', 'release workflow project change',
+      'atlas-only scheduler workflow change', '提醒执行发版流程', 'billing release workflow stage']) {
+      const got = await citationOnly(contextual, query);
+      assert.equal(got.status, 'no-match', JSON.stringify(got));
+      assert.equal(got.reason, 'no-explicit-citation');
+      assert.equal(got.receipt.query.method, 'explicit-tag');
+      assert.equal(got.receipt.counts.matched, 0);
+      assert.equal(got.items.length, 0);
+      assert.equal(validateReceipt(got.receipt, got.items, contextual), true);
+    }
+  });
+  await check(async () => {
+    for (const query of ['[demo:axmem]', '请遵守 demo:axmem，继续。', '中文demo:axmem中文',
+      '按 demo:axmem. 执行']) {
+      const got = await citationOnly(punct, query);
+      assert.equal(got.status, 'ok', JSON.stringify(got));
+      assert.deepEqual(got.items.map((i) => i.tag), ['demo:axmem']);
+      assert.equal(got.receipt.query.method, 'explicit-tag');
+      assert.equal(validateReceipt(got.receipt, got.items, punct), true);
+    }
+    const mixed = await citationOnly(punct, 'browserlabel green browser [demo:axmem]');
+    assert.deepEqual(mixed.items.map((i) => i.tag), ['demo:axmem']);
+    const two = await citationOnly(punct, '请核对 demo:browser，和 demo:axmem');
+    assert.deepEqual(two.items.map((i) => i.tag), ['demo:browser', 'demo:axmem']);
+  });
+  await check(async () => {
+    const got = await citationOnly(normal, '请核对 [demo:old] 最新规则');
+    assert.equal(got.status, 'ok');
+    assert.deepEqual(got.items.map((i) => i.tag), ['demo:new']);
+    assert.equal(got.receipt.pointers[0].resolvedFromTag, 'demo:old');
+    assert.equal(validateReceipt(got.receipt, got.items, normal), true);
+    const globalRoot = fixture('c18-global', [], [], [
+      entry('syn:global', 'Shared process', 'Proceed only after reviewed evidence', '[trust:observed]'),
+    ]);
+    const global = await citationOnly(globalRoot, '查看 syn:global');
+    assert.equal(global.status, 'ok', JSON.stringify(global));
+    assert.deepEqual(global.items.map((i) => i.tag), ['syn:global']);
+    assert.equal(global.items[0].file, 'standinginstructions.md');
+  });
+  await check(async () => {
+    for (const query of ['demo:unknown', '<!-- demo:axmem -->',
+      '[demo:axmem.txt]', 'prefixdemo:axmem', '[demo:axmem]suffix']) {
+      const r = await citationOnly(punct, query);
+      assert.equal(r.status, 'no-match', JSON.stringify(r));
+      assert.equal(r.reason, 'no-explicit-citation');
+      assert.equal(r.receipt.counts.matched, 0);
+    }
+    const bad = await citationOnly(fork, '[demo:base]');
+    assert.equal(bad.status, 'no-match', JSON.stringify(bad));
+    assert.equal(bad.reason, 'no-citation-match');
+    assert.equal(bad.receipt.counts.matched, 0);
+  });
+  await check(async () => {
+    for (const mode of [null, false, 'lexical', 'action-trigger', {}, 42]) {
+      const r = await recall({ memoryRoot: punct, query: '[demo:axmem]', selectionMode: mode });
+      assert.equal(r.status, 'unavailable');
+      assert.equal(r.reason, 'invalid-input');
+      assert(!Object.hasOwn(r, 'receipt'));
+    }
+    const conflict = await recall({ memoryRoot: punct, query: '[demo:axmem]',
+      selectionMode: 'citation-only', actionContext: { tool: 'Edit', repo: 'demo', path: 'src/x.ts' } });
+    assert.equal(conflict.status, 'unavailable');
+    assert.equal(conflict.reason, 'invalid-input');
+    const invalid = await recall({ memoryRoot: punct, query: '[demo:axmem]',
+      selectionMode: 'citation-only', actionContext: null });
+    assert.equal(invalid.reason, 'invalid-input');
+    // Omitted mode is still the manual lexical selection contract.
+    assertItem(await recall({ memoryRoot: punct, query: 'axmemneedle' }), 'demo:axmem');
+  });
+  // S1.2 Han boundaries and legacy manual bracket adjacency.
+  await check(async () => {
+    for (const query of ['请按[demo:axmem]执行', '请按(demo:axmem)执行', '中文demo:axmem中文']) {
+      for (const selectionMode of [undefined, 'citation-only']) {
+        const got = await recall({ memoryRoot: punct, query,
+          ...(selectionMode ? { selectionMode } : {}) });
+        assert.equal(got.status, 'ok', JSON.stringify(got));
+        assert.deepEqual(got.items.map((i) => i.tag), ['demo:axmem']);
+        assert.equal(validateReceipt(got.receipt, got.items, punct), true);
+      }
+    }
+  });
+  await check(async () => {
+    for (const query of ['[demo:axmem]suffix', '(demo:axmem)9']) {
+      const manual = await recall({ memoryRoot: punct, query });
+      assert.equal(manual.status, 'ok', JSON.stringify(manual));
+      assert.deepEqual(manual.items.map((i) => i.tag), ['demo:axmem']);
+      const automatic = await citationOnly(punct, query);
+      assert.equal(automatic.status, 'no-match', JSON.stringify(automatic));
+      assert.equal(automatic.reason, 'no-explicit-citation');
+    }
+  });
+
+  // C18-R2 shared parsed-source/edge proof, using a real comparator trigger.
+  const c18Trigger = '<!-- trigger: tool=Edit; repo=atlas; path=src/service.ts -->';
+  const c18Action = { tool: 'Edit', repo: 'atlas', path: 'src/service.ts' };
+  const c18Bridge = require('./recall-context.cjs');
+  const c18Cases = [
+    ['direct', true, 'syn:known'], ['trusted-successor', true, 'syn:old'],
+    ['cross-file', true, 'syn:old'], ['multihop', true, 'syn:old'],
+    ['index-only', false, 'syn:old'], ['fenced-edge', false, 'syn:old'],
+    ['fenced-head', false, 'syn:old'], ['fenced-direct', false, 'syn:head'],
+    ['fenced-intermediate', false, 'syn:old'], ['index-only-intermediate', false, 'syn:old'],
+    ['untrusted-intermediate', false, 'syn:old'], ['missing-intermediate', false, 'syn:old'],
+    ['untrusted-root', false, 'syn:old'], ['fenced-archived-root', false, 'syn:old'],
+    ['untrusted-head', false, 'syn:old'],
+  ];
+  for (const [kind, admitted, citation] of c18Cases) {
+    const marker = 'C18_WHOLE_' + kind.toUpperCase().replace(/-/g, '_');
+    const old = entry('syn:old', 'Archived source', 'C18_OLD_NEVER_EMIT\n' + c18Trigger,
+      kind === 'untrusted-root' ? '[trust:future]' : '[trust:observed]');
+    let head = entry('syn:head', 'Current successor', marker + '\nSupersedes: [[syn:old]]',
+      kind === 'untrusted-head' ? '[trust:future]' : '[trust:observed]');
+    let archived = [old], middle = [], index = {}, query = '请按[' + citation + ']执行';
+    if (kind === 'direct') {
+      head = entry('syn:known', 'Direct source', marker + '\n' + c18Trigger, '[trust:observed]');
+      archived = [];
+    } else if (kind === 'index-only') {
+      head.body = marker;
+      index['syn:old'] = ' superseded→[syn:head]';
+    } else if (kind === 'fenced-edge') {
+      head.body = marker + '\n~~~md\nSupersedes: [[syn:old]]\n~~~';
+    } else if (['fenced-head', 'fenced-direct'].includes(kind)) {
+      head = entry('syn:wrapper', 'Real wrapper', 'Outer only.\n~~~md\n' +
+        '**2026-01-01 — Fenced head** [syn:head] [trust:observed]\n' +
+        marker + '\nSupersedes: [[syn:old]]\n' + c18Trigger + '\n~~~', '[trust:observed]');
+    } else if (kind.includes('intermediate') || kind === 'multihop') {
+      head.body = marker + '\nSupersedes: [[syn:mid]]';
+      middle = [entry('syn:mid', 'Archived intermediate', 'Supersedes: [[syn:old]]',
+        kind === 'untrusted-intermediate' ? '[trust:future]' : '[trust:observed]')];
+      if (kind === 'fenced-intermediate') middle[0].body = '~~~md\nSupersedes: [[syn:old]]\n~~~';
+      if (kind === 'index-only-intermediate' || kind === 'missing-intermediate') {
+        index['syn:old'] = ' superseded→[syn:mid]';
+        if (kind === 'missing-intermediate') middle = [];
+        else middle[0].body = 'No edge declaration.';
+      }
+    } else if (kind === 'fenced-archived-root') {
+      archived = [entry('syn:archive-wrapper', 'Archived wrapper', 'Outer only.\n~~~md\n' +
+        '**2026-01-01 — Fenced root** [syn:old] [trust:observed]\n' +
+        'C18_OLD_NEVER_EMIT\n' + c18Trigger + '\n~~~', '[trust:observed]')];
+    }
+    const cross = kind === 'cross-file' || kind === 'multihop';
+    const root = fixture('c18-r2-' + kind, cross ? [] : [head], cross ? [head] : []);
+    fs.writeFileSync(path.join(root, 'decisions-archive.md'), render(archived, index));
+    if (middle.length) fs.writeFileSync(path.join(root, 'lessons-archive.md'), render(middle));
+    for (const [file, tag] of [
+      ...(kind === 'fenced-head' || kind === 'fenced-direct' ? [['decisions.md', 'syn:head']] : []),
+      ...(kind === 'fenced-archived-root' ? [['decisions-archive.md', 'syn:old']] : []),
+    ]) {
+      const filePath = path.join(root, file);
+      fs.writeFileSync(filePath, fs.readFileSync(filePath, 'utf8').replace('## Index\n',
+        '## Index\n- 2026-01-01 Fenced declaration [' + tag + ']\n'));
+    }
+    await check(async () => {
+      const action = await recall({ memoryRoot: root, query: '', actionContext: c18Action });
+      const expectedStatus = kind === 'missing-intermediate' ? 'unavailable' : admitted ? 'ok' : 'no-match';
+      assert.equal(action.status, expectedStatus, kind + ': real action comparator');
+      const selected = await recall({ memoryRoot: root, query, selectionMode: 'citation-only' });
+      const output = await c18Bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: query },
+        { memoryRoot: root, selector: recall });
+      const context = output.hookSpecificOutput.additionalContext;
+      assert.deepEqual({ citation: selected.status, hookBody: context.includes(marker) },
+        { citation: expectedStatus, hookBody: admitted }, kind + ': citation and UserPromptSubmit');
+      assert(!context.includes('C18_OLD_NEVER_EMIT'), kind + ': archived body cannot emit');
+      if (kind === 'missing-intermediate') {
+        assert.equal(selected.reason, 'manifest-blocking');
+        assert.deepEqual(selected.items, []);
+        assert(!Object.hasOwn(selected, 'receipt'));
+        return; // Existing manifest-level rejection is stronger than a no-match receipt.
+      }
+      assert.equal(validateReceipt(selected.receipt, selected.items, root), true, kind + ': receipt');
+      assert.equal(selected.receipt.counts.matched, admitted ? 1 : 0, kind + ': matched count');
+      assert.equal(selected.items.length, admitted ? 1 : 0, kind + ': selected count');
+      assert(Buffer.byteLength(context, 'utf8') <= c18Bridge.MAX_CONTEXT_BYTES);
+      if (admitted) {
+        const item = selected.items[0], pointer = selected.receipt.pointers[0];
+        assert.equal(item.tag, kind === 'direct' ? 'syn:known' : 'syn:head');
+        assert.equal(pointer.resolvedFromTag, kind === 'direct' ? null : 'syn:old');
+        assert.equal(pointer.fullEntrySha256, sha(item.text));
+        assert.equal(pointer.sourceFileSha256, sha(fs.readFileSync(path.join(root, item.file))));
+        assert.equal(item.text, fs.readFileSync(path.join(root, item.file), 'utf8')
+          .split(/\r?\n/).slice(item.line - 1, item.endLine).join('\n'));
+        assert.equal(pointer.visibility, 'whole');
+      } else {
+        assert.equal(selected.reason, 'no-citation-match');
+        assert.equal(selected.receipt.pointers.length, 0);
+      }
+    }, 'C18-R2 ' + kind);
+  }
+  await check(async () => {
+    const root = fixture('c18-r2-han', [
+      entry('syn:known', 'Known', 'C18_HAN_WHOLE', '[trust:observed]')]);
+    for (const query of ['请按[syn:known]执行', '请按(syn:known)执行']) {
+      for (const selectionMode of [undefined, 'citation-only']) {
+        const got = await recall({ memoryRoot: root, query, ...(selectionMode ? { selectionMode } : {}) });
+        assert.equal(got.status, 'ok');
+        assert.equal(got.items[0].tag, 'syn:known');
+      }
+      const output = await c18Bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: query },
+        { memoryRoot: root, selector: recall });
+      assert(output.hookSpecificOutput.additionalContext.includes('C18_HAN_WHOLE'));
+    }
+    for (const query of ['[syn:known]suffix', '(syn:known)9', 'syn:known/path',
+      'namespace:syn:known', '[syn:known.txt]']) {
+      const got = await recall({ memoryRoot: root, query, selectionMode: 'citation-only' });
+      assert.equal(got.status, 'no-match');
+      const output = await c18Bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: query },
+        { memoryRoot: root, selector: recall });
+      assert(!output.hookSpecificOutput.additionalContext.includes('C18_HAN_WHOLE'));
+    }
+  }, 'C18-R2 Han and suffix/path/namespace');
+  await check(async () => {
+    const root = fixture('c18-r2-late-budget', [
+      entry('syn:huge', 'Huge', 'C18_HUGE_' + 'H'.repeat(3900), '[trust:observed]'),
+      entry('syn:fits', 'Fits', 'C18_SHORT_WHOLE', '[trust:observed]')]);
+    const query = '请按[syn:huge]以及[syn:fits]执行';
+    const selected = await recall({ memoryRoot: root, query, selectionMode: 'citation-only' });
+    assert.equal(selected.status, 'ok');
+    assert.deepEqual(selected.items.map(x => x.tag), ['syn:fits']);
+    assert.equal(selected.receipt.counts.matched, 2);
+    assert.equal(validateReceipt(selected.receipt, selected.items, root), true);
+    const output = await c18Bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: query },
+      { memoryRoot: root, selector: recall });
+    const context = output.hookSpecificOutput.additionalContext;
+    assert(context.includes('C18_SHORT_WHOLE') && !context.includes('C18_HUGE_'));
+    assert(Buffer.byteLength(context, 'utf8') <= c18Bridge.MAX_CONTEXT_BYTES);
+  }, 'C18-R2 whole-entry and late-fitting budget');
   process.stdout.write('PASS recall-selector synthetic ' + passed + '/' + passed + '\n');
 })().catch((error) => { process.stderr.write(String(error.stack || error) + '\n'); process.exitCode = 1; })
   .finally(() => { fs.rmSync(temp, { recursive: true, force: true }); });

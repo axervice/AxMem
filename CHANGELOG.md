@@ -1,5 +1,14 @@
 # AxMem CHANGELOG
 
+## 2026-10-24 — C18 S1.2 source-proven citation integration into codex-memory-bridge
+
+- Author: codex; Miami date: 2026-10-24. Provenance: main-accepted AXMEM-C17-C18-PRO-NORMAL-REASSESSMENT-20261023 C18 source/edge repair and AXMEM-S1-C18-MINIMAL-INTEGRATION-PREP-20261024 exact four-file review.
+- Integrated the four reviewed selector/context source and regression-test files at the currently referenced codex-memory-bridge B source path, not a new global hook installation. Hook definition, command and trust records were not edited.
+- Automatic UserPromptSubmit admission is explicit-citation-only with parsed-block/source/trust and each Supersedes edge verified by the shared action-bound source proof. Index-only, fenced, missing and untrusted pseudo-successors are excluded; real cross-file/multihop successors remain reachable.
+- Manual and automatic Chinese/Han adjacency, suffix/path/namespace negatives, whole-entry budgets, late-fitting small entries and unrelated action behavior are retained; no broad budget change.
+- Historical synthetic selector 89/89, context 39/39 and helper 34/34 evidence was reused without rerunning unchanged sources and dependencies.
+- Normal-client live verification remains pending. These installed source bytes do not prove unlabelled action timing, before-execution model receipt/use, native child binding, S1.3/S1.4/full S1.5, S1 or Astra PASS.
+
 ## 2026-10-22 — C8 R2 redirect source-provenance repair (candidate only)
 
 - Main REQUEST_CHANGES F1/F2: a fenced pseudo-successor was emitted as current, and a real successor with only a fenced Supersedes example was incorrectly reachable. R2 binds every action root/intermediate/head to mature fence-aware parser identity, trust, title line, full block and date, and checks every traversed edge against the verified successor's unfenced Supersedes metadata.

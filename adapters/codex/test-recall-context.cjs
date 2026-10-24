@@ -135,9 +135,13 @@ async function main() {
       },
     );
     const context = outputContext(output, 'UserPromptSubmit');
-    check(calls.length === 1 && JSON.stringify(calls[0]) === JSON.stringify({ memoryRoot: rootWithSpace, query: 'Need the release review policy', limit: 3, maxChars: 2400 }), 'UserPromptSubmit gives selector only documented arguments');
-    check(context.includes('[policy:one] lessons.md:12-14 | source-excerpt-sha256=0123456789abcdef | trust=observed') && context.includes('[policy:three]') && !context.includes('[policy:four]'), 'matched output formats at most three cited items');
-    check(!context.includes('session.jsonl') && !context.includes('MALICIOUS-NESTED-PROMPT') && !context.includes('Need the release review policy') && context.includes('trigger-metadata-degraded'), 'prompt, transcript, ignored fields, and dynamic warning counts are not echoed');
+    check(calls.length === 1 && JSON.stringify(calls[0]) === JSON.stringify({ memoryRoot: rootWithSpace, query: 'Need the release review policy', limit: 3, maxChars: 2400, selectionMode: 'citation-only' }), 'UserPromptSubmit gives selector only bounded citation-only arguments');
+    check(context.includes('invalid-selector-result') && !context.includes('[policy:one]') &&
+      !context.includes('[policy:three]') && !context.includes('[policy:four]'),
+      'automatic hook rejects unbound legacy selector bodies instead of formatting them');
+    check(!context.includes('session.jsonl') && !context.includes('MALICIOUS-NESTED-PROMPT') &&
+      !context.includes('Need the release review policy') && !context.includes('b5-trigger-metadata-not-used:7') &&
+      !context.includes('policy:one'), 'prompt, transcript and rejected legacy selector bodies are not echoed');
     check(context.includes('本召回钩子仅读取 PMM、不执行写入') && context.includes('历史记忆与当前要求冲突时') && !context.includes('用户PMM只读要求继续生效'), 'UserPromptSubmit notice preserves conflicts but asserts no global PMM-read-only policy');
   }
 
@@ -241,7 +245,7 @@ async function main() {
     );
     const json = JSON.stringify(output);
     const context = outputContext(output, 'UserPromptSubmit');
-    check(Buffer.byteLength(json, 'utf8') <= bridge.MAX_OUTPUT_BYTES && Buffer.byteLength(context, 'utf8') <= bridge.MAX_CONTEXT_BYTES && JSON.parse(json).hookSpecificOutput.additionalContext === context && !context.includes('显示节选已截断') && !context.includes('记'.repeat(40)) && context.includes('候选元数据超出展示预算'), 'legacy result lacks verified completeness and never emits a partial rule');
+    check(Buffer.byteLength(json, 'utf8') <= bridge.MAX_OUTPUT_BYTES && Buffer.byteLength(context, 'utf8') <= bridge.MAX_CONTEXT_BYTES && JSON.parse(json).hookSpecificOutput.additionalContext === context && !context.includes('显示节选已截断') && !context.includes('记'.repeat(40)) && context.includes('invalid-selector-result'), 'legacy result lacks verified completeness and cannot enter automatic injection');
   }
 
   {
@@ -269,6 +273,7 @@ async function main() {
 
   {
     const whole = strictFixture(rootWithSpace, [['syn:verified', 'WHOLE VERIFIED BODY']]);
+    whole.receipt.query.method = 'explicit-tag';
     const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'test-canary' },
       { memoryRoot: rootWithSpace, selector: async () => whole });
     const context = outputContext(output, 'UserPromptSubmit');
@@ -281,6 +286,7 @@ async function main() {
   {
     const text = '记'.repeat(2200) + 'FINAL-EXCEPTION';
     const whole = strictFixture(rootWithSpace, [['syn:budget', text]]);
+    whole.receipt.query.method = 'explicit-tag';
     const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'synthetic' },
       { memoryRoot: rootWithSpace, selector: async () => whole });
     const context = outputContext(output, 'UserPromptSubmit');
@@ -293,6 +299,7 @@ async function main() {
   }
   {
     const omitted = strictFixture(rootWithSpace, [['syn:omitted', 'SECRETS-NOT-DISPLAYED']], true);
+    omitted.receipt.query.method = 'explicit-tag';
     const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'x' },
       { memoryRoot: rootWithSpace, selector: async () => omitted });
     const context = outputContext(output, 'UserPromptSubmit');
@@ -326,6 +333,7 @@ async function main() {
   }
   {
     const limited = strictSelectionLimitFixture(rootWithSpace);
+    limited.receipt.query.method = 'explicit-tag';
     const normalized = bridge.normaliseSelectorResult(limited, rootWithSpace);
     const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: 'synthetic' },
       { memoryRoot: rootWithSpace, selector: async () => limited });
@@ -440,7 +448,7 @@ async function main() {
       {memoryRoot:rootWithSpace,selector:async(options)=>{called.push(options);return sample;}});
     const body=outputContext(output,'UserPromptSubmit');
     check(called.length===1 && !Object.hasOwn(called[0],'actionContext') &&
-      body.includes('本次查询未找到历史记忆候选') &&
+      body.includes('invalid-selector-result') &&
       !body.includes('src/action.ts'),
       'C8 hook fields never install or infer an action channel');
   }
@@ -457,8 +465,89 @@ async function main() {
       { memoryRoot: rootWithSpace, selector: async () => actionNoMatch });
     check(accepted.status === 'no-match' &&
       accepted.warnings.includes('redirect-unverified') &&
-      outputContext(visible, 'UserPromptSubmit').includes('redirect-unverified'),
-      'C8-R2 bridge preserves finite unverified-redirect warning, not silent no-match');
+      outputContext(visible, 'UserPromptSubmit').includes('invalid-selector-result') &&
+      !outputContext(visible, 'UserPromptSubmit').includes('redirect-unverified'),
+      'manual action receipts retain warnings while automatic hook refuses action-method projection');
+  }
+
+
+  // C18 automatic UserPromptSubmit: no guessed project, topic or action.
+  {
+    const calls = [];
+    const noCitation = strictNoMatchFixture(rootWithSpace, 'no-explicit-citation');
+    noCitation.receipt.query.method = 'explicit-tag';
+    const output = await bridge.runHookInput(
+      { hook_event_name: 'UserPromptSubmit', prompt: '继续自动执行 stage review billing', tool_input: { path: '/private' } },
+      { memoryRoot: rootWithSpace, selector: async (options) => {
+        calls.push(options); return noCitation;
+      } });
+    const text = outputContext(output, 'UserPromptSubmit');
+    check(calls.length === 1 && calls[0].selectionMode === 'citation-only' &&
+      !Object.hasOwn(calls[0], 'actionContext') &&
+      text.includes('未发现可核验的明确条目引用') &&
+      text.includes('未执行词法检索或工具动作检索') &&
+      !text.includes('/private') &&
+      bridge.normaliseSelectorResult(noCitation, rootWithSpace).status === 'no-match',
+      'automatic bridge uses explicit citation-only admission and truthful no-citation reason');
+  }
+  {
+    const base = strictNoMatchFixture(rootWithSpace, 'no-explicit-citation');
+    const good = { ...base, receipt: { ...base.receipt,
+      query: { ...base.receipt.query, method: 'explicit-tag' } } };
+    const valid = bridge.normaliseSelectorResult(good, rootWithSpace);
+    const broken = [
+      { ...good, receipt: { ...good.receipt, query: { ...good.receipt.query, method: 'lexical' } } },
+      { ...good, reason: 'no-lexical-match' },
+      { ...good, receipt: { ...good.receipt, counts: { ...good.receipt.counts,
+        matched: 1, matchedIdsNotListed: 1 } } },
+      { ...good, receipt: { ...good.receipt, stage: 'omitted' } },
+    ].map(x => bridge.normaliseSelectorResult(x, rootWithSpace));
+    check(valid.status === 'no-match' && valid.receipt.query.method === 'explicit-tag' &&
+      broken.every(x => x.status === 'unavailable' && x.reason === 'invalid-selector-result'),
+      'citation-only receipt reason, counts and method remain strict');
+  }
+  {
+    const fs = require('node:fs'),os = require('node:os'),crypto = require('node:crypto');
+    const { recall } = require('./recall-selector.cjs');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c18-event-synthetic-'));
+    try {
+      const render = rows => '## Index\n' + rows.map(([tag,title]) =>
+        '- 2026-01-01 ' + title + ' [' + tag + ']').join('\n') +
+        '\n\n## Entries\n' + rows.map(([tag,title,body]) =>
+        '**2026-01-01 — ' + title + '** [' + tag + '] [trust:observed]\n' + body).join('\n');
+      const unrelated = 'SYNTHETIC_UNRELATED_NEVER_AUTO_INSERT';
+      fs.writeFileSync(path.join(root, 'decisions.md'), render([
+        ['syn:cited','Direct fact','SYNTHETIC_CITED_WHOLE'],
+        ['syn:other','Billing stage',unrelated + ' auto review stage proceed billing']]));
+      fs.writeFileSync(path.join(root, 'lessons.md'), '## Index\n\n## Entries\n');
+      fs.writeFileSync(path.join(root, 'standinginstructions.md'), '## Index\n\n## Entries\n');
+      const run = q => bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt:q },
+        {memoryRoot:root,selector:recall});
+      const absent = outputContext(await run('billing stage proceed review'), 'UserPromptSubmit');
+      const cited = outputContext(await run('billing stage proceed [syn:cited]'), 'UserPromptSubmit');
+      check(!absent.includes(unrelated) && absent.includes('未发现可核验的明确条目引用') &&
+        cited.includes('SYNTHETIC_CITED_WHOLE') && !cited.includes(unrelated) &&
+        cited.includes('selected=1 displayed=1 omitted=0') &&
+        cited.includes('未执行词法检索或工具动作检索'),
+      'end-to-end automatic only emits source-bound cited whole body, never lexical unrelated body');
+    } finally { fs.rmSync(root,{recursive:true,force:true}); }
+  }
+
+
+  // C18-R2 finite source-proof diagnostics survive only as bounded categories.
+  {
+    const noMatch = strictNoMatchFixture(rootWithSpace, 'no-citation-match');
+    noMatch.receipt.query.method = 'explicit-tag';
+    noMatch.warnings = ['citation-boundary-excluded:1', 'citation-metadata-excluded:2',
+      'citation-redirect-unverified:3', 'citation-redirect-unverified:PRIVATE_BODY'];
+    const normalized = bridge.normaliseSelectorResult(noMatch, rootWithSpace);
+    const output = await bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: '[syn:old]' },
+      { memoryRoot: rootWithSpace, selector: async () => noMatch });
+    const context = outputContext(output, 'UserPromptSubmit');
+    check(normalized.status === 'no-match' && normalized.warnings.includes('source-boundary-degraded') &&
+      normalized.warnings.includes('trigger-metadata-degraded') &&
+      normalized.warnings.includes('redirect-unverified') && !context.includes('PRIVATE_BODY') &&
+      context.includes('redirect-unverified'), 'C18-R2 finite source-proof diagnostics do not expose arbitrary warning bodies');
   }
 
   process.stdout.write((passed === total ? 'PASS' : 'FAIL') + ' codex recall context self-test ' + passed + '/' + total + '\n');
