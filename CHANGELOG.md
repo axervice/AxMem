@@ -1,5 +1,13 @@
 # AxMem CHANGELOG
 
+## 2026-10-25 — S1 bounded native action and explicit recovery acceptance
+
+- codex写入; Miami time: 2026-10-25 01:53; reason: persist independently accepted actual-client milestones before Astra review. Author/source: codex Main review of native Codex 0.160.0 and integrated B source commit 13a32b6b347d0e0adecea90eb3c806248cab091b.
+- The normal one-file native apply_patch case completed with whole PMM context, nonce ACK, state consumption, exact fixture, normal Stop and native/supervisor RC 0. Scope is the tested Windows CLI profile/session flags, not global support for every tool/client.
+- Explicit recovery: a real first process exited 0; a fresh process reacquired the same public checkpoint and source-bound lesson, performed one actual native compaction, and returned matching task/source metadata plus the same 49-character source-bound substantive excerpt after a generic continuation without packet reinjection. Restart process RC 0. Only hashes/counts were retained; whole-body retention, adoption, benefit and automatic S3 persistence are not proven.
+- Exact approved PMM Stop Windows launcher repair and normal trust were separately verified. Existing ECC startup and postcompact exit 1 failures remain recorded as an independent host dependency; no unknown warnings, auth or permission failures were waived. Earlier incomplete captures remain incomplete; already valid baseline was reused.
+- S1 execution evidence is being assembled for Astra. This entry does not declare Astra PASS, unlock S2, or imply release/cutover. Main acceptance: C:\Users\jax-x\Desktop\X\.claude\worktrees\sleepy-banach-8d1126\AXMEM-RECOVERY-PACKAGES-20261023\deliveries\S1/RECOVERY-NATIVE-MAIN-ACCEPTANCE.json; SHA256 c9868d4a3e10d2762b1688e21bcd30bf984e05658365e91a6537aca2c1575722.
+
 ## 2026-10-24 — S1.3 minimal PreToolUse action adapter integration
 
 - Author: codex; Miami date: 2026-10-24. Provenance: Main-accepted C `adapters/codex/pre-tool-recall.cjs` SHA256 704d562efe0b16790004acfeff7cde0ab6845b1e6c2c3891156eaf377b6aabc1 and `test-pre-tool-recall.cjs` SHA256 15a65a3a01fe777b5f3e219ad9929ce80f4cfbfdfc5e6357b74b4d1729641263; B selector/context dependencies matched C bytes.
