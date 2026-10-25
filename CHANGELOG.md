@@ -1,5 +1,13 @@
 # AxMem CHANGELOG
 
+## 2026-10-25 — Astra S1 F1/F2/F3 bounded source integration
+
+- codex写入; Miami time: 2026-10-25 12:55; reason: integrate the independently reviewed Astra correction candidates into the clean B product checkout. Source: F2/F3 Main review and F1 Main candidate review in AXMEM-RECOVERY-PACKAGES-20261023/deliveries/S1.
+- F2 makes a native one-file apply_patch path unavailable when its nearest existing ancestor is a junction alias, including Update and Add. F3 rejects citation-only bracket suffixes that form an extension or path while keeping Chinese prose, terminal punctuation and manual compatibility reachable.
+- F1 places the accepted action receipt gate, finite state store and default-off opt-in CLI in B/adapters/codex. Its enabled manifest now pins all 13 required product files, including these three modules; the CLI loads gate/state beside itself from B rather than from the old review directory.
+- Changed-input synthetic tests on B in normal Windows: pre-tool 19/19 RC0, selector 89/89 RC0, F1 integration 18/18 RC0 (one child RC0). The sandbox-only F1 run was 12/18 RC1 because junction creation was denied and synthetic state writes failed; this was not counted as a product regression.
+- This source integration does not alter hook commands, trust or HOME, and does not establish a new post-integration native action receipt. S1 still needs the bounded normal-client action and Astra incremental PASS; S2 remains locked.
+
 ## 2026-10-25 — S1 bounded native action and explicit recovery acceptance
 
 - codex写入; Miami time: 2026-10-25 01:53; reason: persist independently accepted actual-client milestones before Astra review. Author/source: codex Main review of native Codex 0.160.0 and integrated B source commit 13a32b6b347d0e0adecea90eb3c806248cab091b.

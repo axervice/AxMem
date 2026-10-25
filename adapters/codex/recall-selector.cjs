@@ -341,10 +341,12 @@ function citedTags(scan, graph, limit = 4, strictBracketSuffix = false) {
     const start = match.index;
     const end = start + match[0].length;
     if (!left(scan[start - 1]) || !right(scan[end])) continue;
-    // Automatic citation mode rejects an ASCII identifier glued to the closing
-    // bracket. Han prose is a valid boundary; manual mode keeps legacy behavior.
+    // In citation-only mode, a glued identifier, extension or path separator
+    // belongs to a path-like token. A sentence dot or adjacent Han prose does not.
+    const suffix = scan.slice(end + 1);
     if (strictBracketSuffix && (scan[end] === ']' || scan[end] === ')') &&
-        /[A-Za-z0-9_]/.test(scan[end + 1] || '')) continue;
+        (/^[A-Za-z0-9_\/\\]/.test(suffix) || /^\.[\p{L}\p{N}_-]/u.test(suffix) ||
+         /^\.\.[\/\\]/.test(suffix))) continue;
     let tag = match[0];
     if (!graph.byTag.has(tag) && /\.$/.test(tag)) {
       // A complete known tag ending in a dot wins. Only otherwise interpret

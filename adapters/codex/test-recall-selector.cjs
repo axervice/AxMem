@@ -1286,7 +1286,8 @@ function assertItem(result, tag) {
   await check(async () => {
     const root = fixture('c18-r2-han', [
       entry('syn:known', 'Known', 'C18_HAN_WHOLE', '[trust:observed]')]);
-    for (const query of ['请按[syn:known]执行', '请按(syn:known)执行']) {
+    for (const query of ['请按[syn:known]执行', '请按(syn:known)执行',
+      '[syn:known].', '(syn:known).', '[syn:known]', 'syn:known']) {
       for (const selectionMode of [undefined, 'citation-only']) {
         const got = await recall({ memoryRoot: root, query, ...(selectionMode ? { selectionMode } : {}) });
         assert.equal(got.status, 'ok');
@@ -1297,13 +1298,18 @@ function assertItem(result, tag) {
       assert(output.hookSpecificOutput.additionalContext.includes('C18_HAN_WHOLE'));
     }
     for (const query of ['[syn:known]suffix', '(syn:known)9', 'syn:known/path',
-      'namespace:syn:known', '[syn:known.txt]']) {
+      'namespace:syn:known', '[syn:known.txt]', '[syn:known].txt',
+      '(syn:known).txt', '[syn:known]/child', '(syn:known)/child',
+      '[syn:known]\\child', '(syn:known)\\child', '[syn:known]../child']) {
       const got = await recall({ memoryRoot: root, query, selectionMode: 'citation-only' });
       assert.equal(got.status, 'no-match');
       const output = await c18Bridge.runHookInput({ hook_event_name: 'UserPromptSubmit', prompt: query },
         { memoryRoot: root, selector: recall });
       assert(!output.hookSpecificOutput.additionalContext.includes('C18_HAN_WHOLE'));
     }
+    // The legacy/manual selector does not opt into strict citation-only suffix rejection.
+    const legacy = await recall({ memoryRoot: root, query: '[syn:known].txt' });
+    assert.equal(legacy.status, 'ok');assert.equal(legacy.items[0].tag, 'syn:known');
   }, 'C18-R2 Han and suffix/path/namespace');
   await check(async () => {
     const root = fixture('c18-r2-late-budget', [

@@ -40,8 +40,18 @@ function actionFromHook(input,scope){
   if(!contained(root,absolute)||absolute===root)return fail('path-outside-scope');
   try {
     let ancestor=absolute;
-    while(!fs.existsSync(ancestor)){const parent=path.dirname(ancestor);if(parent===ancestor)return fail('missing-path-anchor');ancestor=parent;}
-    if(!contained(root,fs.realpathSync(ancestor)))return fail('path-link-outside-scope');
+    // Inspect the nearest existing ancestor, including a dangling link.
+    while(true){
+      try{fs.lstatSync(ancestor);break;}
+      catch(e){
+        if(e.code!=='ENOENT')return fail('path-source-unavailable');
+        const parent=path.dirname(ancestor);if(parent===ancestor)return fail('missing-path-anchor');
+        ancestor=parent;
+      }
+    }
+    const resolved=fs.realpathSync(ancestor);
+    if(!contained(root,resolved))return fail('path-link-outside-scope');
+    if(path.relative(ancestor,resolved)!=='')return fail('path-link-alias-unsupported');
   }catch{return fail('path-source-unavailable');}
   const relative=path.relative(root,absolute).split(path.sep).join('/');
   if(!relative||/[\\:*?]/.test(relative))return fail('invalid-selector-path');
