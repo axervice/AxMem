@@ -1,5 +1,11 @@
 # AxMem CHANGELOG
 
+## 2026-10-24 — S1.3 minimal PreToolUse action adapter integration
+
+- Author: codex; Miami date: 2026-10-24. Provenance: Main-accepted C `adapters/codex/pre-tool-recall.cjs` SHA256 704d562efe0b16790004acfeff7cde0ab6845b1e6c2c3891156eaf377b6aabc1 and `test-pre-tool-recall.cjs` SHA256 15a65a3a01fe777b5f3e219ad9929ce80f4cfbfdfc5e6357b74b4d1729641263; B selector/context dependencies matched C bytes.
+- Copied these two exact files into referenced codex-memory-bridge B. The adapter recognizes one-file ordinary native `apply_patch` `tool_input.command` under explicit caller-pinned repo/task scope and canonical cwd, rejects ambiguous/multi-file/path-escape inputs, and uses the existing source-bound selector/formatter. Synthetic affected test: 16/16, Node child RC 0.
+- Source integration only: no R receipt gate/state/nonce installation, no global hook/config/trust change. The separate actual native action case remains INCOMPLETE due to normal PMM Stop exit 1 despite partial context/ACK/consumption/target evidence. Clean native exit, restart, compact, full S1 and Astra remain incomplete.
+
 ## 2026-10-24 — C18 S1.2 source-proven citation integration into codex-memory-bridge
 
 - Author: codex; Miami date: 2026-10-24. Provenance: main-accepted AXMEM-C17-C18-PRO-NORMAL-REASSESSMENT-20261023 C18 source/edge repair and AXMEM-S1-C18-MINIMAL-INTEGRATION-PREP-20261024 exact four-file review.

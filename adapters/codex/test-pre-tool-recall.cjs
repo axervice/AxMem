@@ -1,0 +1,47 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
+const {runPreToolUse,actionFromHook}=require('./pre-tool-recall.cjs');
+const base=fs.mkdtempSync(path.join(os.tmpdir(),'axmem-pretool-'));
+const repo=path.join(base,'repo'),memory=path.join(base,'memory');
+for(const p of [repo,memory])fs.mkdirSync(p);
+fs.mkdirSync(path.join(repo,'src'));fs.writeFileSync(path.join(repo,'src','one.ts'),'old');
+const scope={schemaVersion:1,repo:'atlas',repoRoot:repo,taskSpecSha256:'a'.repeat(64)};
+const entry=(tag,body,trigger)=>'**2026-01-01 — '+tag+'** ['+tag+'] [trust:observed]\n'+body+'\n<!-- trigger: '+trigger+' -->\n';
+fs.writeFileSync(path.join(memory,'decisions.md'),'## Index\n- 2026-01-01 Rule [syn:action]\n- 2026-01-01 Other [syn:other]\n\n## Entries\n'+
+ entry('syn:action','Use the reviewed source.','tool=Edit|Write; repo=atlas; path=src/one.ts')+
+ entry('syn:other','Other project rule.','tool=Edit; repo=orbit; path=src/one.ts'));
+for(const f of ['lessons.md','standinginstructions.md'])fs.writeFileSync(path.join(memory,f),'## Index\n\n## Entries\n');
+const patch='*** Begin Patch\n*** Update File: src/one.ts\n@@\n-old\n+new\n*** End Patch';
+const input={hook_event_name:'PreToolUse',tool_name:'apply_patch',cwd:repo,tool_input:{command:patch}};
+const options={memoryRoot:memory,sourceScope:scope};
+let n=0;const check=async(fn)=>{await fn();n++;};
+(async()=>{
+ await check(async()=>{const r=await runPreToolUse(input,options);assert.equal(r.status,'ok');
+  const text=r.output.hookSpecificOutput.additionalContext;assert(text.includes('event=PreToolUse'));
+  assert(text.includes('[syn:action] 完整正文：'));assert(!text.includes('[syn:other] 完整正文：'));
+  assert.equal(r.receipt.query.method,'action-trigger');assert.equal(r.receipt.counts.matched,1);});
+ await check(async()=>{const r=await runPreToolUse({...input,tool_input:{command:patch.replace('one.ts','other.ts')}},options);
+  assert.equal(r.status,'no-match');assert.deepEqual(r.output,{});});
+ await check(async()=>{const r=await runPreToolUse(input,{...options,sourceScope:{...scope,repo:'orbit'}});
+  assert(r.output.hookSpecificOutput.additionalContext.includes('[syn:other] 完整正文：'));});
+ await check(async()=>assert.equal((await runPreToolUse(input,{memoryRoot:memory})).reason,'missing-source-scope'));
+ await check(async()=>assert.equal((await runPreToolUse({...input,cwd:base},options)).reason,'scope-cwd-mismatch'));
+ await check(async()=>assert.equal(actionFromHook({...input,tool_input:{command:patch.replace('src/one.ts','../escape.ts')}},scope).status,'unavailable'));
+ await check(async()=>assert.equal(actionFromHook({...input,tool_input:{command:patch.replace('src/one.ts',path.join(base,'out.ts'))}},scope).reason,'path-outside-scope'));
+ await check(async()=>assert.equal(actionFromHook({...input,tool_input:{command:patch.replace('*** End Patch','*** Add File: src/two.ts\n+x\n*** End Patch')}},scope).reason,'unsupported-multi-file-or-move'));
+ await check(async()=>assert.equal(actionFromHook({...input,tool_input:{command:patch.replace('@@','*** Move to: src/two.ts\n@@')}},scope).reason,'unsupported-multi-file-or-move'));
+ await check(async()=>assert.equal(actionFromHook({...input,tool_input:{command:'echo [syn:action]'}},scope).reason,'unsupported-patch-envelope'));
+ await check(async()=>assert.deepEqual((await runPreToolUse({...input,tool_name:'Bash'},options)).output,{}));
+ await check(async()=>assert.deepEqual((await runPreToolUse({...input,hook_event_name:'UserPromptSubmit',prompt:'[syn:action]'},options)).output,{}));
+ await check(async()=>assert.equal(actionFromHook({...input,tool_input:{command:patch.replace('Update File','Add File')}},scope).action.tool,'Write'));
+ await check(async()=>assert.equal(actionFromHook({...input,tool_input:{command:patch.replace(/\n/g,'\r\n')}},scope).status,'ok'));
+ await check(async()=>{const r=await runPreToolUse(input,{...options,selector:async()=>({status:'ok',items:[],warnings:[]})});
+  assert.equal(r.status,'unavailable');assert(!r.output.hookSpecificOutput);});
+ await check(async()=>{const r=await runPreToolUse({...input,prompt:'[syn:other]',repo:'orbit',sourceScope:{repo:'orbit'}},options);
+  assert(r.output.hookSpecificOutput.additionalContext.includes('[syn:action] 完整正文：'));});
+ process.stdout.write('PASS pre-tool recall synthetic '+n+'/'+n+'\n');
+})().catch(e=>{process.stderr.write(String(e.stack)+'\n');process.exitCode=1;}).finally(()=>{
+ const resolved=path.resolve(base),parent=path.resolve(os.tmpdir());
+ if(path.dirname(resolved)!==parent||!path.basename(resolved).startsWith('axmem-pretool-'))throw Error('Unsafe test cleanup');
+ fs.rmSync(resolved,{recursive:true,force:true});
+});
