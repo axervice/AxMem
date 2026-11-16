@@ -27,29 +27,117 @@ function readJSON(file, fallback) {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) { if (e.code === 'ENOENT') return fallback; throw new Error('state-unreadable'); }
 }
-function openStore(stateRoot, key, invocationId) {
+const LOCK_TTL_MS = 30000, RETAIN_FILES = 128, RETAIN_MS = 7 * 86400000;
+function emptyState() {
+  return { epoch: 0, taskId: null, candidates: [], seen: [], lastSuccessfulRecallAt: null, consecutiveFailures: 0, counts: {} };
+}
+function sameLock(a, b) { return a.dev === b.dev && a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size; }
+// Serialize lock-file creation/reclamation/release, not the whole recall. This
+// avoids two stale-lock reclaimers unlinking a successor between stat/unlink.
+// A killed short mutation also expires; neither lock has an infinite lease.
+function mutateLock(lock, fn) {
+  const claim = lock + '.claim';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { fs.mkdirSync(claim, { mode: 0o700 }); }
+    catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try {
+        const s = fs.lstatSync(claim);
+        if (!s.isDirectory() || s.isSymbolicLink()) throw new Error('unsafe-lock');
+        if (Date.now() - s.mtimeMs <= LOCK_TTL_MS) return null;
+        fs.rmdirSync(claim); continue;
+      } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    }
+    const owned = fs.lstatSync(claim);
+    try { return fn(); }
+    finally {
+      try { if (sameLock(owned, fs.lstatSync(claim))) fs.rmdirSync(claim); }
+      catch (e) { if (e.code !== 'ENOENT') throw e; }
+    }
+  }
+  return null;
+}
+function acquireLock(lock) {
+  return mutateLock(lock, () => {
+    try {
+      const before = fs.lstatSync(lock);
+      if (!before.isFile() || before.isSymbolicLink()) throw new Error('unsafe-lock');
+      let owner;
+      if (before.size <= 1024) { try { owner = JSON.parse(fs.readFileSync(lock, 'utf8')); } catch { /* legacy/torn lock: use mtime */ } }
+      const at = Number.isFinite(owner?.at) ? owner.at : before.mtimeMs;
+      let dead = false;
+      if (Number.isInteger(owner?.pid) && owner.pid > 0) {
+        try { process.kill(owner.pid, 0); } catch (error) { dead = error.code === 'ESRCH'; }
+      }
+      // Empty/legacy locks get a grace period. EPERM is NOT a dead process.
+      if (!dead && Date.now() - at <= LOCK_TTL_MS) return null;
+      fs.unlinkSync(lock);
+    } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    const fd = fs.openSync(lock, 'wx', 0o600);
+    try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), token: require('node:crypto').randomUUID() })); }
+    catch (e) { fs.closeSync(fd); fs.unlinkSync(lock); throw e; }
+    return fd;
+  });
+}
+function cleanStore(dir) {
+  const old = [];
+  for (const name of fs.readdirSync(dir)) {
+    // Only our own per-invocation/action files; never config or other state.
+    if (!/^(?:[a-zA-Z0-9-]+\.jsonl|(?:pre|post)-[a-f0-9]{64}\.(?:json|jsonl)|\..+\.axmem-staging-.+)$/.test(name)) continue;
+    const file = path.join(dir, name), s = fs.lstatSync(file);
+    if (s.isFile()) old.push({ file, at: s.mtimeMs });
+  }
+  old.sort((a, b) => b.at - a.at);
+  // Reserve room for this invocation's ledger and optional Pre marker.
+  old.forEach((f, i) => { if (i >= RETAIN_FILES - 2 || Date.now() - f.at > RETAIN_MS) fs.unlinkSync(f.file); });
+}
+function openStore(stateRoot, key, invocationId, options = {}) {
   const dir = path.join(stateRoot, 'recall', key);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const lock = path.join(dir, 'lock');
-  // Do not silently overwrite concurrent state. Busy/stale locks are a visible
-  // degraded invocation; no unbounded waiting in a tool hook.
-  const fd = fs.openSync(lock, 'wx', 0o600);
+  const lock = path.join(dir, 'lock'), fd = acquireLock(lock);
+  if (fd === null) {
+    if (!options.skipBusy) throw new Error('state-busy');
+    // A live concurrent invocation owns accounting. Recall still runs, without
+    // touching its ledger/state or calling this normal contention a failure.
+    return { state: emptyState(), dir, busy: true, append() {}, save() {}, mark() {}, close() {} };
+  }
+  const owned = fs.fstatSync(fd);
+  function release() {
+    try {
+      mutateLock(lock, () => {
+        try { if (sameLock(owned, fs.lstatSync(lock))) fs.unlinkSync(lock); }
+        catch (e) { if (e.code !== 'ENOENT') throw e; }
+      });
+      // If a mutation is briefly busy, leave the lease for dead-pid/TTL
+      // recovery, rather than unlinking somebody else's replacement lock.
+    } finally { fs.closeSync(fd); }
+  }
   let state;
   try {
-    state = readJSON(path.join(dir, 'state.json'), { epoch: 0, taskId: null, candidates: [], seen: [],
-      lastSuccessfulRecallAt: null, consecutiveFailures: 0, counts: {} });
+    cleanStore(dir);
+    const stateFile = path.join(dir, 'state.json');
+    // Rebuild oversized state under the lock instead of trapping every future
+    // invocation. Do not rotate indefinitely and create another growth source.
+    let oversized = false;
+    try { oversized = fs.statSync(stateFile).size > 256 * 1024; } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    state = oversized ? emptyState() : readJSON(stateFile, emptyState());
     if (!Number.isInteger(state.epoch) || state.epoch < 0 || !Array.isArray(state.candidates) || !Array.isArray(state.seen) ||
         !Number.isInteger(state.consecutiveFailures) || state.consecutiveFailures < 0 ||
         !state.counts || typeof state.counts !== 'object' || Array.isArray(state.counts)) throw new Error('state-invalid');
-  } catch (e) { fs.closeSync(fd); fs.unlinkSync(lock); throw e; }
+  } catch (e) { release(); throw e; }
   const ledger = path.join(dir, invocationId + '.jsonl');
+  let pending = '';
+  function flush() { if (pending) { fs.appendFileSync(ledger, pending, { mode: 0o600 }); pending = ''; } }
   return { state, dir,
-    append(row) { fs.appendFileSync(ledger, JSON.stringify(row) + '\n', { mode: 0o600 }); },
-    save() { writeFileAtomicSync(path.join(dir, 'state.json'), JSON.stringify(state)); },
-    mark(action, marker) {
-      if (action) writeFileAtomicSync(path.join(dir, 'pre-' + action + '.json'), JSON.stringify(marker));
+    append(row) {
+      if (options.buffered) pending += JSON.stringify(row) + '\n';
+      else fs.appendFileSync(ledger, JSON.stringify(row) + '\n', { mode: 0o600 });
     },
-    close() { try { fs.closeSync(fd); } finally { fs.unlinkSync(lock); } },
+    save() { flush(); writeFileAtomicSync(path.join(dir, 'state.json'), JSON.stringify(state), { mode: 0o600 }); },
+    mark(action, marker) {
+      if (action) writeFileAtomicSync(path.join(dir, 'pre-' + action + '.json'), JSON.stringify(marker), { mode: 0o600 });
+    },
+    close() { try { flush(); } finally { release(); } },
   };
 }
 function suppressPost(input, runtime) {
@@ -77,7 +165,7 @@ function suppressPost(input, runtime) {
 // explicit pointer-only receipt; never count them as complete lesson bodies.
 function prepareLegacyPost(input, ctx, payload, tags, priorFailure = false) {
   const invocation = require('node:crypto').randomUUID(), who = identity(input, invocation);
-  const store = openStore(path.resolve(ctx.STATE_DIR), who.key, invocation);
+  const store = openStore(path.resolve(ctx.STATE_DIR), who.key, invocation, { skipBusy: true });
   const startedAt = new Date().toISOString();
   let corpus = null;
   try { corpus = require('./memory-source.cjs').loadCorpus(path.resolve(ctx.MEMORY_DIR)); }

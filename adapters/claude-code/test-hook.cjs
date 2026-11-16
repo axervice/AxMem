@@ -9,6 +9,7 @@ const { runHandler } = require('./hook.cjs');
 const { identity } = require('../../core/recall-receipt.cjs');
 const ROOT = path.resolve(__dirname, '../..');
 async function selfTest() {
+  await require('./test-review.cjs').reviewSelfTest();
   const t = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-cc-hook-'));
   const savedEnv = { ...process.env };
   let passed = 0;
@@ -128,8 +129,9 @@ async function selfTest() {
         const b = await run(pre(tool, { file_path: path.join(repo, 'nested', 'script.sh') }));
         assert.equal(a.receipt.displayed, 0); assert(!b.receipt.items.some((p) => p.tag === 'demo:script'));
       });
-      await check(`Pre ${tool} fault: missing path is visible unknown, never deny`, async () => {
-        const r = await run(pre(tool, {})); assert.match(r.context, /unknown/); assert.equal(r.receipt.displayed, 0);
+      await check(`Pre ${tool} fault: missing path is receipt unknown, never deny or inject`, async () => {
+        const r = await run(pre(tool, {})); assert.equal(r.receipt.path_status, 'unknown'); assert.equal(r.receipt.displayed, 0);
+        assert.equal(r.receipt.action_reason, 'invalid-file-path'); assert.equal(r.context, ''); assert.equal(r.stdout, '');
       });
     }
     await check('Pre Bash normal: proven simple command trigger', async () => {
@@ -141,11 +143,13 @@ async function selfTest() {
       assert.equal((await run(pre('Bash', { command: 'pwd' }))).receipt.displayed, 0);
       assert.equal((await run(pre('Bash', { command: 'pytest' }, { cwd: path.join(repo, 'nested') }))).receipt.displayed, 0);
     });
-    await check('Pre Bash fault: compound shell is explicit unknown, missing input also unknown', async () => {
+    await check('Pre Bash fault: compound shell/missing input is receipt unknown, no injection', async () => {
       for (const command of ['npm test | tail -5', 'cd /tmp && pytest', 'env pytest', 'pytest\n']) {
-        const r = await run(pre('Bash', { command })); assert.match(r.context, /unknown/); assert.equal(r.receipt.displayed, 0);
+        const r = await run(pre('Bash', { command })); assert.equal(r.receipt.path_status, 'unknown'); assert.equal(r.receipt.displayed, 0);
+        assert.equal(r.context, ''); assert.equal(r.stdout, ''); assert.match(r.receipt.action_reason, /unsupported-shell-/);
       }
-      assert.match((await run(pre('Bash', {}))).context, /unknown/);
+      const missing = await run(pre('Bash', {})); assert.equal(missing.receipt.path_status, 'unknown');
+      assert.equal(missing.receipt.action_reason, 'invalid-command'); assert.equal(missing.stdout, '');
     });
     await check('Pre boundary: task candidates fallback for supported simple Bash', async () => {
       await run(input('UserPromptSubmit', { prompt: '不要把测试失败藏起来' }));
@@ -236,7 +240,8 @@ async function selfTest() {
       fs.writeFileSync(path.join(mem, 'decisions.md'), '## Index\n- 2026-01-01 old [demo:retired] superseded→[demo:replacement]\n## Entries\n' +
         block('demo:retired', '过期裁定', '不能当现行规则推送。') + block('demo:replacement', '新裁定', '没有真实 Supersedes 边。'));
       const r = await run(input('UserPromptSubmit', { prompt: '[demo:retired]' }));
-      assert.equal(r.receipt.displayed, 0); assert.match(r.context, /unverified-index-redirect/);
+      assert.equal(r.receipt.displayed, 0); assert(r.receipt.selection_diagnostics.some((d) => d.startsWith('unverified-index-redirect:')));
+      assert.equal(r.context, ''); assert.equal(r.stdout, '');
       fs.writeFileSync(path.join(mem, 'decisions.md'), decisions);
     });
     await check('Identity boundary: actors isolated; missing actor never shares task candidates', async () => {

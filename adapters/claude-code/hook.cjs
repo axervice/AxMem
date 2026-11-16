@@ -53,8 +53,10 @@ function actionFromHook(input, ctx) {
   }
   return { status: 'unsupported', reason: 'unsupported-tool' };
 }
-function renderHookOutput(event, context) {
-  return JSON.stringify({ hookSpecificOutput: { hookEventName: EVENTS.has(event) ? event : 'PreToolUse', additionalContext: context } }) + '\n';
+function renderHookOutput(event, context, degraded = false) {
+  if (!context && !degraded) return '';
+  return JSON.stringify({ ...(degraded ? { systemMessage: 'AxMem 召回暂不可用；工作继续。' } : {}),
+    hookSpecificOutput: { hookEventName: EVENTS.has(event) ? event : 'unknown', additionalContext: context } }) + '\n';
 }
 function kernelFromCorpus(corpus) {
   const source = corpus.sources.files.get('standinginstructions.md');
@@ -91,7 +93,8 @@ async function runHandler(rawInput, deps = {}) {
   const started = Date.now(), invocationId = uuid(), eventId = uuid(), deliveryId = uuid();
   const result = { startedAt: new Date(started).toISOString(), sourceReady: false, queryRan: false,
     matched: 0, displayed: 0, omitted: 0, errors: [] };
-  let event = rawInput?.hook_event_name, store, state, corpus, runtime, action = null;
+  let event = EVENTS.has(rawInput?.hook_event_name) ? rawInput.hook_event_name : 'unknown', store, state, corpus, runtime, action = null;
+  const checkDeadline = () => { if (Date.now() - started > 2000) throw new (require('../../core/memory-source.cjs').SelectorError)('recall-deadline-exceeded'); };
   let receipt, selected = [], pointers = [], context = '', emitted = false, outputAttempted = false;
   const warnings = [];
   const stderr = deps.stderr || ((text) => process.stderr.write(text + '\n'));
@@ -104,8 +107,9 @@ async function runHandler(rawInput, deps = {}) {
     // fails. If the destination itself is unusable, the visible channel remains.
     const who = identity(rawInput || {}, invocationId);
     const fallbackRoot = path.resolve(path.dirname(path.resolve(ctx.AXMEM_CONFIG)), ctx.STATE_DIR);
-    store = openStore(fallbackRoot, who.key, invocationId);
+    store = openStore(fallbackRoot, who.key, invocationId, { skipBusy: true, buffered: true });
     state = store.state;
+    checkDeadline();
     receipt = {
       schema: 'axmem.cc.recall.v1', adapter: 'claude-code', installation_version: '0.1.0-phase1', machine: os.hostname(),
       event_id: eventId, invocation_id: invocationId, invocation_started_at: result.startedAt,
@@ -126,8 +130,10 @@ async function runHandler(rawInput, deps = {}) {
       label: null, provenance: 'hook-output-only', hostConfirmed: 'unknown',
     };
     store.append({ ...receipt, stage: 'received' });
+    if (deps.inputError) throw new Error(deps.inputError);
     normalizeEvent(rawInput);
     runtime = deps.runtime || ctx.resolveRuntimeConfig();
+    checkDeadline();
     if (!runtime.enabled) {
       receipt.suppression_reason = 'adapter-disabled';
       context = '[AxMem recall: disabled] Claude Code adapter disabled；未执行召回。';
@@ -144,13 +150,15 @@ async function runHandler(rawInput, deps = {}) {
         receipt.query_effective_length = rawInput.prompt.slice(0, 8192).length;
       }
       receipt.task_id = state.taskId; receipt.context_epoch = state.epoch;
-      corpus = (deps.loadCorpus || require('../../core/memory-source.cjs').loadCorpus)(runtime.memoryRoot);
+      checkDeadline();
+      corpus = (deps.loadCorpus || require('../../core/memory-source.cjs').loadCorpus)(runtime.memoryRoot,
+        { cacheDir: path.join(fallbackRoot, 'recall-source'), checkDeadline });
+      checkDeadline();
       result.sourceReady = true; receipt.snapshot_id = corpus.snapshotId;
       receipt.source_diagnostics = corpus.diagnostics;
       store.append({ ...receipt, stage: 'source-ready' });
       if (event === 'SessionStart') {
         context = `[AxMem recall: ok] 本地记忆来源可用（${corpus.entries.length} 条）；${warnings.join('；')}。`;
-        if (corpus.diagnostics.length) warnings.push('source-diagnostics:' + corpus.diagnostics.length);
         if (runtime.options.kernel_sender === 'axmem') {
           const kernel = kernelFromCorpus(corpus);
           if (!kernel) warnings.push('未找到可验证的 ### Kernel；未注入常驻规则');
@@ -162,23 +170,26 @@ async function runHandler(rawInput, deps = {}) {
         if (event === 'PreToolUse') {
           action = actionFromHook(rawInput, ctx);
           receipt.path_status = action.status; receipt.repo = action.repo || null; receipt.rel = action.rel || null;
-          if (action.status !== 'supported') warnings.push(`动作 ${action.status}: ${action.reason}（未证明目标，未作精确动作召回）`);
-          else query = action.command ? rawInput.tool_input.command : action.rel;
+          receipt.action_reason = action.reason || null;
+          // Unknown/unsupported actions are not an outage or a notification.
+          // Keep the reason in receipts, never infer an action or inject noise.
+          if (action.status === 'supported') query = action.command ? rawInput.tool_input.command : action.rel;
           receipt.query_hash = query ? sha(query.slice(0, 8192)) : null;
           receipt.query_effective_length = query.slice(0, 8192).length;
         }
         const candidates = event === 'PreToolUse' && who.actor && action?.status === 'supported' ? state.candidates
           .filter((p) => corpus.entries.some((e) => e.tag === p.tag && sha(e.text) === p.hash)).map((p) => p.tag) : [];
+        checkDeadline();
         const choice = (deps.selectForEvent || require('../../core/recall-selector.cjs').selectForEvent)(corpus, {
           query, action: action?.status === 'supported' ? action : action ? { repo: null } : null,
-          candidateIds: candidates, maxItems: runtime.options.max_items, minTopicTerms: runtime.options.min_topic_terms,
+          candidateIds: candidates, maxItems: runtime.options.max_items, minTopicTerms: runtime.options.min_topic_terms, checkDeadline, cacheDir: path.join(fallbackRoot, 'recall-topic'),
         });
+        checkDeadline();
         // Unsupported shapes never become lexical path/action evidence.
         selected = action && action.status !== 'supported' ? [] : choice.selected;
         result.queryRan = choice.queryRan || action?.status === 'supported';
         result.matched = choice.matched;
-        warnings.push(...choice.warnings.slice(0, 5));
-        if (choice.warnings.length > 5) warnings.push(`另有 ${choice.warnings.length - 5} 项来源诊断`);
+        receipt.selection_diagnostics = choice.warnings;
         if (event === 'UserPromptSubmit') state.candidates = who.actor ? selected.map(({ entry: e }) => ({ tag: e.tag, hash: sha(e.text) })) : [];
         // Phase-specific dedup: prompt delivery must NOT silence PreToolUse.
         const scope = event === 'PreToolUse' ? receipt.action_id || invocationId : eventId;
@@ -193,7 +204,9 @@ async function runHandler(rawInput, deps = {}) {
       receipt.selection_method = [...new Set(selected.map((s) => s.reason))];
       store.append({ ...receipt, stage: 'selected' });
       const budget = event === 'SessionStart' ? runtime.options.kernel_max_bytes + 2048 : runtime.options.max_bytes;
+      checkDeadline();
       for (const s of selected) {
+        checkDeadline();
         const e = s.entry, hash = sha(e.text), block = `\n\n[${e.tag}] ${e.file}:${e.line}-${e.endLine}\n${e.text}`;
         const statusReserve = 512 + Buffer.byteLength(warnings.join('；')) +
           selected.reduce((n, x) => n + Buffer.byteLength(`omitted [${x.entry.tag}] ${x.entry.file}:${x.entry.line}（整条超预算，未送达正文）`), 0);
@@ -212,13 +225,13 @@ async function runHandler(rawInput, deps = {}) {
       result.omitted = pointers.length - result.displayed;
       if (result.omitted && !result.displayed) throw new Error('all-selected-omitted');
       const source = require('../../core/memory-source.cjs');
-      if (!source.sameSources(corpus.sources, source.readSources(runtime.memoryRoot))) throw new Error('source-changed');
-      if (Date.now() - started > 2000) throw new Error('recall-deadline-exceeded');
+      if (!source.sourcesUnchanged(corpus.sources, checkDeadline)) throw new Error('source-changed');
+      checkDeadline();
     }
   } catch (e) {
     const reason = !store ? 'state-unavailable' : e?.reason || (/^[a-z0-9-]{1,80}$/.test(e?.message || '') ? e.message : 'internal-error');
     error(reason);
-    if (!store) warnings.push('状态/回执不可写或正忙；本次失败=1，持久失败计数未知');
+    if (!store) warnings.push('状态/回执不可写；本次失败=1，持久失败计数未知');
     if (reason === 'source-changed' || reason === 'recall-deadline-exceeded') {
       context = '';
       for (const p of pointers) { p.visibility = 'omitted'; p.displayedTextSha256 = null; p.omission_reason = reason; }
@@ -230,12 +243,12 @@ async function runHandler(rawInput, deps = {}) {
     stderr(context.split('\n')[0]);
   }
   if (warnings.length) context += '\n[AxMem 状态] ' + [...new Set(warnings)].join('；');
-  if (!context) context = result.sourceReady ? '[AxMem recall] 本地查询完成，没有达到保守阈值的匹配。' : '[AxMem recall: degraded] 来源未验证；工作继续。';
+  const payload = () => renderHookOutput(event, context, !!result.errors.length);
   try {
     if (receipt) {
       receipt.items = pointers; receipt.displayed = result.displayed; receipt.omitted = result.omitted;
       receipt.context_hash = sha(context); receipt.context_bytes = Buffer.byteLength(context);
-      receipt.payload_hash = sha(renderHookOutput(event, context)); receipt.bytes = Buffer.byteLength(renderHookOutput(event, context));
+      receipt.payload_hash = sha(payload()); receipt.bytes = Buffer.byteLength(payload());
       receipt.error_codes = result.errors; receipt.stage = 'prepared';
       if (result.omitted) store.append({ ...receipt, stage: 'omitted' });
       store.append(receipt);
@@ -243,16 +256,17 @@ async function runHandler(rawInput, deps = {}) {
     }
   } catch { error('state-write-failed'); context = '[AxMem recall: degraded] 回执/状态写入失败；本次失败计数可能无法持久化，工作继续。\n' + context; stderr('[AxMem] state-write-failed'); }
   try {
-    outputAttempted = true;
-    await write(renderHookOutput(event, context));
-    emitted = true;
+    const wire = payload();
+    outputAttempted = !!wire;
+    if (wire) { await write(wire); emitted = true; }
     if (receipt) {
       receipt.context_hash = sha(context); receipt.context_bytes = Buffer.byteLength(context);
-      receipt.payload_hash = sha(renderHookOutput(event, context)); receipt.bytes = Buffer.byteLength(renderHookOutput(event, context));
-      receipt.stdout_result = 'written'; receipt.emitted_at = new Date().toISOString();
+      receipt.payload_hash = sha(payload()); receipt.bytes = Buffer.byteLength(payload());
+      receipt.stdout_result = emitted ? 'written' : 'not-attempted';
+      if (emitted) receipt.emitted_at = new Date().toISOString();
       receipt.hook_result = result.errors.length ? 'degraded' : 'completed';
       receipt.elapsed_ms = Date.now() - started; receipt.error_codes = result.errors;
-      store.append({ ...receipt, stage: 'emitted' });
+      if (emitted) store.append({ ...receipt, stage: 'emitted' });
       if (!result.errors.length) {
         const scope = event === 'PreToolUse' ? receipt.action_id || invocationId : eventId;
         for (const p of pointers.filter((p) => p.visibility === 'whole')) state.seen.push(sha(JSON.stringify([state.taskId, state.epoch, event, scope, p.tag, p.fullEntrySha256])));
@@ -269,36 +283,78 @@ async function runHandler(rawInput, deps = {}) {
       if (store) {
         const health = require('../../core/recall-health.cjs');
         health.recordInvocation(state, { ...result, displayed: emitted ? result.displayed : 0 });
-        store.save();
         store.append({ ...receipt, stage: result.errors.length ? (emitted ? 'unavailable' : 'emission-failed') :
           receipt?.suppression_reason ? 'suppressed' : event === 'SessionStart' || result.displayed ? 'completed' : action?.status && action.status !== 'supported' ? 'unsupported' : 'no-match',
           displayed: emitted ? result.displayed : 0,
-          stdout_result: emitted ? 'written' : 'failed', hook_result: result.errors.length ? 'degraded' : 'completed',
+          stdout_result: emitted ? 'written' : outputAttempted ? 'failed' : 'not-attempted', hook_result: result.errors.length ? 'degraded' : 'completed',
           elapsed_ms: Date.now() - started, error_codes: result.errors, health: { lastSuccessfulRecallAt: state.lastSuccessfulRecallAt, consecutiveFailures: state.consecutiveFailures } });
+        store.save();
       }
     } catch { error('health-write-failed'); stderr('[AxMem recall: degraded] 健康计数写入失败；本次失败=1，持久计数未知。'); }
     try { store?.close(); } catch { stderr('[AxMem recall: degraded] 状态锁释放失败。'); }
   }
   return { errors: result.errors, receipt, emitted, outputAttempted, context };
 }
+function partialEvent(text) {
+  // Read only a complete, top-level JSON string property. A quoted occurrence
+  // inside prompt/tool_input is not evidence of the host event.
+  let depth = 0, previous = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (/\s/.test(ch)) continue;
+    if (ch === '"') {
+      const start = i++;
+      for (; i < text.length; i++) { if (text[i] === '\\') i++; else if (text[i] === '"') break; }
+      if (i >= text.length) break;
+      if (depth === 1 && (previous === '{' || previous === ',')) {
+        try {
+          if (JSON.parse(text.slice(start, i + 1)) === 'hook_event_name') {
+            const value = /^\s*:\s*("(?:\\.|[^"\\])*")/.exec(text.slice(i + 1));
+            const event = value && JSON.parse(value[1]);
+            if (EVENTS.has(event)) return event;
+          }
+        } catch { /* incomplete property */ }
+      }
+      previous = 'string'; continue;
+    }
+    if (ch === '{' || ch === '[') depth++;
+    if (ch === '}' || ch === ']') depth--;
+    previous = ch;
+  }
+  return 'unknown';
+}
+async function readHookInput(stream = process.stdin) {
+  const chunks = []; let size = 0;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (input, error) => {
+      if (done) return;
+      done = true; clearTimeout(timer); stream.pause();
+      stream.off('data', data); stream.off('end', end); stream.off('error', failed);
+      if (error) input = { hook_event_name: partialEvent(Buffer.concat(chunks).toString('utf8')) };
+      resolve({ input, error });
+    };
+    const data = (c) => {
+      const b = Buffer.isBuffer(c) ? c : Buffer.from(c);
+      chunks.push(b.subarray(0, Math.max(0, 256 * 1024 - size))); size += b.length;
+      if (size > 256 * 1024) finish(null, 'stdin-too-large');
+    };
+    const end = () => { try { finish(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { finish(null, 'stdin-invalid-json'); } };
+    const failed = () => finish(null, 'stdin-read-failed');
+    const timer = setTimeout(() => finish(null, 'stdin-timeout'), 1000);
+    stream.on('data', data); stream.on('end', end); stream.on('error', failed);
+  });
+}
 async function main() {
   if (process.argv.includes('--self-test')) return require('./test-hook.cjs').selfTest();
-  let chunks = [], size = 0;
-  const input = await new Promise((resolve) => {
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; clearTimeout(timer); process.stdin.pause(); resolve(v); } };
-    const timer = setTimeout(() => finish(null), 1000);
-    process.stdin.on('data', (c) => { size += c.length; if (size > 256 * 1024) finish(null); else chunks.push(c); });
-    process.stdin.on('end', () => { try { finish(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { finish(null); } });
-    process.stdin.on('error', () => finish(null));
-  });
-  await runHandler(input);
+  const { input, error } = await readHookInput();
+  await runHandler(input, { inputError: error });
 }
-module.exports = { normalizeEvent, actionFromHook, renderHookOutput, runHandler, kernelFromCorpus };
+module.exports = { normalizeEvent, actionFromHook, renderHookOutput, runHandler, kernelFromCorpus, readHookInput, partialEvent };
 if (require.main === module) main().catch((e) => {
   process.stderr.write('[AxMem recall: degraded] 内部故障；本次失败=1，工作继续。\n');
   if (!process.argv.includes('--self-test')) {
-    try { process.stdout.write(renderHookOutput('PreToolUse', '[AxMem recall: degraded] 内部故障；来源/送达未验证，工作继续。')); } catch { /* broken transport; stderr above */ }
+    try { process.stdout.write(renderHookOutput('unknown', '[AxMem recall: degraded] 内部故障；来源/送达未验证，工作继续。', true)); } catch { /* broken transport; stderr above */ }
     process.exitCode = 0;
   } else { console.error(e); process.exitCode = 1; }
 });

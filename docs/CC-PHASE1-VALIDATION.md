@@ -1,6 +1,99 @@
 # Claude Code 阶段 1：交付与验证记录
 
-## 状态
+## A1 跨家族审查修复（本轮结果）
+
+本轮 2 高 4 中已修复；8 条 allow-cmd 的最终退出码均为 0。变更留在工作树，未提交、未部署。
+新增 `adapters/claude-code/test-review.cjs` 的 13 个回归用例接入原 hook 自测；原 40 个用例保留，合计 53/53。
+下面的旧阶段 1 记录是历史记录；其中 npm 超时不属于本轮 allow-cmd，不能混同于本轮验收状态。
+
+### 实现
+
+- 高 1：`core/recall-receipt.cjs` 的锁保存 pid、时间戳和随机 token，30 秒租约或 ESRCH 死进程可回收。
+  短时 mutation claim 串行化创建／回收／释放，避免两个回收者删掉后继锁；claim 本身也有过期恢复。
+  CC 在活锁竞争时使用不落盘的临时 store，继续召回，静默跳过此次记账；不增加 degraded。
+- 高 2：`core/memory-source.cjs` 为 CC 增加 state 下按文件缓存的解析结果，校验 mtime、size、ctime、dev、ino 和解析器版本。
+  命中不读源正文；失效只读该文件一次。阶段间用元数据复核代替重复全量读取。
+  `core/recall-source-proof.cjs` 在同一解析快照上完成边界／替代链证明；
+  `core/recall-topic-index.cjs` 缓存 MiniSearch 索引和 token 集，复用成熟分词／主题与严格支持集合支配策略。
+  `core/recall-selector.cjs` 和 hook 在文件、证明、检索、渲染、最终复核等阶段之间检查 2000ms 截止。
+  receipt 保留原阶段顺序，但将追加合批并将 state 持久化从三次降为两次。
+- 中 3：故障 JSON 增加短 `systemMessage`（“AxMem 召回暂不可用；工作继续。”），保留 additionalContext 和 stderr，始终只提醒不拦截。
+- 中 4：Prompt／Pre 无命中、重放抑制、未知或不支持动作时 stdout 为空，连空 JSON 都不发；
+  来源诊断只保留在 receipt，管道／shell 包装器原因保留在 `action_reason`，不再每次提醒。
+  SessionStart 的来源／健康心跳和 Kernel 口径保留。
+- 中 5：每个 session/actor store 打开时清理旧 invocation、pre/post 和 staging 文件，保留不超过 128 个，超过 7 天删除；
+  预留本次 ledger 和 Pre marker 的名额。`state.json` 超过 256KiB 时在锁内重建，不无限轮换。
+- 中 6：stdin 超时／超限从已收到的有界前缀识别顶层 `hook_event_name`；无法识别明确写 `unknown`，不猜 PreToolUse。
+  嵌套 tool_input 和 prompt 内的伪事件不作为证据；错误原因单独记录为 stdin-timeout / stdin-too-large。
+
+本轮修改／新增：`adapters/claude-code/{hook,test-hook,test-review}.cjs`、
+`core/{memory-source,recall-selector,recall-receipt,recall-source-proof,recall-topic-index}.cjs` 和本文档。
+`core/recall-health.cjs` 以及全部 `adapters/codex/*` 均未改。
+
+### 计时（合成夹具，不读取真实记忆）
+
+同一 `node adapters/claude-code/hook.cjs --self-test` 的 `A1 BENCH`，临时 HOME／memory／state，
+主语料 987,549 字节（181 条合成决策，另两份必需文件各 11 字节）。
+用 performance.now 包围 spawnSync，运行 4 个全新 hook CLI 进程；第 1 次为首建，其余 3 次取中位数。
+
+| 实现 | CLI 四次耗时 ms | 后三次中位数 ms |
+|---|---|---|
+| 修复前（13 个回归全部红时实测） | 376.2 / 303.9 / 324.1 / 397.5 | 324.1 |
+| 修复后（最终一轮） | 294.4 / 166.6 / 168.4 / 165.8 | 166.6 |
+
+热调用约 0.17 秒，相比同夹具基线下降约 48.6%；不把首建或 Node 启动成本隐去。
+另一个全新进程的 A1 PROFILE：require 22.82ms、source 28.81ms、select 25.42ms、总计 104.90ms（不含外部 spawn 开销）。
+首建仍需解析／建索引／原子写缓存，最终一次为 294.4ms；不声称任意机器、任意冷调用都小于 100ms。
+
+### 先红后绿证据
+
+先只新增测试并接线，未改生产实现，运行 hook 自测退出 1，明确报告 `A1 review self-test 0/13`；
+逐项失败见下表。随后修实现，最终为 13/13，加原 40/40。
+没有 skip／豁免、没有删用例或减少断言；原先要求把 unknown／来源诊断写进 context 的断言，
+改为对 receipt 对应字段的精确断言，并增加 stdout/context 为空断言，以验证新的产品口径，而不是取消诊断验证。
+
+| 新用例名 | 未修复时的红灯证据 |
+|---|---|
+| live-lock-two-processes | 一个真实子进程持锁，另一真实 hook CLI 报 state-unavailable／stderr 非空，而不是继续正常召回 |
+| stale-lock-dead-pid | 已退出子进程的 pid 留锁，errors 为 state-unavailable |
+| stale-lock-expired | 活 pid＋两分钟前时间戳留锁，errors 为 state-unavailable |
+| no-match-empty-output | context 仍是“本地查询完成…”；现在同时断言未尝试输出 |
+| pipeline-empty-output | stdout 仍含 unknown／unsupported-shell-syntax 状态文字 |
+| source-diagnostics-receipt-only | context 仍含 unverified-index-redirect |
+| failure-system-message | systemMessage 为 undefined |
+| state-file-retention | 180 个 pre marker 未清理，超过 128 文件上限 |
+| oversize-state-rebuild | 超过 256KiB 的 state 导致 state-unavailable，不能恢复 |
+| stdin-timeout-event-and-unknown | 不关闭 stdin 的真实进程超时，事件错误成为 PreToolUse |
+| stdin-limit-event | 带 SessionStart 前缀的超限输入错误成为 PreToolUse |
+| deadline-stops-before-selection | source 阶段后虚拟时钟超过 2100ms，selector 仍被调用 |
+| mtime-size-cache-and-one-read | 热调用读源 9 次，而不是 0；修复后另验证变更文件只读 1 次且正文更新 |
+
+### 最终命令与 Codex 兼容
+
+Codex 仍调用默认无缓存的 readSources/sameSources，保持逐字节读取／hash／只读行为；
+CC 的缓存写入依赖延迟加载，不扩大 Codex 实际加载的 14 文件 pin 闭包。
+Codex 导出、citation-only 自动策略、默认关闭 ACK 都未改。
+
+| allow-cmd | 最终退出码 | 结果 |
+|---|---|---|
+| `node adapters/claude-code/hook.cjs --self-test` | 0 | A1 13/13 ＋ 原 40/40 |
+| `node adapters/claude-code/merge-hooks.cjs --self-test` | 0 | 6/6 |
+| `node adapters/codex/test-recall-selector.cjs` | 0 | 89/89 |
+| `node adapters/codex/test-recall-context.cjs` | 0 | 39/39 |
+| `node adapters/codex/test-pre-tool-recall.cjs` | 0 | 19/19 |
+| `node adapters/codex/test-agent-task-context.cjs` | 0 | 34/34 |
+| `node adapters/codex/test-action-receipt-integration.cjs` | 0 | 18/18 |
+| `bash tests/fresh-home-adapters.sh --self-test` | 0 | 5/5 |
+
+本轮没有待决定的产品选项。未运行不在 allow-cmd 中的 npm 全量自测、未操作真实 HOME／settings／记忆、
+未做客户端实机验收或部署，也未发起 git 命令或提交。stdout 已损坏或输出后才发现持久化失败时，
+单次 JSON 协议无法补写另一个 systemMessage，仍通过 stderr 报告；不冒充宿主已确认展示。
+
+---
+
+## 原阶段 1 历史记录
+
+### 状态
 
 阶段 1 代码与目标回归已落在工作树，未提交、未安装到真实环境；**尚不满足“全部允许命令退出 0”的完整验收条件**。
 唯一未取得 0 的命令是 `npm run selftest`：最近一次全量尝试输出

@@ -1,11 +1,13 @@
 'use strict';
-// Phase-1 event policy, sharing the established lexical/graph algorithms rather
-// than cloning them. The mature engine stays at its compatibility path for now;
-// only source IO is physically extracted in this increment.
+// Phase-1 CC policy: share mature graph/tokenization primitives, prepare source
+// proof and lexical index once per snapshot instead of reparsing per method.
+// The Codex manifest selector and its public/bridge API stay unchanged.
 const engine = require('../adapters/codex/recall-selector.cjs')._shared;
 const { REQUIRED, sha } = require('./memory-source.cjs');
-function selectForEvent(corpus, { query = '', action = null, candidateIds = [], maxItems = 3, minTopicTerms = 2 } = {}) {
-  const { entries, sources } = corpus;
+const { proveCorpus, citations, actionHits } = require('./recall-source-proof.cjs');
+function selectForEvent(corpus, { query = '', action = null, candidateIds = [], maxItems = 3, minTopicTerms = 2, checkDeadline, cacheDir } = {}) {
+  const { entries } = corpus;
+  checkDeadline?.();
   const graph = engine.graphOf(entries, { heads: {}, report: [] });
   // Quarantine a malformed entry AND its replacement component, not the corpus.
   const queue = [...corpus.badTags];
@@ -18,7 +20,8 @@ function selectForEvent(corpus, { query = '', action = null, candidateIds = [], 
       if (e.supersedes.includes(tag)) queue.push(e.tag);
     }
   }
-  const proof = engine.verifiedSourceGraph(entries, graph, sources);
+  checkDeadline?.();
+  const proof = proveCorpus(corpus, graph, checkDeadline);
   const warnings = corpus.diagnostics.map((d) => `${d.code}:${d.file}:${d.line}`);
   if (graph.excluded.size) warnings.push('graph-excluded:' + graph.excluded.size);
   if (proof.disagreement) warnings.push('boundary-excluded:' + proof.disagreement);
@@ -38,10 +41,8 @@ function selectForEvent(corpus, { query = '', action = null, candidateIds = [], 
   if (action?.context) {
     const normalized = engine.normalizeActionContext(action.context);
     if (!normalized) throw new Error('invalid-action-context');
-    const exact = engine.selectByAction(entries, graph, sources, normalized, 3);
-    warnings.push(...exact.warnings);
-    for (const e of exact.ranked) add(e, 'action-trigger', null, exact.fromTags.get(e.tag),
-      sha(JSON.stringify([exact.fromTags.get(e.tag) || e.tag, normalized])));
+    for (const { entry: e, from } of actionHits(proof, normalized, checkDeadline)) add(e, 'action-trigger', null, from,
+      sha(JSON.stringify([from || e.tag, normalized])));
   }
   // Only a deliberately small, proven simple Bash command is eligible for cmd
   // triggers. Compound shells are unknown, never inferred to be file edits.
@@ -56,19 +57,23 @@ function selectForEvent(corpus, { query = '', action = null, candidateIds = [], 
       }
     }
   }
-  const cited = engine.selectByCitations(entries, graph, sources, query.slice(0, 8192), 3);
-  for (const e of cited.ranked) add(e, 'explicit-tag', null, cited.fromTags.get(e.tag));
+  checkDeadline?.();
+  const citedHeads = new Set();
+  for (const tag of citations(query.slice(0, 8192), graph)) {
+    const head = proof.verifiedHead(tag);
+    if (!proof.byTag.has(head) || citedHeads.has(head)) continue;
+    citedHeads.add(head);
+    add(proof.byTag.get(head), 'explicit-tag', null, head !== tag ? tag : null);
+    if (citedHeads.size === 3) break;
+  }
   let queryRan = false;
   if (query.trim()) {
-    const selected = engine.select(entries, graph, query.slice(0, 8192), query.slice(0, 8192), 3);
-    if (selected.topicUnavailable) throw new Error('index-unavailable');
+    checkDeadline?.();
+    const selected = require('./recall-topic-index.cjs').selectTopics(corpus, graph, query.slice(0, 8192), cacheDir, checkDeadline);
+    checkDeadline?.();
     queryRan = true;
-    const topics = engine.topicalQueryTerms(query.replace(/<!--[\s\S]*?-->/g, ' '));
-    for (const e of selected.ranked) {
-      if (!usable.includes(e)) continue;
-      const tokens = new Set(engine.tokenize(e.title + '\n' + engine.searchableProse(e)));
-      const support = (topics || []).filter((t) => tokens.has(t));
-      if (support.length >= minTopicTerms) add(e, 'lexical-topic-support', support.length);
+    for (const { entry: e, support } of selected) {
+      if (usable.includes(e) && support >= minTopicTerms) add(e, 'lexical-topic-support', support);
     }
   }
   for (const tag of candidateIds) add(proof.byTag.get(tag), 'task-candidate');

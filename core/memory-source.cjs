@@ -21,7 +21,15 @@ function localMemoryRoot(memoryRoot, platform) {
   return platform === 'win32' ? /^[A-Za-z]:\/(?!\/)/.test(slashedRoot) :
     !memoryRoot.includes('\\') && path.posix.isAbsolute(memoryRoot);
 }
-function readSources(memoryRoot) {
+// Optional CC-only cache. The default readSources contract (used by Codex)
+// still reads and hashes every byte, with no cache or state writes.
+let cacheVersion;
+function getCacheVersion() {
+  return cacheVersion ||= 'cc-source-v2:' + sha(fs.readFileSync(require.resolve('../guards/pmm-core.cjs')));
+}
+function stamp(s) { return [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs]; }
+function equalStamp(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+function readSources(memoryRoot, options = {}) {
   if (!localMemoryRoot(memoryRoot, process.platform)) fail('invalid-input');
   let rootStat, root;
   try { rootStat = fs.lstatSync(memoryRoot); root = fs.realpathSync(memoryRoot); }
@@ -30,6 +38,7 @@ function readSources(memoryRoot) {
   const files = new Map();
   let total = 0;
   for (const name of FILES) {
+    options.checkDeadline?.();
     const file = path.join(root, name);
     let before;
     try { before = fs.lstatSync(file); }
@@ -43,14 +52,45 @@ function readSources(memoryRoot) {
     const rel = path.relative(root, real);
     if (rel !== name || rel.startsWith('..') || path.isAbsolute(rel)) fail('source-unsafe');
     if (before.size > 4 * 1024 * 1024) fail('source-too-large');
-    let bytes, after;
-    try { bytes = fs.readFileSync(file); after = fs.lstatSync(file); } catch { fail('source-unavailable'); }
-    if (!after.isFile() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino ||
-        before.size !== after.size || bytes.length !== after.size) fail('source-changed');
-    total += bytes.length;
+    total += before.size;
     if (total > 12 * 1024 * 1024) fail('source-too-large');
-    files.set(name, { hash: sha(bytes), size: bytes.length, dev: after.dev, ino: after.ino,
-      bytes, lines: bytes.toString('utf8').split(/\r?\n/) });
+    const cacheFile = options.cacheDir && path.join(options.cacheDir, sha(root), name + '.json');
+    const version = cacheFile && getCacheVersion();
+    let cached;
+    if (cacheFile) {
+      try {
+        if (fs.statSync(cacheFile).size <= 32 * 1024 * 1024) {
+          const c = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+          if (c.version === version && equalStamp(c.stamp, stamp(before)) &&
+              Array.isArray(c.lines) && Array.isArray(c.parsed?.entries) && Array.isArray(c.parsed?.diagnostics) &&
+              /^[a-f0-9]{64}$/.test(c.hash)) cached = c;
+        }
+      } catch { /* Missing/corrupt derived cache: rebuild from the source. */ }
+    }
+    options.checkDeadline?.();
+    let source;
+    if (cached) source = { hash: cached.hash, lines: cached.lines, parsed: cached.parsed };
+    else {
+      let bytes;
+      try { bytes = fs.readFileSync(file); } catch { fail('source-unavailable'); }
+      if (bytes.length !== before.size) fail('source-changed');
+      source = { hash: sha(bytes), bytes, lines: bytes.toString('utf8').split(/\r?\n/) };
+      if (cacheFile) source.parsed = parseFile(name, bytes);
+    }
+    let after;
+    try { after = fs.lstatSync(file); } catch { fail('source-unavailable'); }
+    const changed = options.cacheDir || options.metadataChecks ? !equalStamp(stamp(before), stamp(after)) :
+      before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size;
+    if (!after.isFile() || after.isSymbolicLink() || changed) fail('source-changed');
+    options.checkDeadline?.();
+    if (cacheFile && !cached) {
+      try {
+        fs.mkdirSync(path.dirname(cacheFile), { recursive: true, mode: 0o700 });
+        require('../lib/atomic-write.cjs').writeFileAtomicSync(cacheFile, JSON.stringify({ version, stamp: stamp(after),
+          hash: source.hash, lines: source.lines, parsed: source.parsed }), { mode: 0o600 });
+      } catch { /* Cache is an optimization, never a source availability gate. */ }
+    }
+    files.set(name, { ...source, size: after.size, dev: after.dev, ino: after.ino, stamp: stamp(after) });
   }
   return { root, rootDev: rootStat.dev, rootIno: rootStat.ino, files };
 }
@@ -62,10 +102,30 @@ function sameSources(a, b) {
   }
   return true;
 }
-function loadCorpus(memoryRoot) {
-  const sources = readSources(memoryRoot), entries = [], diagnostics = [], badTags = new Set();
+// Revalidation between stages uses metadata, not another full read. Include
+// ctime/device/inode as well as mtime+size, and still reject symlink replacement.
+function sourcesUnchanged(sources, checkDeadline) {
+  checkDeadline?.();
+  try {
+    const root = fs.lstatSync(sources.root);
+    if (!root.isDirectory() || root.isSymbolicLink() || root.dev !== sources.rootDev || root.ino !== sources.rootIno) return false;
+    for (const name of FILES) {
+      checkDeadline?.();
+      const old = sources.files.get(name);
+      let s;
+      try { s = fs.lstatSync(path.join(sources.root, name)); }
+      catch (e) { if (e.code === 'ENOENT' && !old) continue; return false; }
+      if (!old || !s.isFile() || s.isSymbolicLink() || !equalStamp(old.stamp, stamp(s))) return false;
+    }
+    return true;
+  } catch (e) { if (e.reason === 'recall-deadline-exceeded') throw e; return false; }
+}
+function loadCorpus(memoryRoot, options = {}) {
+  const sources = readSources(memoryRoot, { ...options, metadataChecks: true }), entries = [], diagnostics = [], badTags = new Set();
   for (const [file, source] of sources.files) {
-    const parsed = parseFile(file, source.bytes);
+    options.checkDeadline?.();
+    const parsed = source.parsed || parseFile(file, source.bytes);
+    source.parsed = parsed;
     for (const d of parsed.diagnostics) {
       // A handwritten Index and grandfathered uppercase identity are compatible.
       if (!['B9', 'B8c'].includes(d.code)) diagnostics.push({ code: d.code, file, line: d.line });
@@ -102,11 +162,11 @@ function loadCorpus(memoryRoot) {
       badTags.add(old); diagnostics.push({ code: 'unverified-index-redirect', file, line: i + 1 });
     }
   }
-  if (!sameSources(sources, readSources(memoryRoot))) fail('source-changed');
+  if (!sourcesUnchanged(sources, options.checkDeadline)) fail('source-changed');
   const snapshotId = sha(JSON.stringify([...sources.files].map(([name, f]) => [name, f.hash])));
   return { sources, entries, diagnostics, badTags, snapshotId };
 }
-module.exports = { FILES, REQUIRED, SelectorError, readSources, sameSources, loadCorpus, sha };
+module.exports = { FILES, REQUIRED, SelectorError, readSources, sameSources, loadCorpus, sourcesUnchanged, sha };
 
 if (require.main === module && process.argv.includes('--self-test')) {
   // Shared source integrity is exercised together with real hook transport.
