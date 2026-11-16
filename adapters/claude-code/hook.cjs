@@ -116,7 +116,8 @@ async function runHandler(rawInput, deps = {}) {
     receipt = {
       schema: 'axmem.cc.recall.v1', adapter: 'claude-code', installation_version: '0.1.0-phase1', machine: os.hostname(),
       event_id: eventId, invocation_id: invocationId, invocation_started_at: result.startedAt,
-      event, session_id: who.session, session_hash: who.session ? sha(who.session) : null,
+      event, ...(event === 'PreToolUse' ? { lexical_skipped: true } : {}),
+      session_id: who.session, session_hash: who.session ? sha(who.session) : null,
       actor_id: who.actor, actor_hash: who.actor ? sha(who.actor) : null,
       ...(rawInput?.parent_agent_id ? { parent_actor_id: rawInput.parent_agent_id } : {}),
       ...(rawInput?.prompt_id ? { prompt_id: rawInput.prompt_id } : {}),
@@ -185,13 +186,13 @@ async function runHandler(rawInput, deps = {}) {
           .filter((p) => corpus.entries.some((e) => e.tag === p.tag && sha(e.text) === p.hash)).map((p) => p.tag) : [];
         checkDeadline();
         const choice = (deps.selectForEvent || require('../../core/recall-selector.cjs').selectForEvent)(corpus, {
-          query, action: action?.status === 'supported' ? action : action ? { repo: null } : null,
+          query, lexical: event !== 'PreToolUse', action: action?.status === 'supported' ? action : action ? { repo: null } : null,
           candidateIds: candidates, maxItems: runtime.options.max_items, minTopicTerms: runtime.options.min_topic_terms, checkDeadline, cacheDir: path.join(fallbackRoot, 'recall-topic'),
         });
         checkDeadline();
         // Unsupported shapes never become lexical path/action evidence.
         selected = action && action.status !== 'supported' ? [] : choice.selected;
-        result.queryRan = choice.queryRan || action?.status === 'supported';
+        result.queryRan = !!choice.queryRan;
         result.matched = choice.matched;
         receipt.selection_diagnostics = choice.warnings;
         if (event === 'UserPromptSubmit') state.candidates = who.actor ? selected.map(({ entry: e }) => ({ tag: e.tag, hash: sha(e.text) })) : [];

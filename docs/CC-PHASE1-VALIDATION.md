@@ -1,5 +1,92 @@
 # Claude Code 阶段 1：交付与验证记录
 
+## 延迟选项 1：PreToolUse 不做词法检索（2026-11-16，当前结果）
+
+结果：Pre 不做词法检索已落地；新增 **8/8**，改动旧断言 **0 处**。新增套件接入完整 hook 自测；原 delta 10/10、R3 8/8、review 13/13、hook 40/40 全部原样通过。下文 A1 各节均为历史记录，不覆盖本节策略。
+
+### 原因与实现
+
+按负责人 **2026-11-16** 裁定：**PreToolUse 不做词法（模糊）检索**，只保留显式触发和本 prompt 已选候选。任务提供的真实记忆测量为 772 条，加载／构建 topic index 约 350–410ms，Pre 端到端约 0.8s；不进入索引的无命中 prompt 约 0.34s。这些是裁定背景，不是本轮重新访问真实记忆所得，本轮不宣称真机延迟已验收。
+
+- `core/recall-selector.cjs::selectForEvent` 增加默认 `true` 的 `lexical` 选项；为 `false` 时不 require `recall-topic-index.cjs`、不调用 `selectTopics`、不读／建 topic index。`queryRan` 保持 `false`；action/path trigger、cmd trigger、显式 tag 引用和 task-candidate 逻辑保留。
+- `adapters/claude-code/hook.cjs` 只在 Pre 传 `lexical: false`，Prompt 传 `true`，SessionStart 不走动态选择。只有 Pre 的回执各阶段附 `lexical_skipped: true`（包括 disabled／unsupported 路径）。健康记账直接使用 selector 的 `queryRan`，不再把“动作受支持”冒充词法查询；Pre 不增加 `counts.query_ran` 或更新 `lastSuccessfulRecallAt`，送达／错误等其他计数不变。
+- 默认最多 3 条、remind-only、正常或降级均不拦截／CLI 退出 0 不变；prompt 候选作用域、正文 hash 验证与 Pre 去重不变。`README.md` 的事件行为同步更新，词法 token 阈值限定于 UserPromptSubmit。
+
+### 新增用例与旧断言清单
+
+新增 `adapters/claude-code/test-opt1-pre.cjs`，8 项全部执行，无 skip：
+
+1. Edit／Write／MultiEdit 的路径与正文存在词法匹配，但无 trigger／候选时不送达、stdout 为空、回执标记跳过、不创建 topic cache。
+2. Bash 命令与正文词法匹配但无 trigger／候选时同样不送达。
+3. 三种编辑工具显式 path trigger 仍送达，reason=`action-trigger`。
+4. Bash 显式 cmd trigger 仍送达，reason=`command-trigger`。
+5. Prompt 经词法选中的候选在下一次四种工具 Pre 中均以 `task-candidate` 完整送达。
+6. 简单 Bash 命令里的明确 tag 引用仍以 `explicit-tag` 送达。
+7. `Module._load` spy＋`selectTopics` 包装器：Prompt 正对照各 1 次；四种工具 Pre 共 0 次加载、0 次调用，模块缓存保持未加载；每轮恢复 spy／缓存。
+8. selector 的默认词法行为与 `lexical:false` 的 `queryRan`、hook 传参、健康计数、各阶段回执，以及字段只属于 Pre（含 unsupported／disabled）均精确验证。
+
+**改动的旧断言清单：无（0 处）。** 未发现现有断言依赖 Pre 词法送达，故没有任何“旧断言 → 新断言”的改写。原候选回退、精确触发、重放、跨 repo、actor 隔离等断言逐字保留；`test-hook.cjs` 仅增加新套件调用。
+
+### 修复前真实红灯输出
+
+最初一次新测试夹具校验退出 1，但其中含无效夹具，不能算有效先红证据：使用了错误的 `trigger: none; reason=` 语法、把带连字符的 ASCII 路径误当多 token，以及把带冒号 tag 放在受限 action path 中；另外有两项 `recall-deadline-exceeded`。只修正新增夹具（改用既有 `理由=`、中文多词路径和合法 Bash tag 引用）后，**仍未修改生产代码**，再次运行 `node adapters/claude-code/test-opt1-pre.cjs` 退出 **1**，实际关键输出如下：
+
+```text
+OPT1 lexical-path observed [{"tool":"Edit","displayed":1,"reasons":["lexical-topic-support"],"lexical_skipped":null},{"tool":"Write","displayed":1,"reasons":["lexical-topic-support"],"lexical_skipped":null},{"tool":"MultiEdit","displayed":1,"reasons":["lexical-topic-support"],"lexical_skipped":null}]
+  FAIL OPT1 lexical-only-path-not-delivered: Expected values to be strictly equal:
+
+1 !== 0
+
+OPT1 lexical-command observed {"displayed":1,"reasons":["lexical-topic-support"],"lexical_skipped":null}
+  FAIL OPT1 lexical-only-command-not-delivered: Expected values to be strictly equal:
+
+1 !== 0
+
+  ok   OPT1 explicit-path-triggers-still-delivered
+  ok   OPT1 explicit-command-trigger-still-delivered
+  ok   OPT1 prompt-candidate-survives-following-pre
+  ok   OPT1 explicit-tag-citation-still-delivered
+OPT1 topic-index spy observed {"promptLoads":1,"promptCalls":1,"preLoads":4,"preCalls":4}
+  FAIL OPT1 pre-never-loads-or-calls-topic-index: Pre must not require recall-topic-index
+
+4 !== 0
+
+  FAIL OPT1 query-ran-and-receipt-event-scope-are-honest: Expected values to be strictly equal:
+
+true !== false
+
+OPT1 Pre no-lexical self-test 4/8
+```
+
+这证明指定新例①（路径／命令反例）和④（不加载／调用索引 spy）在修复前确实因目标行为失败，而非夹具错误。修复后同一套有效断言未放宽，最终输出：
+
+```text
+OPT1 lexical-path observed [{"tool":"Edit","displayed":0,"reasons":[],"lexical_skipped":true},{"tool":"Write","displayed":0,"reasons":[],"lexical_skipped":true},{"tool":"MultiEdit","displayed":0,"reasons":[],"lexical_skipped":true}]
+OPT1 lexical-command observed {"displayed":0,"reasons":[],"lexical_skipped":true}
+OPT1 topic-index spy observed {"promptLoads":1,"promptCalls":1,"preLoads":0,"preCalls":0}
+OPT1 Pre no-lexical self-test 8/8
+```
+
+修复后前两次独立执行新套件分别在路径反例和候选用例触发 `recall-deadline-exceeded`，均退出 1、7/8；没有改 deadline、增加重试或 skip。随后完整 hook 与独立新套件原样重跑均退出 0。此环境仍存在偶发截止超时，不能将最终通过说成从未发生波动。
+
+### 全部允许命令结果
+
+| 命令 | 最终退出码 | 结果／本轮先前退出码 |
+|---|---:|---|
+| `node adapters/claude-code/hook.cjs --self-test` | 0 | OPT1 8/8 + delta 10/10 + R3 8/8 + review 13/13 + 原 hook 40/40（合计 79/79） |
+| `node adapters/claude-code/test-opt1-pre.cjs` | 0 | 8/8；此前依次为 1（夹具校验）、1（有效先红）、1、1（修复后偶发 deadline） |
+| `node adapters/claude-code/merge-hooks.cjs --self-test` | 0 | 6/6 |
+| `node adapters/codex/test-recall-selector.cjs` | 0 | 89/89 |
+| `node adapters/codex/test-pre-tool-recall.cjs` | 0 | 19/19 |
+| `node adapters/codex/test-recall-context.cjs` | 0 | 39/39 |
+| `node adapters/codex/test-agent-task-context.cjs` | 0 | 34/34 |
+| `node adapters/codex/test-action-receipt-integration.cjs` | 0 | 18/18 |
+| `bash tests/fresh-home-adapters.sh --self-test` | 0 | 5/5 |
+
+未改 `adapters/codex/*`、`core/memory-source.cjs`、`core/recall-receipt.cjs`，未运行 git、未提交／部署，未读取或写入真实 `~/.claude`／`~/.axmem`、敏感文件或密钥。测试只用隔离临时 memory／repo／state／HOME；未做真实 Claude Code 客户端展示／时序／真实 772 条记忆性能复测。变更留在工作树。
+
+---
+
 ## A1 收尾补丁：移除文件 claim（当前结果）
 
 移除文件 claim 退路；claim 不可用时 openStore 抛错，hook 走现有 state-unavailable 可见路径，报告本次失败=1，持久计数未知，不要求回执。POSIX lstat EACCES 计入连续失败，EPERM/EBUSY 仍按竞争；只有该失败路径重试前等待 5ms。清理 stale session 时获取或释放锁遇到 state-claim-unavailable 会跳过该目录并继续。正常取锁不增加 claim I/O 或等待。

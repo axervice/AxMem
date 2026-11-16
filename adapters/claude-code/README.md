@@ -37,7 +37,9 @@ command 依赖 PATH 上的 Node；输出沿用本仓库的
   standinginstructions 的 live 条目，包括完全没有 trigger 和显式 trigger-none 的规则。
   引用可以沿真实 Supersedes 边跳到 live head。仅有 Index 箭头不当作边的证明。
   “继续”、空泛英文等不硬推。prompt 原文只在进程内使用；状态仅保留任务 hash、候选 tag／正文 hash。
-- **PreToolUse**：明确工具、repo、路径的 trigger 优先，再考虑明确引用／动作词法／已建立的任务候选。
+- **PreToolUse**：只考虑明确工具／repo／路径的 action trigger、简单命令的 cmd trigger、明确 tag 引用和本 prompt 已建立的任务候选。
+  **不做词法（模糊）检索，不加载／构建 topic index**，不凭路径／命令的主题相似度推送记忆；UserPromptSubmit 的词法检索不变。
+  这是为降低逐次动手前延迟，按负责人 2026-11-16 的裁定实施；仅 Pre 回执记录 `lexical_skipped: true`，不计为已运行词法查询。
   prompt 已推不等于 Pre 永久免推；同一 tool_use_id 的同版本重复 Pre 可以抑制，新的动作可再推。
   Edit、Write、MultiEdit 支持单个 file_path；相对路径必须有 cwd，路径别名不冒充已证明的仓库目标。
   Bash 只识别**裸可执行名＋简单字面参数**，可匹配成熟解析器的 cmd trigger；
@@ -70,7 +72,7 @@ command 依赖 PATH 上的 Node；输出沿用本仓库的
 }
 ```
 
-动态最多 3 条，可下调；默认至少两个有效主题 token 支撑词法提醒，明确引用／精确 trigger 不受此阈值限制。
+动态最多 3 条，可下调；UserPromptSubmit 默认至少两个有效主题 token 支撑词法提醒，明确引用／精确 trigger 不受此阈值限制。
 分数记录为主题 token 支撑数，不冒充语义概率。预算按 UTF-8 additionalContext 字节计，整条放不下
 就标 omitted 并给定位，不截掉例外／否定后当完整送达。Kernel 独立预算，超限告警。
 `kernel_sender` 可为 `axmem`、`external`、`off`；后两者不由本 hook 发送 Kernel。

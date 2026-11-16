@@ -9,6 +9,7 @@ const { runHandler } = require('./hook.cjs');
 const { identity } = require('../../core/recall-receipt.cjs');
 const ROOT = path.resolve(__dirname, '../..');
 async function selfTest() {
+  await require('./test-opt1-pre.cjs').opt1SelfTest();
   await require('./test-review-round2.cjs').round2SelfTest();
   await require('./test-review.cjs').reviewSelfTest();
   const t = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-cc-hook-'));
