@@ -3,16 +3,17 @@
 ## 一眼核对表（先核对这一页，再按后文逐条执行）
 | 步骤／改哪个文件的哪一段 | 改前怎么备份 | 怎么验证生效 | 怎么一步回滚 |
 |---|---|---|---|
-| 1. 安装前检查：只读，不改文件 | 记下 settings 原 SHA256；确认 Trial 原来不存在 | 自测退出 0、无 FAIL；AXMEM_* 检查为空 | 无改动，无需回滚 |
-| 2. 新建 `Trial/state/` 目录 | 不覆盖既有目录；记下“原来不存在” | 路径是独立 Trial 下的 state | 退线且确认无读写者后，整个目录移入回收站 |
-| 3. 新建 `Trial/config.json` 全文（第 2 节） | 不覆盖既有文件；原来不存在，无旧版可备份 | 解析得到绝对 memoryRoot/stateRoot、external | 退线且确认无读取者后，该新文件移入回收站 |
+| 1. 安装前检查：只读，不改文件 | 记下 settings 原 SHA256；确认 Trial 和 trial-scratch 原来不存在 | 自测退出 0、无 FAIL；AXMEM_* 检查为空 | 无改动，无需回滚 |
+| 2. 新建 `Trial/state/` 目录 | 不覆盖既有目录；记下“原来不存在” | 路径是独立 Trial 下的 state | 退线且确认无读写者后可移入回收站；代执行时跳过清理 |
+| 3. 新建 `Trial/config.json` 和 `trial-scratch/`（第 2 节） | 不覆盖既有文件／目录；原来不存在 | 解析得到绝对 memoryRoot/stateRoot、external；scratch 为空 | 退线且确认无读取者后可移入回收站；代执行时跳过清理 |
 | 4a. `settings.json` 的 `hooks.SessionStart` 末尾追加 1 组 | apply 自动先存原字节备份并校验 SHA256 | status 的第 1 个 count=1；新会话有一次健康状态 | 第 4 节同一条 `--rollback`，一次退掉本次全部 3 组 |
 | 4b. `settings.json` 的 `hooks.UserPromptSubmit` 末尾追加 1 组 | 同一份自动备份；独立 Record 记下身份和 hash | status 的第 2 个 count=1；真实提问验收 | 同上，不逐组手删，不覆盖他人改动 |
 | 4c. `settings.json` 的 `hooks.PreToolUse` 末尾追加 1 组，matcher=`Edit\|Write\|MultiEdit\|Bash` | 同一份自动备份；原 PMM 各组不动 | status 的第 3 个 count=1；真实工具前验收 | 同上；status 应退回 0/3 |
-| 5. 验收／退线：只读回执；试验文件仅允许新建 | 保留 backup、`Trial/install-record.json` 和外部 hash 笔记 | 三件小任务、耗时、PMM 不重复；退线后新会话复查 | 第 4 节 `--rollback`；试验文件确认归属后移入回收站 |
+| 5. 验收／退线：只读回执；试验文件仅允许在 `trial-scratch/` 新建 | 保留 backup、`Trial/install-record.json` 和外部 hash 笔记 | 三件小任务、耗时、PMM 不重复；退线后新会话复查 | 第 4 节 `--rollback`；代执行时跳过 scratch 清理 |
 
-> `Trial` = `C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial`；settings = `C:/Users/jax-x/.claude/settings.json`。
-> 这是**以后由 Jax 执行**的清单，不是已经安装的记录。本次只交付工具和临时夹具测试，未读写真实用户目录。
+> 冻结 root = `C:/Users/jax-x/Desktop/AxMem-trees/trial-root`；scratch = `C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch`；`Trial` = `C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial`；settings = `C:/Users/jax-x/.claude/settings.json`。
+> 同一 root/config 身份的 status 顺序是安装前 **0/3** → apply 后 **3/3** → rollback 后 **0/3**；验收文件只在 scratch，不在冻结 root。
+> 这是待执行的清单，不是已经安装的记录。本次只交付工具和临时夹具测试，未读写真实用户目录。Jax **明确同意后**，由 lead 代他执行第 1、2、4 节，只有需要时才执行第 5 节；Jax 自己在新会话做第 3 节三件真实小任务，以及其他确实需要他在场的步骤。
 > 下列命令使用 **Windows PowerShell 5.1 或 PowerShell 7**；不是 Git Bash。
 > **安装／回滚那一刻不要有别的程序在改 settings.json**；不要求先关掉所有会话。工具不是多写入者事务。
 > 不运行 `merge-hooks.cjs` 的安装入口：它会添加 8 条，前 5 条与已经存在的 PMM 功能重叠。
@@ -20,16 +21,28 @@
 ### 影响面：不是只影响试装窗口
 
 `~/.claude/settings.json` 是全局配置。装上后，**所有 Claude Code 会话（含桌面应用和其他正在运行的 agent 会话）**，
-每次开会话、每次提问、每次 Edit／Write／MultiEdit／Bash 前都会运行这个钩子，单次约 **0.2 秒**（参考量级，实机可能更慢）。
+每次开会话、每次提问、每次 Edit／Write／MultiEdit／Bash 前都会运行这个钩子。以真实记忆 772 条、N=10 中位数测得的端到端时间：编辑／命令前约 **0.3 秒**；提问有命中约 **0.74 秒**、无命中约 **0.32 秒**；会话启动约 **0.30 秒**。
+对比：不加 AxMem 时现有 hook 链每次提问约 0.27 秒、动作前约 0.43–0.53 秒；宿主并行运行同事件 hooks，故动作前等待大致不变，有命中的提问约 0.74 秒；实机以回执的 `elapsed_ms` 和宿主实际观测为准。
 repo 映射不等于钩子只会在这个 repo 启动。**以新会话为准，旧会话可能要重启才生效或才失效**；不保证热加载。
 回滚后先保留 config/state，避免仍缓存旧接线的会话找不到配置。无需统一关掉所有会话来安装或退线；清理目录可以延后。
 
+### 步骤需要有人在场
+
+1. 从外部笔记重建 `$BeforeSha` 的 `Read-Host` 是交互输入。代执行时在同一窗口保留 `$BeforeSha`，或在第 2 节创建 Trial 后写入 `Trial/before-sha.txt`；换窗口后可用以下非交互命令读回（不能用当前 settings 的 hash 冒充原值）：
+
+   ```powershell
+   & { $v=([System.IO.File]::ReadAllText("$Trial/before-sha.txt")).Trim().ToLowerInvariant(); if ($v -notmatch '^[a-f0-9]{64}$') { throw 'Invalid original SHA256' }; $script:BeforeSha=$v; $BeforeSha }
+   ```
+
+2. 回收站的 `AllDialogs` 会弹系统确认框，需要有人核对并点击；资源管理器的清理／失败处理及可选的旧记录移入回收站也需要人工操作，若弹确认框同样需要点击。**代 Jax 执行时跳过 state、config 和 trial-scratch 目录／文件的清理**；保留无害，待 Jax 确认后再清理，且仍须确认没有读写者。升级时可改用新的 record 路径，不必移动旧记录；不得因此跳过回滚接线。
+3. 第 3 节三件任务须 Jax 本人在全新会话中交互执行并观察；lead 事先准备 scratch，不能代做这三项验收。
+4. 第 4 节退线后还要有人从平常入口打开全新 Claude Code 会话并观察输出是否消失、PMM 是否正常；这是交互式现场复查，可由在场的 lead 操作，确实需要 Jax 时请他在场。
+
 ## 0. 固定范围，先看懂再打勾
 
-- [ ] 本次根目录固定为 `C:/Users/jax-x/Desktop/AxMem-trees/cc-phase1`，**不是 a2-install，也不是 main**。
-  整合者须先把 A2 的 `trial-install.cjs`、`test-trial-install.cjs` 和本清单交付到该树；旧 merge 的 helpers 已导出，无需改行为。
-  如果文件不齐或自测不过，就停下，不要临时改成其他 root 安装。
-  **换 root 后重装：先用旧 root/config 回滚，再使用新的 `--record` 路径，或把旧记录移入回收站，然后才按新 root 安装；不能直接改记录。**
+- [ ] 本次根目录固定为 `C:/Users/jax-x/Desktop/AxMem-trees/trial-root`，是 detached checkout 的冻结树；内容等于单一 commit `<TRIAL_COMMIT>`（主会话冻结时填入 commit hash）。试验期间任何人不得修改此树或切换分支。
+  如果交付文件不齐或自测不过，就停下，不要临时改树或改成其他 root 安装。
+  **升级必须按「回滚 → 新树 → 重新安装」：先用旧 root/config 回滚，再使用新的 `--record` 路径，或把旧记录移入回收站，然后才按新 root 安装；不能直接改记录。**
   **apply 若被中断：先 rollback，确认退线后才可再次 apply；不要用重跑 apply 覆盖原备份链。** 保留原备份及外部笔记供核对。
 - [ ] PMM 的现有 SessionStart／Prompt／Pre／Post／Stop 全部保留，包含现有 Kernel、banner、trigger-recall、write gate、receipt。
   试装只新增下表 3 个 command hook，各占事件末尾一个新组；不添加 session-lamp，不添加旧 Post／Stop 功能。
@@ -37,7 +50,7 @@ repo 映射不等于钩子只会在这个 repo 启动。**以新会话为准，�
 三个组里的 **command 全文完全相同**（这是 settings 的字符串值，不是让 PowerShell 直接执行的语法）：
 
 ```text
-AXMEM_CONFIG="C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial/config.json" node "C:/Users/jax-x/Desktop/AxMem-trees/cc-phase1/adapters/claude-code/hook.cjs"
+AXMEM_CONFIG="C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial/config.json" node "C:/Users/jax-x/Desktop/AxMem-trees/trial-root/adapters/claude-code/hook.cjs"
 ```
 
 | event | matcher | command |
@@ -84,10 +97,10 @@ Claude Code 的钩子命令经 POSIX shell 执行，前置赋值仅作用于本�
 - [ ] 建立操作变量：
 
 ```powershell
-& { $script:Root='C:/Users/jax-x/Desktop/AxMem-trees/cc-phase1'; $script:Settings='C:/Users/jax-x/.claude/settings.json'; $script:Trial='C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial'; $script:Config="$Trial/config.json"; $script:State="$Trial/state"; $script:Record="$Trial/install-record.json"; $Root; $Trial }
+& { $script:Root='C:/Users/jax-x/Desktop/AxMem-trees/trial-root'; $script:Scratch='C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch'; $script:Settings='C:/Users/jax-x/.claude/settings.json'; $script:Trial='C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial'; $script:Config="$Trial/config.json"; $script:State="$Trial/state"; $script:Record="$Trial/install-record.json"; $Root; $Scratch; $Trial }
 ```
 
-预期：打印上述 root 和独立目录。后续命令使用这些普通 PowerShell 变量。
+预期：打印冻结 root、scratch 和独立 Trial 目录。后续命令使用这些普通 PowerShell 变量。
 
 - [ ] 检查 **User／Machine 两级持久 AXMEM_* 及当前 Process 环境**（只报告非空变量名，不打印值）：
 
@@ -130,9 +143,9 @@ node --version
 node "$Root/adapters/claude-code/hook.cjs" --self-test
 ```
 
-预期：**退出码 0、无 FAIL**。A1 收尾整合后的参考输出为 `A1 delta self-test 10/10`、`A1 R3 edge self-test 5/5`、
-`A1 review self-test 13/13`、`claude-code hook self-test 40/40`；数字仅作版本核对参考，不替代退出码和失败检查。
-这是合成环境测试，不是拿真实记忆测试；本 A2 分支尚未整合的 A1 收尾不能据此宣称已通过。
+预期：**退出码 0、无 FAIL**。冻结 root 的参考输出为 `A1 delta 10/10`、`A1 R3 edge 8/8`、`OPT1 Pre no-lexical 8/8`、
+`A1 review 13/13`、`claude-code hook 40/40`；数字仅作版本核对参考，不替代退出码和失败检查。
+这是合成环境测试，不是拿真实记忆测试；参考数字不能代替对冻结 root 的现场自测。
 
 - [ ] 试装工具自测：
 
@@ -152,14 +165,14 @@ node "$Root/adapters/claude-code/test-trial-install.cjs"
 
 预期：64 位十六进制；具体值以现场为准。此处不得写死示例 hash。
 
-- [ ] 检查试装目录、配置、状态、记录是否已经存在：
+- [ ] 检查试装目录、配置、状态、记录及 scratch 是否已经存在：
 
 ```powershell
-@($Trial,$Config,$State,$Record) | ForEach-Object { "$_ = $(Test-Path -LiteralPath $_)" }
+@($Trial,$Config,$State,$Record,$Scratch) | ForEach-Object { "$_ = $(Test-Path -LiteralPath $_)" }
 ```
 
-预期首次：四项 `False`。如已存在，先停下核对来源；**不得覆盖或清空既有配置／状态目录**。
-记下“config/state 原来不存在”，回滚后才允许把本次新建文件／目录移入回收站。
+预期首次：五项 `False`。如已存在，先停下核对来源；**不得覆盖或清空既有配置／状态／scratch 目录**。
+记下“config/state/scratch 原来不存在”，回滚后才允许把本次新建文件／目录移入回收站。
 
 - [ ] 只检查三个必需记忆源是否存在，不改它们：
 
@@ -179,6 +192,22 @@ node "$Root/adapters/claude-code/test-trial-install.cjs"
 
 预期：打印 `C:\Users\jax-x\AppData\Local\AxMem\cc-phase1-trial\state`，不是 `.claude` 下的目录。
 
+- [ ] 代执行若不能在同一窗口保留第 1 节的 `$BeforeSha`，现在可把它独占新建到 Trial，供换窗口后非交互读回；不得覆盖已有文件：
+
+```powershell
+& { if ($BeforeSha -notmatch '^[a-f0-9]{64}$') { throw 'Missing or invalid original SHA256' }; $f=[System.IO.File]::Open("$Trial/before-sha.txt",[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::Write,[System.IO.FileShare]::None); try { $w=[System.IO.StreamWriter]::new($f,[System.Text.UTF8Encoding]::new($false)); try { $w.WriteLine($BeforeSha) } finally { $w.Dispose() } } finally { $f.Dispose() } }
+```
+
+预期：仅写入第 1 节记下的原 hash；外部笔记仍须保留。如果 Trial 尚未创建而窗口已关闭，则从外部笔记用第 4 节的交互命令重建。
+
+- [ ] 在新会话前创建空 scratch，供 Jax 验收；存在即拒绝，不使用或清空已有目录：
+
+```powershell
+& { if (Test-Path -LiteralPath $Scratch) { throw 'Refuse existing trial-scratch' }; $d=New-Item -Path $Scratch -ItemType Directory -ErrorAction Stop; if (@(Get-ChildItem -LiteralPath $Scratch -Force).Count -ne 0) { throw 'trial-scratch is not empty' }; $d.FullName }
+```
+
+预期：新建并打印 `C:\Users\jax-x\Desktop\AxMem-trees\trial-scratch`，为空；它在冻结树之外，仍属于 axmem 映射。有人同时创建或写入则停下核对，不覆盖。
+
 - [ ] 新建**以下完整 config.json**，用 UTF-8 **无 BOM**（Windows PowerShell 的普通 `Set-Content -Encoding UTF8` 会加 BOM，不能用于这里）：
 
 ```powershell
@@ -189,10 +218,9 @@ $text = @'
   "memory_dir": "C:/Users/jax-x/.claude/memory/",
   "state_dir": "C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial/state",
   "repos": [
-    {
-      "id": "axmem",
-      "roots": ["C:/Users/jax-x/Desktop/AxMem-trees/cc-phase1"]
-    }
+    { "id": "axmem", "roots": ["C:/Users/jax-x/Desktop/AxMem", "C:/Users/jax-x/Desktop/AxMem-trees"] },
+    { "id": "axervice-booking", "roots": ["D:/AI/axervice-booking", "C:/Users/jax-x/Desktop/axervice-booking"] },
+    { "id": "home", "roots": ["C:/Users/jax-x"] }
   ],
   "adapters": {
     "claude_code": {
@@ -217,8 +245,8 @@ if (Test-Path -LiteralPath $Config) { throw 'Refuse to overwrite existing config
 }
 ```
 
-预期：`config written (UTF-8 no BOM)`。仅配置这个试装仓库，不能用 HOME 根当 repo 来扩大匹配。
-如要验收其他项目，须另行确认 repo ID／真实 root，再改此独立配置，不能假造映射。
+预期：`config written (UTF-8 no BOM)`。记忆中的显式路径触发依赖 `home`／`axervice-booking`／`axmem` 这些 repo ID 和真实 root，因此必须使用此映射，包括 HOME 根。
+嵌套 root 按最具体的 repo 解析；主会话已测得：`Desktop/AxMem/...` → `axmem`，`D:/AI/axervice-booking/...` → `axervice-booking`，home 目录下其他位置 → `home`（更具体的已配置 root 优先）。scratch 也在 `AxMem-trees` 下，解析为 `axmem`。
 
 - [ ] 验证实际配置解析结果（仅给这一个 Node 子进程传入 AXMEM_CONFIG；不修改窗口环境、不读记忆正文、不创建 store）：
 
@@ -273,18 +301,18 @@ node "$Root/adapters/claude-code/trial-install.cjs" --settings "$Settings" --roo
 
 ## 3. 新会话里的三件真实小任务
 
-- [ ] 先确保试验文件名没被占用：
+- [ ] 先确保试验文件 `C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch/trial-recall-note.md` 没被占用：
 
 ```powershell
-Test-Path -LiteralPath "$Root/trial-recall-note.md"
+Test-Path -LiteralPath "$Scratch/trial-recall-note.md"
 ```
 
-预期：`False`；若 True，换一个已确认不存在的文件名，不能覆盖用户文件。
+预期：`False`；若 True，停下核对，不能覆盖用户文件。
 
-- [ ] 到验收 repo 启动**全新** Claude Code 会话（不是 resume，不是在旧会话里输入测试；也可从其他平常入口开全新会话）：
+- [ ] Jax 在 scratch 启动**全新** Claude Code 会话（不是 resume，不是在旧会话里输入测试；也可从其他平常入口以 scratch 为工作目录开全新会话）：
 
 ```powershell
-& { Set-Location -LiteralPath $Root; claude }
+& { Set-Location -LiteralPath $Scratch; claude }
 ```
 
 预期：PMM 原有 banner／Kernel 照旧；AxMem 只有一次 SessionStart 来源／健康状态，并说明 external、不发第二份 Kernel。
@@ -299,7 +327,7 @@ Test-Path -LiteralPath "$Root/trial-recall-note.md"
   如果这不是你已有记忆中的真实主题，改问一个你能判断是否相关的真实小问题（可带一个已知真实 tag）。
   看 UserPromptSubmit 的召回：相关才出现，**动态正文最多 3 条**，有 tag／文件／行号，提醒不变成新命令，不重复 PMM banner。
   如果本来没有匹配，应当安静，无“本地查询完成”一类刷屏；SessionStart 一次性心跳不算每轮刷屏。
-- [ ] **改一个小文件**：`在当前仓库新建 trial-recall-note.md，只写一行 phase-1 recall trial，不改其他文件。`
+- [ ] **改一个小文件**：`在 C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch/trial-recall-note.md 新建文件，只写一行 phase-1 recall trial，不改其他文件。`
   看真实 Write／Edit 调用前是否出现适用的 `[AxMem 动手前召回：仅提醒，不拦截]`，不是执行后才补一句。
   没有适用规则时保持安静；有时最多 3 条，整条展示或明确 omitted，不把截断规则当完整正文。
   观察 PMM 原有 Post trigger-recall：不能在工具后再把刚才同一规则重复刷一遍；旧写闸／receipt 不能丢失或变成两套。
@@ -341,7 +369,7 @@ Get-ChildItem -LiteralPath "$State/recall" -Recurse -File -Filter '*.jsonl' | Fo
 ## 4. 回滚（正常验收结束也可随时执行）
 
 - [ ] **回滚那一刻不要有别的程序在改 settings.json**；不用先关掉所有会话。先保留 config、备份和安装记录。
-  如果窗口已经关闭，重做第 1 节“建立操作变量”，再从外部笔记重建 `$BeforeSha`（不要重新对当前 settings 求 hash 来冒充原值）：
+  如果窗口已经关闭，重做第 1 节“建立操作变量”；若已保存 `Trial/before-sha.txt`，用上方“步骤需要有人在场”中的非交互命令读回，否则从外部笔记交互重建 `$BeforeSha`（不要重新对当前 settings 求 hash 来冒充原值）：
 
 ```powershell
 & { $v=(Read-Host '粘贴外部笔记中的安装前 SHA256').Trim().ToLowerInvariant(); if ($v -notmatch '^[a-f0-9]{64}$') { throw 'Invalid original SHA256' }; $script:BeforeSha=$v; $BeforeSha }
@@ -392,7 +420,7 @@ node "$Root/adapters/claude-code/trial-install.cjs" --settings "$Settings" --roo
   **以新会话为准，旧会话可能要重启才失效**。如旧会话仍输出，安排其重启；不要先删 config/state 迫使它落回默认目录。
   关闭操作窗口不是回滚：配置已经固定在 settings 的命令里，必须先移除接线。
 
-- [ ] 可选、可延后清理本次独立 state（仅在第 1 节确认为原来不存在、已退线且确认没有旧会话／在途 hook 再读写它之后）：
+- [ ] 可选、可延后清理本次独立 state（仅在第 1 节确认为原来不存在、已退线且确认没有旧会话／在途 hook 再读写它之后）。**代 Jax 执行时跳过此步和下方 config／scratch 清理，待 Jax 确认后再处理**：
 
 ```powershell
 & { if ($State -cne 'C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial/state') { throw 'unexpected state path' }; $i=Get-Item -LiteralPath $State -ErrorAction Stop; if ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'refuse linked state' }; Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($State,[Microsoft.VisualBasic.FileIO.UIOption]::AllDialogs,[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin) }
@@ -401,10 +429,17 @@ node "$Root/adapters/claude-code/trial-install.cjs" --settings "$Settings" --roo
 预期：**弹出系统确认对话框，核对目标并确认移到 Windows 回收站；取消则保留目录**。若系统提示永久删除，不确认；失败就用资源管理器选中准确的 state 文件夹，普通 Delete 移到回收站，再核对。
 不能确认无读写者就保留它；不要求为清理而现在结束所有工作会话。
 config.json 同样可在确认无读取者后用资源管理器移入回收站；移走后仍可用原 root/config 路径运行 status／重复 rollback，这两个模式不要求原 config 存在。
-**禁止 Shift+Delete、`Remove-Item -Recurse`、`rm -rf` 或任何永久删除**；不要删父目录 Trial，不要删 `~/.claude/memory`、settings、备份或其他 AxMem state。
-如须清除试验生成的 `trial-recall-note.md`，也仅在确认是本次新建、无后续用户编辑后移入回收站，不删除其他仓库文件。
 
-## 5. Codex pin 闭包（只交接，不在这次试装中执行）
+- [ ] 可选、可延后清理 scratch：仅在原来不存在、已退线且确认无读写者，并确认其中所有内容均为本次新建且无后续用户编辑后执行；代执行时跳过，待 Jax 确认后再处理。试验文件路径是 `C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch/trial-recall-note.md`。如有其他内容或无法确认归属，保留整个目录，不删除其他文件。
+
+```powershell
+& { if ($Scratch -cne 'C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch') { throw 'unexpected scratch path' }; $i=Get-Item -LiteralPath $Scratch -ErrorAction Stop; if ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'refuse linked scratch' }; Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($Scratch,[Microsoft.VisualBasic.FileIO.UIOption]::AllDialogs,[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin) }
+```
+
+预期同样需人工确认准确目标并移到回收站；取消或无法确认则保留，若提示永久删除则不确认。
+**禁止 Shift+Delete、`Remove-Item -Recurse`、`rm -rf` 或任何永久删除**；不要删父目录 Trial、冻结树、`~/.claude/memory`、settings、备份或其他 AxMem state。
+
+## 5. Codex pin 闭包（只在需要时另行批准并交接）
 
 **结论：A1 第一轮前的 Codex action-receipt base manifest 需要重建／重新 pin**。
 `core/memory-source.cjs` 在 A1 第一轮改过原始字节，且在 `adapters/codex/action-receipt-opt-in.cjs:7-22` 的 14 文件 EXPECTED_BASE 内；
@@ -412,7 +447,7 @@ config.json 同样可在确认无读取者后用资源管理器移入回收站�
 本次未查看真实 manifest，**不知道负责人是否已经更新过**。旧 manifest 必须更换；若已按当前字节更新，只需常规核验，不要盲目重签。
 这里所谓“重签”是重建 hash pin 清单及其外层 SHA256，不涉及私钥数字签名，也不启用 ACK。
 
-交给 Codex 负责人，在单独批准的后续工作中审核 14 个文件后运行下列命令（替换两个占位路径；使用 Codex 自己批准的配置，**本清单不执行**）：
+仅在需要时，lead 在单独批准的后续工作中与 Codex 负责人协调，待负责人审核 14 个文件后代为运行下列命令（替换两个占位路径；使用 Codex 自己批准的配置，新 manifest 放在冻结树之外；未获单独批准不得执行）：
 
 ```powershell
 node -e "const fs=require('node:fs'),p=require('node:path'),c=require('node:crypto'); const hash=b=>c.createHash('sha256').update(b).digest('hex'); const names=['adapters/codex/action-receipt-gate.cjs','adapters/codex/action-receipt-state.cjs','adapters/codex/action-receipt-opt-in.cjs','adapters/codex/pre-tool-recall.cjs','adapters/codex/recall-context.cjs','adapters/codex/recall-selector.cjs','core/memory-source.cjs','guards/pmm-core.cjs','guards/pmm-trigger-glob.cjs','guards/pmm-trigger-recall.cjs','guards/pmm-recall-ledger.cjs','guards/pmm-recall-policy.cjs','guards/vendor/minisearch/index.cjs','guards/vendor/path-is-inside.cjs'].sort(); const files=names.map(path=>{const b=fs.readFileSync(p.join(process.argv[1],path));return {path,sha256:hash(b),bytes:b.length};}); const b=Buffer.from(JSON.stringify({schemaVersion:1,files},null,2)+String.fromCharCode(10)); fs.writeFileSync(process.argv[2],b,{flag:'wx'}); console.log('base-manifest-sha256='+hash(b));" '<Codex批准的base-root绝对路径>' '<新manifest绝对路径>'
@@ -424,6 +459,8 @@ node -e "const fs=require('node:fs'),p=require('node:path'),c=require('node:cryp
 **本次试装不接线、不启用、不卸载、不改写任何真实 Codex 配置或 manifest。**
 
 ## 6. 本交付的自动化证据（不代表真人验收通过）
+
+以下是此前 A2 工具交付时记录的历史证据，不是本次清单修改或冻结 root 的现场测试结果。
 
 - `node adapters/claude-code/test-trial-install.cjs`：退出 0，**37/37；guard-removal red evidence 37/37**。
   原有 23 项保留：dry-run、仅 3 条／保序、二次 no-op、原字节回滚、他人修改保留、坏 JSON、坏 root、缺参、跨组 trim 去重、
