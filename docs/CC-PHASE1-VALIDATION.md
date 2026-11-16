@@ -1,6 +1,97 @@
 # Claude Code 阶段 1：交付与验证记录
 
-## A1 跨家族审查修复（本轮结果）
+## A1 第二轮增量审查修复（当前结果）
+
+结果：3/3 中等已修；低项 3/3 已处理（2 项代码修复，1 项按要求说明现状）。
+本轮按任务内审查清单实施，未读取树外报告。未运行 git、未提交、未安装到真实环境。
+原有 53 个用例保留，新增 `test-review-round2.cjs` 的 8 个用例，总计 61/61；未加 skip 或减少断言。
+8 条 allow-cmd 最终均退出 0。
+
+| 问题 | 文件 | 修法 | 用例 |
+|---|---|---|---|
+| Windows claim 正常竞争被当成状态故障 | `core/recall-receipt.cjs` | 仅对 claim 的 mkdir 将 EPERM/EACCES/EBUSY 视为忙；不冒领、不回收不属于自己的 claim，不增加 degraded | `windows-claim-eight-process-tight-loop`：native / 确定性错误注入两轮，每轮 8 个进程 × 240 次无等待循环 |
+| 忙时空 state 丢去重与候选 | 同上 | 忙时有界、只读地读取并校验当前 state；保留 taskId/candidates/seen，坏 JSON、形状错误、超限或读失败才退空；append/save/mark/close 仍无写入 | `busy-readonly-two-process-same-task-action-replay`、`busy-torn-invalid-or-unreadable-state-falls-back` |
+| unknown 事件污染宿主枚举 | `adapters/claude-code/hook.cjs` 及两份原测试 | 事件未知时仅顶层 systemMessage，无 hookSpecificOutput；有效三事件的 additionalContext 不变，stderr 继续诊断原因 | `unknown-event-top-level-message-only`，原 stdin 超时／坏输入／超限用例 |
+| 清理失败影响本次召回 | `core/recall-receipt.cjs`、`hook.cjs` | 清理 best-effort；失败只记 receipt.maintenance_errors，和 error_codes／健康失败次数分离，Post pointer receipt 同样保留诊断 | `cleanup-failure-receipt-not-recall-failure` 注入 readdir/lstat/unlink 三种失败 |
+| session 与缓存 staging 留存 | `core/recall-receipt.cjs` | session 目录纳入 7 天／128 个策略；删除前获取该 session 锁并复核 state 版本，只删已知普通文件，不递归删未知内容；两类 cache staging 同策略 | `session-and-cache-staging-retention`、`session-prune-mkdir-claim-race-retries`、`session-prune-preserves-refreshed-state` |
+
+### ① 修复前红的验证
+
+先仅新增并接线回归、按新要求更新 unknown 协议断言，未改生产实现，运行
+`node adapters/claude-code/hook.cjs --self-test` 两次均退出 **1**。
+第二次原始输出（为避免错误数组过长，只截短失败文字展示，不截断／改变断言）：
+
+```text
+A1 DELTA CLAIM {"processes":8,"attempts":1920,"owned":1,"busy":1497,"errors":{"EPERM":150,"EACCES":137,"EBUSY":135}}
+FAIL windows-claim-eight-process-tight-loop: ordinary Windows claim races must not fail openStore
+FAIL busy-readonly-two-process-same-task-action-replay: actual null, expected '<已持久化的 task hash>'
+FAIL unknown-event-top-level-message-only: actual 多出 hookSpecificOutput.hookEventName='unknown'
+FAIL cleanup-failure-receipt-not-recall-failure: actual ['state-unavailable'], expected []
+FAIL session-and-cache-staging-retention: maintenance_errors 为 undefined，期望 []
+A1 delta self-test 1/6
+```
+
+当时的 1 个绿灯是损坏 state 的空快照退路（原本就退空），不能冒充回归全红。
+Windows 错误码使用确定性注入，8 个均为真实子进程，共用一个真实磁盘 store；不把注入次数冒充纯原生复现。
+之后还给同一争用用例增加了独立 **native 无注入轮**，并补了 session 清理与新开 store 的 ENOENT 竞争、扫描后刷新 state 的保护用例。
+后者也先红后绿：未加持锁后版本复核时 hook 自测退出 **1**、增量 **7/8**，
+`session-prune-preserves-refreshed-state` 因刚刷新过的 state.json 被删而报 ENOENT；补版本复核后通过。
+最终增量 **8/8**，加上一轮 **13/13** 与原始 **40/40**。
+最近一次完整 hook 验证中 native 和 injected 均 8 × 240 = 1920 次，errors 均为 `{}`。
+争用中 owner/busy 数量随调度波动，本测试不宣称解决锁租约导致的记账覆盖率问题。
+
+并发重放测试先持久化 prompt 与一次完整 Pre，再让真实 holder 子进程持锁、另一个真实子进程同 task/action 重放 12 次。
+断言全部 stdout 为空、任务 ID 和候选仍在、原 seen 生效；竞争读取前后逐文件字节不变。
+另验证不同 action 仍可经 task-candidate 提醒、已有 Pre marker 继续抑制 Post。
+这不是“同 task 的任何新动作都不再提醒”：不同 action／规则新版本仍可再次提醒，保持产品口径。
+
+unknown 断言是随本轮**输出协议需求改变**：原来在 additionalContext 中检查的 stdin 原因改在 stderr 精确检查，
+同时新增 systemMessage 精确值、无 hookSpecificOutput 的断言；已识别事件仍精确检查 hookEventName 和 additionalContext。
+原因是宿主可能因 unknown 不在枚举中而丢弃整段输出，连顶层 systemMessage 都不展示。
+
+### ② 低项与边界
+
+- 清理失败仅写入 receipt 的 `maintenance_errors`（store/session/cache-cleanup-failed），不成为召回错误或健康失败；
+  不写 prompt／命令原文。主状态、ledger 真正读写失败仍按原降级路径处理。
+- session 的 7 天／128 个保留策略保护当前 session、任何有 lock/claim 的目录；活动或遗留锁、未知用户文件可使数量暂超上限。
+  清理有锁保护，并在持锁后复核扫描时的 state 版本，扫描后刷新过的 session 本轮不删。
+  锁释放后只用非递归 rmdir 删除空目录；若新调用已放入 claim/lock，保留该非空目录。
+  新 opener 遇到“父目录 mkdir 后被清理、claim mkdir 前消失”的 ENOENT 会重建重试。
+- `recall-topic`、`recall-source` 及其 hash 子目录的 staging 纳入同一 7 天／128 个策略；
+  不删除完整缓存 JSON，也不遍历符号链接。30 秒内的新鲜 staging 视为潜在活动写入，不为满足数量上限而删除。
+  维护失败或活动写入期间允许暂时超额，后续拿到 store 锁时重试。
+- **claim 过期回收 TOCTOU 未改**：30 秒超期后仍是 lstat → rmdir；暂停很久的回收者与后继 claim 之间没有原子 compare-and-delete，
+  因而极端调度下仍可能删掉后继空 claim。正常持锁／死 pid 回收及 token 不等于证明此窗口已消除。
+- **截止时间不含 stdin 等待，未改**：readHookInput 的 1000ms 定时器在 runHandler 之前；2000ms handler 预算从后者开始。
+  因此并非端到端 2 秒，名义上可约 1 秒 + 2 秒，另有 Node 启动／调度开销；同步 I/O／事件循环阻塞也不是硬实时取消。
+- **只读竞争的固有限制**：只能利用最后已提交的 state 与已有 marker。首次送达尚未提交时的两个并发调用可能都提醒；
+  忙路径新送达不持久化 seen/Pre marker，后续 Post 仍可能使用兼容退路。没有声称恰好一次或宿主确认送达。
+  本轮修复的是“即使已有已提交状态也全部丢掉”，没有违背忙路径不得写入的要求。
+
+### ③ Codex pin 闭包与最终命令
+
+本轮只改生产文件 `core/recall-receipt.cjs` 与 `adapters/claude-code/hook.cjs`，以及 CC 测试和本文档。
+**Codex 14 文件 pin 闭包内没有文件再次改字节**；`core/memory-source.cjs` 与全部 `adapters/codex/*` 未改，
+本轮不需要因这些变更重签 manifest；不代表可免除安装时的常规 pin 校验。ACK 仍默认关闭。
+
+| allow-cmd | 最终退出码 | 结果 |
+|---|---|---|
+| `node adapters/claude-code/hook.cjs --self-test` | 0 | 8/8 + 13/13 + 40/40 |
+| `node adapters/claude-code/merge-hooks.cjs --self-test` | 0 | 6/6 |
+| `node adapters/codex/test-recall-selector.cjs` | 0 | 89/89 |
+| `node adapters/codex/test-recall-context.cjs` | 0 | 39/39 |
+| `node adapters/codex/test-pre-tool-recall.cjs` | 0 | 19/19 |
+| `node adapters/codex/test-agent-task-context.cjs` | 0 | 34/34 |
+| `node adapters/codex/test-action-receipt-integration.cjs` | 0 | 18/18 |
+| `bash tests/fresh-home-adapters.sh --self-test` | 0 | 5/5 |
+
+未访问真实 `~/.claude`／`~/.axmem`、敏感文件或密钥；全部测试使用隔离临时目录。
+未部署、未做真实客户端显示验收、未跑 allow-cmd 之外的命令，变更留在工作树。
+下文为上一轮及原阶段 1 的历史记录，不覆盖本轮状态。
+
+---
+
+## A1 第一轮跨家族审查修复（历史记录）
 
 本轮 2 高 4 中已修复；8 条 allow-cmd 的最终退出码均为 0。变更留在工作树，未提交、未部署。
 新增 `adapters/claude-code/test-review.cjs` 的 13 个回归用例接入原 hook 自测；原 40 个用例保留，合计 53/53。

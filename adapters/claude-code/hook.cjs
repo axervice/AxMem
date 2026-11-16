@@ -55,8 +55,11 @@ function actionFromHook(input, ctx) {
 }
 function renderHookOutput(event, context, degraded = false) {
   if (!context && !degraded) return '';
-  return JSON.stringify({ ...(degraded ? { systemMessage: 'AxMem 召回暂不可用；工作继续。' } : {}),
-    hookSpecificOutput: { hookEventName: EVENTS.has(event) ? event : 'unknown', additionalContext: context } }) + '\n';
+  const known = EVENTS.has(event);
+  // Unknown is not a host enum member. An invalid hookSpecificOutput can make
+  // the host discard even the top-level warning, so emit only systemMessage.
+  return JSON.stringify({ ...(degraded || !known ? { systemMessage: 'AxMem 召回暂不可用；工作继续。' } : {}),
+    ...(known ? { hookSpecificOutput: { hookEventName: event, additionalContext: context } } : {}) }) + '\n';
 }
 function kernelFromCorpus(corpus) {
   const source = corpus.sources.files.get('standinginstructions.md');
@@ -128,6 +131,7 @@ async function runHandler(rawInput, deps = {}) {
       decision_id: null, decision: 'allow', predicate: null, predicate_version: null,
       post_outcome: 'unknown', evidence_ref: null, evidence_hash: null, incident_id: null,
       label: null, provenance: 'hook-output-only', hostConfirmed: 'unknown',
+      maintenance_errors: store.maintenanceErrors,
     };
     store.append({ ...receipt, stage: 'received' });
     if (deps.inputError) throw new Error(deps.inputError);

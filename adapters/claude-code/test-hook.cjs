@@ -9,6 +9,7 @@ const { runHandler } = require('./hook.cjs');
 const { identity } = require('../../core/recall-receipt.cjs');
 const ROOT = path.resolve(__dirname, '../..');
 async function selfTest() {
+  await require('./test-review-round2.cjs').round2SelfTest();
   await require('./test-review.cjs').reviewSelfTest();
   const t = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-cc-hook-'));
   const savedEnv = { ...process.env };
@@ -227,7 +228,13 @@ async function selfTest() {
     await check('CLI fault: malformed and oversized stdin remain protocol-visible exit zero', async () => {
       for (const text of ['{broken', 'x'.repeat(270000)]) {
         const p = spawnSync(process.execPath, [path.join(__dirname, 'hook.cjs')], { input: text, env: process.env, encoding: 'utf8', cwd: t });
-        assert.equal(p.status, 0); assert.match(JSON.parse(p.stdout).hookSpecificOutput.additionalContext, /degraded/);
+        assert.equal(p.status, 0);
+        // Unknown is not a host enum member: keep the visible top-level warning
+        // without an invalid hookSpecificOutput that could discard the whole JSON.
+        const out = JSON.parse(p.stdout);
+        assert.deepEqual(out, { systemMessage: 'AxMem 召回暂不可用；工作继续。' });
+        assert(!Object.hasOwn(out, 'hookSpecificOutput')); assert.match(p.stderr, /degraded/);
+        assert.match(p.stderr, /stdin-(invalid-json|too-large)/);
       }
     });
     await check('Prompt normal: standing rule with no trigger comment is independently searchable', async () => {

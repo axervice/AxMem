@@ -123,13 +123,22 @@ async function reviewSelfTest() {
       assert.equal(hook.partialEvent('{"prompt":"\\\"hook_event_name\\\":\\\"PreToolUse\\\"","hook_event_name":"SessionStart",'), 'SessionStart');
       for (const [text, event] of [['{"hook_event_name":"UserPromptSubmit",', 'UserPromptSubmit'], ['', 'unknown']]) {
         const child = spawn(process.execPath, [path.join(__dirname, 'hook.cjs')], { env, cwd: t, stdio: ['pipe', 'pipe', 'pipe'] });
-        let stdout = ''; child.stdout.on('data', (b) => { stdout += b; }); child.stderr.resume();
+        let stdout = '', stderr = '';
+        child.stdout.on('data', (b) => { stdout += b; }); child.stderr.on('data', (b) => { stderr += b; });
         const ended = once(child, 'close'); child.stdin.write(text);
         const watchdog = setTimeout(() => child.kill(), 5000);
         try {
           const [code] = await ended; assert.equal(code, 0);
-          const out = JSON.parse(stdout); assert.equal(out.hookSpecificOutput.hookEventName, event);
-          assert.match(out.systemMessage, /AxMem/); assert.match(out.hookSpecificOutput.additionalContext, /stdin-timeout/);
+          const out = JSON.parse(stdout);
+          assert.match(out.systemMessage, /AxMem/); assert.match(stderr, /stdin-timeout/);
+          if (event === 'unknown') {
+            // Requirement change: unknown must not poison host enum validation.
+            assert(!Object.hasOwn(out, 'hookSpecificOutput'));
+            assert.deepEqual(Object.keys(out), ['systemMessage']);
+          } else {
+            assert.equal(out.hookSpecificOutput.hookEventName, event);
+            assert.match(out.hookSpecificOutput.additionalContext, /stdin-timeout/);
+          }
         } finally { clearTimeout(watchdog); child.stdin.destroy(); }
       }
     });

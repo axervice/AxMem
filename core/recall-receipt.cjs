@@ -31,6 +31,14 @@ const LOCK_TTL_MS = 30000, RETAIN_FILES = 128, RETAIN_MS = 7 * 86400000;
 function emptyState() {
   return { epoch: 0, taskId: null, candidates: [], seen: [], lastSuccessfulRecallAt: null, consecutiveFailures: 0, counts: {} };
 }
+function validState(state) {
+  return state && Number.isInteger(state.epoch) && state.epoch >= 0 &&
+    (state.taskId === null || typeof state.taskId === 'string') &&
+    Array.isArray(state.candidates) && state.candidates.every((p) => p && typeof p.tag === 'string' && typeof p.hash === 'string') &&
+    Array.isArray(state.seen) && state.seen.every((s) => typeof s === 'string') &&
+    Number.isInteger(state.consecutiveFailures) && state.consecutiveFailures >= 0 &&
+    state.counts && typeof state.counts === 'object' && !Array.isArray(state.counts);
+}
 function sameLock(a, b) { return a.dev === b.dev && a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size; }
 // Serialize lock-file creation/reclamation/release, not the whole recall. This
 // avoids two stale-lock reclaimers unlinking a successor between stat/unlink.
@@ -40,6 +48,10 @@ function mutateLock(lock, fn) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try { fs.mkdirSync(claim, { mode: 0o700 }); }
     catch (e) {
+      // Windows may report access/busy rather than EEXIST while another
+      // process removes this directory. Treat these as a live claimant, not
+      // broken accounting; do not inspect/reclaim a claim we did not create.
+      if (['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) return null;
       if (e.code !== 'EEXIST') throw e;
       try {
         const s = fs.lstatSync(claim);
@@ -79,11 +91,107 @@ function acquireLock(lock) {
     return fd;
   });
 }
+function releaseLock(lock, fd) {
+  const owned = fs.fstatSync(fd);
+  try {
+    mutateLock(lock, () => {
+      try { if (sameLock(owned, fs.lstatSync(lock))) fs.unlinkSync(lock); }
+      catch (e) { if (e.code !== 'ENOENT') throw e; }
+    });
+    // A busy mutation leaves a finite lease, never an unsafe unlink.
+  } finally { fs.closeSync(fd); }
+}
+const STAGING_NAME = /^\..+\.axmem-staging-.+$/;
+const STORE_FILE = /^(?:[a-zA-Z0-9-]+\.jsonl|(?:pre|post)-[a-f0-9]{64}\.(?:json|jsonl))$/;
+function ownFile(name) { return name === 'state.json' || STORE_FILE.test(name) || STAGING_NAME.test(name); }
+function stateVersion(dir) {
+  try {
+    const s = fs.lstatSync(path.join(dir, 'state.json'));
+    return JSON.stringify([s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs]);
+  } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+}
+function cleanSessions(stateRoot, currentKey) {
+  const root = path.join(stateRoot, 'recall'), inactive = [];
+  let protectedCount = 1; // Current session is never a maintenance target.
+  for (const name of fs.readdirSync(root)) {
+    if (name === currentKey || !/^[a-f0-9]{64}$/.test(name)) continue;
+    const dir = path.join(root, name);
+    let s;
+    try { s = fs.lstatSync(dir); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+    if (!s.isDirectory() || s.isSymbolicLink()) continue;
+    // Maintenance never reclaims a session with any lease/claim. Active or
+    // abandoned leases can temporarily exceed the cap; normal open recovers them.
+    if (fs.existsSync(path.join(dir, 'lock')) || fs.existsSync(path.join(dir, 'lock.claim'))) protectedCount++;
+    else {
+      // Sample state before directory age: a refresh during enumeration must
+      // either make the directory recent or fail the post-acquisition check.
+      const version = stateVersion(dir), current = fs.lstatSync(dir);
+      if (current.isDirectory() && !current.isSymbolicLink()) inactive.push({ dir, at: current.mtimeMs, version });
+    }
+  }
+  inactive.sort((a, b) => b.at - a.at);
+  for (const [i, item] of inactive.entries()) {
+    if (i < Math.max(0, RETAIN_FILES - protectedCount) && Date.now() - item.at <= RETAIN_MS) continue;
+    const lock = path.join(item.dir, 'lock');
+    let fd;
+    try { fd = acquireLock(lock); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+    if (fd === null) continue;
+    try {
+      // An invocation may have refreshed and released this session after our
+      // scan. Claim/lock creation changes the directory mtime itself, so compare
+      // the committed state version instead before deleting any session files.
+      if (stateVersion(item.dir) !== item.version) continue;
+      const files = fs.readdirSync(item.dir).filter((f) => f !== 'lock' && f !== 'lock.claim');
+      // Do not recurse into or remove unknown user files/symlinks.
+      if (files.some((f) => {
+        if (!ownFile(f)) return true;
+        const s = fs.lstatSync(path.join(item.dir, f));
+        return !s.isFile() || s.isSymbolicLink();
+      })) continue;
+      for (const f of files) fs.unlinkSync(path.join(item.dir, f));
+    } finally { releaseLock(lock, fd); }
+    try { fs.rmdirSync(item.dir); }
+    catch (e) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(e.code)) throw e; }
+    // A new opener may have made its claim after release. rmdir then leaves
+    // its nonempty directory alone; if rmdir won, openStore retries ENOENT.
+  }
+}
+function cleanStaging(dir) {
+  let stat;
+  try { stat = fs.lstatSync(dir); } catch (e) { if (e.code === 'ENOENT') return; throw e; }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return;
+  const files = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!STAGING_NAME.test(name)) continue;
+    const file = path.join(dir, name);
+    let s;
+    try { s = fs.lstatSync(file); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+    if (s.isFile() && !s.isSymbolicLink()) files.push({ file, at: s.mtimeMs });
+  }
+  files.sort((a, b) => b.at - a.at);
+  for (const [i, f] of files.entries()) {
+    const age = Date.now() - f.at;
+    // Caches have concurrent writers: never unlink a fresh in-flight staging
+    // file merely to meet the count. Completed cache JSON is not a target.
+    if (age > LOCK_TTL_MS && (i >= RETAIN_FILES || age > RETAIN_MS)) {
+      try { fs.unlinkSync(f.file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    }
+  }
+}
+function cleanCaches(stateRoot) {
+  cleanStaging(path.join(stateRoot, 'recall-topic'));
+  const source = path.join(stateRoot, 'recall-source');
+  let s;
+  try { s = fs.lstatSync(source); } catch (e) { if (e.code === 'ENOENT') return; throw e; }
+  if (!s.isDirectory() || s.isSymbolicLink()) return;
+  cleanStaging(source);
+  for (const name of fs.readdirSync(source)) if (/^[a-f0-9]{64}$/.test(name)) cleanStaging(path.join(source, name));
+}
 function cleanStore(dir) {
   const old = [];
   for (const name of fs.readdirSync(dir)) {
     // Only our own per-invocation/action files; never config or other state.
-    if (!/^(?:[a-zA-Z0-9-]+\.jsonl|(?:pre|post)-[a-f0-9]{64}\.(?:json|jsonl)|\..+\.axmem-staging-.+)$/.test(name)) continue;
+    if (!STORE_FILE.test(name) && !STAGING_NAME.test(name)) continue;
     const file = path.join(dir, name), s = fs.lstatSync(file);
     if (s.isFile()) old.push({ file, at: s.mtimeMs });
   }
@@ -93,42 +201,54 @@ function cleanStore(dir) {
 }
 function openStore(stateRoot, key, invocationId, options = {}) {
   const dir = path.join(stateRoot, 'recall', key);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const lock = path.join(dir, 'lock'), fd = acquireLock(lock);
+  const lock = path.join(dir, 'lock');
+  let fd;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fd = acquireLock(lock); break; }
+    catch (e) {
+      // Inactive-session maintenance can win between mkdir and claim mkdir.
+      if (e.code !== 'ENOENT' || attempt === 1) throw e;
+    }
+  }
   if (fd === null) {
     if (!options.skipBusy) throw new Error('state-busy');
-    // A live concurrent invocation owns accounting. Recall still runs, without
-    // touching its ledger/state or calling this normal contention a failure.
-    return { state: emptyState(), dir, busy: true, append() {}, save() {}, mark() {}, close() {} };
-  }
-  const owned = fs.fstatSync(fd);
-  function release() {
+    // A live concurrent invocation owns accounting. Use the last committed
+    // snapshot for task candidates and replay suppression, but never persist
+    // this invocation's mutations. Atomic replacement normally makes this a
+    // complete old/new snapshot; torn, missing or unreadable state is optional.
+    let snapshot = emptyState();
     try {
-      mutateLock(lock, () => {
-        try { if (sameLock(owned, fs.lstatSync(lock))) fs.unlinkSync(lock); }
-        catch (e) { if (e.code !== 'ENOENT') throw e; }
-      });
-      // If a mutation is briefly busy, leave the lease for dead-pid/TTL
-      // recovery, rather than unlinking somebody else's replacement lock.
-    } finally { fs.closeSync(fd); }
+      const current = readJSON(path.join(dir, 'state.json'), snapshot);
+      if (validState(current)) snapshot = current;
+    } catch { /* Read-only contention must not become state-unavailable. */ }
+    return { state: snapshot, dir, busy: true, maintenanceErrors: [], append() {}, save() {}, mark() {}, close() {} };
+  }
+  const release = () => releaseLock(lock, fd);
+  const maintenanceErrors = [];
+  // Housekeeping is never a source/recall availability gate. Keep failures in
+  // the receipt, separate from degraded/error_codes and health failure counts.
+  for (const [code, clean] of [
+    ['store-cleanup-failed', () => cleanStore(dir)],
+    ['session-cleanup-failed', () => cleanSessions(stateRoot, key)],
+    ['cache-cleanup-failed', () => cleanCaches(stateRoot)],
+  ]) {
+    try { clean(); } catch { maintenanceErrors.push(code); }
   }
   let state;
   try {
-    cleanStore(dir);
     const stateFile = path.join(dir, 'state.json');
     // Rebuild oversized state under the lock instead of trapping every future
     // invocation. Do not rotate indefinitely and create another growth source.
     let oversized = false;
     try { oversized = fs.statSync(stateFile).size > 256 * 1024; } catch (e) { if (e.code !== 'ENOENT') throw e; }
     state = oversized ? emptyState() : readJSON(stateFile, emptyState());
-    if (!Number.isInteger(state.epoch) || state.epoch < 0 || !Array.isArray(state.candidates) || !Array.isArray(state.seen) ||
-        !Number.isInteger(state.consecutiveFailures) || state.consecutiveFailures < 0 ||
-        !state.counts || typeof state.counts !== 'object' || Array.isArray(state.counts)) throw new Error('state-invalid');
+    if (!validState(state)) throw new Error('state-invalid');
   } catch (e) { release(); throw e; }
   const ledger = path.join(dir, invocationId + '.jsonl');
   let pending = '';
   function flush() { if (pending) { fs.appendFileSync(ledger, pending, { mode: 0o600 }); pending = ''; } }
-  return { state, dir,
+  return { state, dir, maintenanceErrors,
     append(row) {
       if (options.buffered) pending += JSON.stringify(row) + '\n';
       else fs.appendFileSync(ledger, JSON.stringify(row) + '\n', { mode: 0o600 });
@@ -191,6 +311,7 @@ function prepareLegacyPost(input, ctx, payload, tags, priorFailure = false) {
     decision_id: null, decision: 'warn', predicate: null, predicate_version: null, post_outcome: 'observed-unverified',
     evidence_ref: null, evidence_hash: sha(JSON.stringify(input.tool_response ?? null)), incident_id: null,
     label: null, provenance: 'legacy-pointer-output-only', hostConfirmed: 'unknown',
+    maintenance_errors: store.maintenanceErrors,
     items: tags.map((tag) => {
       const found = corpus?.entries.filter((e) => e.tag === tag) || [], e = found.length === 1 ? found[0] : null;
       return { lesson_id: tag, rule_id: null, class_id: e?.classId || null, tag, live_head: tag,
