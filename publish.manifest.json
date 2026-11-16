@@ -69,6 +69,8 @@
     "guards/specs/retrieval-canary-v2.tsv",
     "guards/fixtures/v3/**",
     "docs/BACKLOG.md",
+    "docs/LESSONS.md",
+    "_comment_LESSONS: Internal project lessons and their source tags are private work-tracking material, not public-edition content.",
     "docs/audits/**",
     "guards/specs/PIPE-GATE-BRIEF.md",
     "guards/specs/PIPE-GATE-V2-REPAIR-BRIEF.md",
