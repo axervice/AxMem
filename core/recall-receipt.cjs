@@ -43,23 +43,6 @@ function sameLock(a, b) { return a.dev === b.dev && a.ino === b.ino && a.mtimeMs
 // Serialize lock-file creation/reclamation/release, not the whole recall. This
 // avoids two stale-lock reclaimers unlinking a successor between stat/unlink.
 // A killed short mutation also expires; neither lock has an infinite lease.
-const FILE_CLAIM = 'axmem-file-claim-v1';
-// Alternate claim for the rare case where directory creation is denied but
-// regular file creation still works. Both claim kinds occupy the SAME path.
-function fileMutateLock(lock, fn) {
-  const claim = lock + '.claim';
-  let fd;
-  try { fd = fs.openSync(claim, 'wx', 0o600); }
-  catch (e) { if (e.code === 'EEXIST') return null; throw e; }
-  try { fs.writeFileSync(fd, FILE_CLAIM); return fn(); }
-  finally {
-    try {
-      const owned = fs.fstatSync(fd);
-      try { if (sameLock(owned, fs.lstatSync(claim))) fs.unlinkSync(claim); }
-      catch (e) { if (e.code !== 'ENOENT') throw e; }
-    } finally { fs.closeSync(fd); }
-  }
-}
 function mutateLock(lock, fn) {
   const claim = lock + '.claim';
   let permissionFailures = 0;
@@ -68,17 +51,19 @@ function mutateLock(lock, fn) {
     catch (e) {
       if (e.code === 'EBUSY') return null;
       if (['EPERM', 'EACCES'].includes(e.code)) {
-        // A delete-pending directory can also make lstat fail on Windows.
-        // Only three consecutive failures with BOTH entities verifiably absent
-        // indicate an unavailable claim. Never reclaim an unowned claim here.
+        // Windows delete-pending paths may produce EPERM/EBUSY on lstat.
+        // POSIX EACCES instead counts as denial, unless either path exists.
         for (const file of [claim, lock]) {
           try { fs.lstatSync(file); return null; }
           catch (statError) {
-            if (['EPERM', 'EACCES', 'EBUSY'].includes(statError.code)) return null;
-            if (statError.code !== 'ENOENT') throw statError;
+            if (['EPERM', 'EBUSY'].includes(statError.code)) return null;
+            if (!['ENOENT', 'EACCES'].includes(statError.code)) throw statError;
           }
         }
-        if (++permissionFailures < 3) continue; // no sleeps; failure path only
+        if (++permissionFailures < 3) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+          continue;
+        }
         throw Object.assign(new Error('state-claim-unavailable'), { code: 'state-claim-unavailable' });
       }
       if (e.code !== 'EEXIST') throw e;
@@ -86,13 +71,9 @@ function mutateLock(lock, fn) {
       attempt++;
       try {
         const s = fs.lstatSync(claim);
-        if (s.isSymbolicLink() || (!s.isDirectory() && !s.isFile())) throw new Error('unsafe-lock');
-        if (s.isFile()) {
-          // Empty or a marker prefix can be an in-flight or crashed write.
-          if (s.size > Buffer.byteLength(FILE_CLAIM) || !FILE_CLAIM.startsWith(fs.readFileSync(claim, 'utf8'))) throw new Error('unsafe-lock');
-        }
+        if (s.isSymbolicLink() || !s.isDirectory()) throw new Error('unsafe-lock');
         if (Date.now() - s.mtimeMs <= LOCK_TTL_MS) return null;
-        if (s.isFile()) fs.unlinkSync(claim); else fs.rmdirSync(claim);
+        fs.rmdirSync(claim);
         continue;
       } catch (error) {
         if (error.code === 'ENOENT') continue;
@@ -117,8 +98,8 @@ function createLock(lock) {
   catch (e) { fs.closeSync(fd); fs.unlinkSync(lock); throw e; }
   return fd;
 }
-function acquireLock(lock, fileClaim = false) {
-  return (fileClaim ? fileMutateLock : mutateLock)(lock, () => {
+function acquireLock(lock) {
+  return mutateLock(lock, () => {
     try {
       const before = fs.lstatSync(lock);
       if (!before.isFile() || before.isSymbolicLink()) throw new Error('unsafe-lock');
@@ -136,10 +117,10 @@ function acquireLock(lock, fileClaim = false) {
     return createLock(lock);
   });
 }
-function releaseLock(lock, fd, fileClaim = false) {
+function releaseLock(lock, fd) {
   const owned = fs.fstatSync(fd);
   try {
-    (fileClaim ? fileMutateLock : mutateLock)(lock, () => {
+    mutateLock(lock, () => {
       try { if (sameLock(owned, fs.lstatSync(lock))) fs.unlinkSync(lock); }
       catch (e) { if (e.code !== 'ENOENT') throw e; }
     });
@@ -179,7 +160,7 @@ function cleanSessions(stateRoot, currentKey) {
     if (i < Math.max(0, RETAIN_FILES - protectedCount) && Date.now() - item.at <= RETAIN_MS) continue;
     const lock = path.join(item.dir, 'lock');
     let fd;
-    try { fd = acquireLock(lock); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+    try { fd = acquireLock(lock); } catch (e) { if (['ENOENT', 'state-claim-unavailable'].includes(e.code)) continue; throw e; }
     if (fd === null) continue;
     try {
       // An invocation may have refreshed and released this session after our
@@ -194,7 +175,10 @@ function cleanSessions(stateRoot, currentKey) {
         return !s.isFile() || s.isSymbolicLink();
       })) continue;
       for (const f of files) fs.unlinkSync(path.join(item.dir, f));
-    } finally { releaseLock(lock, fd); }
+    } finally {
+      try { releaseLock(lock, fd); }
+      catch (e) { if (['ENOENT', 'state-claim-unavailable'].includes(e.code)) continue; throw e; }
+    }
     try { fs.rmdirSync(item.dir); }
     catch (e) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(e.code)) throw e; }
     // A new opener may have made its claim after release. rmdir then leaves
@@ -247,19 +231,11 @@ function cleanStore(dir) {
 function openStore(stateRoot, key, invocationId, options = {}) {
   const dir = path.join(stateRoot, 'recall', key);
   const lock = path.join(dir, 'lock');
-  let fd, claimUnavailable = false;
+  let fd;
   for (let attempt = 0; attempt < 2; attempt++) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     try { fd = acquireLock(lock); break; }
     catch (e) {
-      if (e.code === 'state-claim-unavailable' && options.accountClaimFailure) {
-        // Serialize with normal directory claims at the same pathname. If a
-        // rival wins, remain busy; if file creation is denied too, propagate
-        // the failure so the hook can still warn via stdout/stderr.
-        fd = acquireLock(lock, true);
-        claimUnavailable = fd !== null;
-        break;
-      }
       // Inactive-session maintenance can win between mkdir and claim mkdir.
       if (e.code !== 'ENOENT' || attempt === 1) throw e;
     }
@@ -277,7 +253,7 @@ function openStore(stateRoot, key, invocationId, options = {}) {
     } catch { /* Read-only contention must not become state-unavailable. */ }
     return { state: snapshot, dir, busy: true, maintenanceErrors: [], append() {}, save() {}, mark() {}, close() {} };
   }
-  const release = () => releaseLock(lock, fd, claimUnavailable);
+  const release = () => releaseLock(lock, fd);
   const maintenanceErrors = [];
   // Housekeeping is never a source/recall availability gate. Keep failures in
   // the receipt, separate from degraded/error_codes and health failure counts.
@@ -301,7 +277,7 @@ function openStore(stateRoot, key, invocationId, options = {}) {
   const ledger = path.join(dir, invocationId + '.jsonl');
   let pending = '';
   function flush() { if (pending) { fs.appendFileSync(ledger, pending, { mode: 0o600 }); pending = ''; } }
-  return { state, dir, maintenanceErrors, claimUnavailable,
+  return { state, dir, maintenanceErrors,
     append(row) {
       if (options.buffered) pending += JSON.stringify(row) + '\n';
       else fs.appendFileSync(ledger, JSON.stringify(row) + '\n', { mode: 0o600 });

@@ -123,13 +123,9 @@ async function round2SelfTest() {
       assert.deepEqual(r.errors, ['state-unavailable']);
       assert.match(r.stderr, /state-unavailable/); assert.match(r.output.systemMessage, /工作继续/);
       assert.equal(attempts >= 3, true);
-      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-      assert.equal(state.consecutiveFailures, 1); assert.equal(state.counts.errors, 1);
-      const rows = fs.readFileSync(path.join(dir, r.receipt.invocation_id + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-      assert(rows.some((row) => row.error_codes.includes('state-unavailable') && row.health?.consecutiveFailures === 1));
-      assert.equal(r.receipt.hook_result, 'degraded');
-      // The fallback claim must be released: continued denial must not turn
-      // subsequent invocations back into silent busy reads.
+      assert.equal(r.receipt, undefined); assert.match(r.context, /本次失败=1/);
+      assert.equal(fs.existsSync(stateFile), false);
+      // Continued denial with no leftover lock must remain visibly unavailable.
       fs.mkdirSync = (f, ...args) => {
         if (f === claim) throw Object.assign(new Error('synthetic unwritable claim'), { code: 'EACCES' });
         return mkdir(f, ...args);
@@ -138,11 +134,8 @@ async function round2SelfTest() {
         for (let n = 2; n <= 4; n++) {
           const next = await run(x);
           assert.deepEqual(next.errors, ['state-unavailable']); assert.match(next.stderr, /state-unavailable/);
-          assert.match(next.output.systemMessage, /工作继续/);
-          const current = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-          assert.equal(current.consecutiveFailures, n); assert.equal(current.counts.errors, n);
-          const nextRows = fs.readFileSync(path.join(dir, next.receipt.invocation_id + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-          assert(nextRows.some((row) => row.error_codes.includes('state-unavailable') && row.health?.consecutiveFailures === n));
+          assert.match(next.output.systemMessage, /工作继续/); assert.match(next.context, /本次失败=1/);
+          assert.equal(next.receipt, undefined); assert.equal(fs.existsSync(stateFile), false);
         }
       } finally { fs.mkdirSync = mkdir; }
     });

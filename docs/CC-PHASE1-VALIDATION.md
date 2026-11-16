@@ -1,6 +1,41 @@
 # Claude Code 阶段 1：交付与验证记录
 
-## A1 收尾：持久 claim 权限故障（当前结果）
+## A1 收尾补丁：移除文件 claim（当前结果）
+
+移除文件 claim 退路；claim 不可用时 openStore 抛错，hook 走现有 state-unavailable 可见路径，报告本次失败=1，持久计数未知，不要求回执。POSIX lstat EACCES 计入连续失败，EPERM/EBUSY 仍按竞争；只有该失败路径重试前等待 5ms。清理 stale session 时获取或释放锁遇到 state-claim-unavailable 会跳过该目录并继续。正常取锁不增加 claim I/O 或等待。
+
+先只加入新用例、未修改生产代码，执行 `node adapters/claude-code/test-review-round3.cjs` 退出 1，实际关键输出（测试使用隔离临时目录；release 子例注入主锁 lstat ENOENT 以触发释放时错误）：
+
+```text
+A1 R3 stat-denied observed {"attempts":1,"stats":1,"errors":["internal-error"],"stderr":"[AxMem recall: degraded] 召回故障：internal-error；不是“没有匹配”。工作继续（本阶段不拦截）。",...}
+  FAIL A1 R3 mkdir-and-lstat-eacces-visible-not-busy: Expected values to be strictly deep-equal:
++   'internal-error'
+-   'state-unavailable'
+A1 R3 cleanup-denied observed {"phase":"acquire","calls":3,"deniedCalls":3,"errors":[],"maintenance":["session-cleanup-failed"],"remaining":[true,true,true],"stderr":""}
+  FAIL A1 R3 session-cleanup-continues-after-claim-denial-acquire: Expected values to be strictly deep-equal:
+A1 R3 cleanup-denied observed {"phase":"release","calls":4,"deniedCalls":3,"errors":[],"maintenance":["session-cleanup-failed"],"remaining":[true,true,true],"stderr":""}
+  FAIL A1 R3 session-cleanup-continues-after-claim-denial-release: Expected values to be strictly deep-equal:
+A1 R3 edge self-test 5/8
+```
+
+省略号仅截去该行 stdout 的冗长 JSON；旧实现按 busy 返回后测试上下文没有 runtime resolver，故报 internal-error，而非正确的 state-unavailable。修复后新情形 3/3（两项漏洞，其中清理分别测试 acquire/release）；R3 edge 实际 8/8，delta 10/10，review 13/13，hook 40/40。完整 hook 测试中 8 进程各 240 次：native owned=1/busy=1919/errors={}；注入 Windows 风格错误 owned=18/busy=1902/errors={}。瞬时 EPERM 正常重试；正常取锁 claim mkdir=1、lstat=2、文件 open=0、等待=0，持续故障等待两次各 5ms。
+
+**BACKLOG 已知限制**：persistent write denial + a leftover stale lock is still silent（持续写入被拒且遗留 stale lock 时仍会静默走 busy），本轮未修。极端 claim 过期回收 TOCTOU 和真实客户端显示验收仍未解决；未部署或提交。
+
+| 本轮 allow-cmd | 退出码 |
+|---|---:|
+| `node adapters/claude-code/hook.cjs --self-test` | 0 |
+| `node adapters/claude-code/test-review-round2.cjs` | 0 |
+| `node adapters/claude-code/test-review-round3.cjs` | 0 |
+| `node adapters/claude-code/merge-hooks.cjs --self-test` | 0 |
+| `node adapters/codex/test-recall-selector.cjs` | 0 |
+| `node adapters/codex/test-pre-tool-recall.cjs` | 0 |
+| `node adapters/codex/test-action-receipt-integration.cjs` | 0 |
+| `bash tests/fresh-home-adapters.sh --self-test` | 0 |
+
+下节为上一轮历史记录，文件 claim 已在本轮移除。
+
+## A1 收尾：持久 claim 权限故障（历史记录）
 
 结果：中项已修；两项指定回归 2/2。先只加并接入两项测试，生产代码未改，运行 hook 自测退出 1，真实输出：
 
@@ -30,7 +65,7 @@ A1 R3 transient observed {"attempts":3,"errors":[],"stderr":"","stateExists":tru
 A1 DELTA CLAIM {"mode":"native","processes":8,"attempts":1920,"owned":1,"busy":1919,"errors":{}}
 A1 DELTA CLAIM {"mode":"injected","processes":8,"attempts":1920,"owned":3,"busy":1917,"errors":{}}
 A1 delta self-test 10/10
-A1 R3 edge self-test 4/4
+A1 R3 edge self-test 5/5（修正上一轮误写的 4/4；当时共有 5 个案例）
 A1 review self-test 13/13
 claude-code hook self-test 40/40
 ```
