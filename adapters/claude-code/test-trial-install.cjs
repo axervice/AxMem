@@ -11,7 +11,8 @@ const { spawnSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { buildWant, countIdentityMatches } = require('./merge-hooks.cjs');
 const tool = path.join(__dirname, 'trial-install.cjs');
-const source = fs.readFileSync(tool, 'utf8');
+// Normalize CRLF (core.autocrlf=true checkouts) so multi-line mutation snippets match exactly once.
+const source = fs.readFileSync(tool, 'utf8').replace(/\r\n/g, '\n');
 const T = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-trial-test-'));
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 const json = (f) => JSON.parse(fs.readFileSync(f, 'utf8'));
