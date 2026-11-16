@@ -110,7 +110,7 @@ async function runHandler(rawInput, deps = {}) {
     // fails. If the destination itself is unusable, the visible channel remains.
     const who = identity(rawInput || {}, invocationId);
     const fallbackRoot = path.resolve(path.dirname(path.resolve(ctx.AXMEM_CONFIG)), ctx.STATE_DIR);
-    store = openStore(fallbackRoot, who.key, invocationId, { skipBusy: true, buffered: true });
+    store = openStore(fallbackRoot, who.key, invocationId, { skipBusy: true, buffered: true, accountClaimFailure: true });
     state = store.state;
     checkDeadline();
     receipt = {
@@ -134,6 +134,7 @@ async function runHandler(rawInput, deps = {}) {
       maintenance_errors: store.maintenanceErrors,
     };
     store.append({ ...receipt, stage: 'received' });
+    if (store.claimUnavailable) throw new Error('state-unavailable');
     if (deps.inputError) throw new Error(deps.inputError);
     normalizeEvent(rawInput);
     runtime = deps.runtime || ctx.resolveRuntimeConfig();

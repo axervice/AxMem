@@ -1,6 +1,60 @@
 # Claude Code 阶段 1：交付与验证记录
 
-## A1 第二轮增量审查修复（当前结果）
+## A1 收尾：持久 claim 权限故障（当前结果）
+
+结果：中项已修；两项指定回归 2/2。先只加并接入两项测试，生产代码未改，运行 hook 自测退出 1，真实输出：
+
+```text
+A1 R3 persistent observed {"attempts":1,"errors":[],"stderr":"","systemMessage":null,"stateExists":false}
+  FAIL A1 delta persistent-claim-access-denied-visible-accounted: Expected values to be strictly deep-equal:
++ actual - expected
+
++ []
+- [
+-   'state-unavailable'
+- ]
+A1 R3 transient observed {"attempts":1,"errors":[],"stderr":"","stateExists":false}
+  FAIL A1 delta transient-claim-eperm-retries-and-owns: The expression evaluated to a falsy value:
+
+  assert(attempts >= 2)
+A1 delta self-test 8/10
+```
+
+修复后 hook 自测退出 0，真实输出（`attempts:3` 中瞬时案例包括释放锁的 mkdir）：
+
+```text
+A1 R3 persistent observed {"attempts":3,"errors":["state-unavailable"],"stderr":"[AxMem recall: degraded] 召回故障：state-unavailable；不是“没有匹配”。工作继续（本阶段不拦截）。","systemMessage":"AxMem 召回暂不可用；工作继续。","stateExists":true}
+  ok   A1 delta persistent-claim-access-denied-visible-accounted
+A1 R3 transient observed {"attempts":3,"errors":[],"stderr":"","stateExists":true}
+  ok   A1 delta transient-claim-eperm-retries-and-owns
+A1 DELTA CLAIM {"mode":"native","processes":8,"attempts":1920,"owned":1,"busy":1919,"errors":{}}
+A1 DELTA CLAIM {"mode":"injected","processes":8,"attempts":1920,"owned":3,"busy":1917,"errors":{}}
+A1 delta self-test 10/10
+A1 R3 edge self-test 4/4
+A1 review self-test 13/13
+claude-code hook self-test 40/40
+```
+
+`core/recall-receipt.cjs`：只在 mkdir 失败分支检查 claim 与主锁；二者均 lstat 确认不存在，才无睡眠立即重试，连续三次 EPERM/EACCES 才判不可用。实体存在、lstat 的 EPERM/EACCES/EBUSY、mkdir 的 EBUSY 均仍按竞争；正常 mkdir 路径没有增加 I/O。若普通文件创建可用，以同一个 claim 路径上的 `wx` 文件作为短暂互斥，再获取原有主锁做降级记账；目录 claim 与文件 claim 互斥，过期文件仅接受已知标记或其写入前缀。`hook.cjs` 使用既有 state-unavailable 的 systemMessage/stderr、回执和健康结算，不阻断操作。回执或 claim 文件也不可写时只能可见提示，持久计数未知。
+
+两项回归除单次 +1 外，还对持续 EACCES 连续调用四次，逐次检查非 busy、有提示、健康计数和回执。补充用例覆盖删除挂起、真实主锁、文件 claim 下的对手竞争与过期恢复、文件 claim 亦不可写、正常取锁无额外 claim I/O。8 进程压测使用真实子进程和临时磁盘，注入轮是模拟 Windows 错误，非宣称全部为原生错误；调度导致 owned/busy 数量会波动。两种短 claim 的过期回收仍有原有的 stat 与删除之间非原子窗口；故障中 claim 无法释放时依然只能依靠有限租约恢复。旧版本进程不认识新文件 claim，混版竞争时可能报 unsafe-lock。未做真实 Claude Code 客户端显示验收。
+
+| 本轮 allow-cmd | 退出码 |
+|---|---:|
+| `node adapters/claude-code/hook.cjs --self-test` | 0 |
+| `node adapters/claude-code/test-review-round2.cjs` | 0 |
+| `node adapters/claude-code/test-review-round3.cjs` | 0 |
+| `node adapters/claude-code/merge-hooks.cjs --self-test` | 0 |
+| `node adapters/codex/test-recall-selector.cjs` | 0 |
+| `node adapters/codex/test-pre-tool-recall.cjs` | 0 |
+| `node adapters/codex/test-action-receipt-integration.cjs` | 0 |
+| `bash tests/fresh-home-adapters.sh --self-test` | 0 |
+
+未运行 git、未提交部署，未读取真实 Claude/AxMem 状态或敏感文件；测试使用临时目录。下文均为历史记录。
+
+---
+
+## A1 第二轮增量审查修复（历史记录）
 
 结果：3/3 中等已修；低项 3/3 已处理（2 项代码修复，1 项按要求说明现状）。
 本轮按任务内审查清单实施，未读取树外报告。未运行 git、未提交、未安装到真实环境。

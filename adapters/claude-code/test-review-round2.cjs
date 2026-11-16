@@ -109,6 +109,61 @@ async function round2SelfTest() {
     catch (e) { failures.push(name); console.log('  FAIL A1 delta ' + name + ': ' + e.message.slice(0, 900)); }
   }
   try {
+    await check('persistent-claim-access-denied-visible-accounted', async () => {
+      const x = input('persistent-claim'), dir = dirFor(x), claim = path.join(dir, 'lock.claim');
+      const mkdir = fs.mkdirSync; let attempts = 0, r;
+      fs.mkdirSync = (f, ...args) => {
+        if (f === claim) { attempts++; throw Object.assign(new Error('synthetic unwritable claim'), { code: 'EACCES' }); }
+        return mkdir(f, ...args);
+      };
+      try { r = await run(x); } finally { fs.mkdirSync = mkdir; }
+      const stateFile = path.join(dir, 'state.json');
+      console.log('A1 R3 persistent observed ' + JSON.stringify({ attempts, errors: r.errors,
+        stderr: r.stderr, systemMessage: r.output?.systemMessage || null, stateExists: fs.existsSync(stateFile) }));
+      assert.deepEqual(r.errors, ['state-unavailable']);
+      assert.match(r.stderr, /state-unavailable/); assert.match(r.output.systemMessage, /工作继续/);
+      assert.equal(attempts >= 3, true);
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.equal(state.consecutiveFailures, 1); assert.equal(state.counts.errors, 1);
+      const rows = fs.readFileSync(path.join(dir, r.receipt.invocation_id + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+      assert(rows.some((row) => row.error_codes.includes('state-unavailable') && row.health?.consecutiveFailures === 1));
+      assert.equal(r.receipt.hook_result, 'degraded');
+      // The fallback claim must be released: continued denial must not turn
+      // subsequent invocations back into silent busy reads.
+      fs.mkdirSync = (f, ...args) => {
+        if (f === claim) throw Object.assign(new Error('synthetic unwritable claim'), { code: 'EACCES' });
+        return mkdir(f, ...args);
+      };
+      try {
+        for (let n = 2; n <= 4; n++) {
+          const next = await run(x);
+          assert.deepEqual(next.errors, ['state-unavailable']); assert.match(next.stderr, /state-unavailable/);
+          assert.match(next.output.systemMessage, /工作继续/);
+          const current = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+          assert.equal(current.consecutiveFailures, n); assert.equal(current.counts.errors, n);
+          const nextRows = fs.readFileSync(path.join(dir, next.receipt.invocation_id + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+          assert(nextRows.some((row) => row.error_codes.includes('state-unavailable') && row.health?.consecutiveFailures === n));
+        }
+      } finally { fs.mkdirSync = mkdir; }
+    });
+    await check('transient-claim-eperm-retries-and-owns', async () => {
+      const x = input('transient-claim'), dir = dirFor(x), claim = path.join(dir, 'lock.claim');
+      const mkdir = fs.mkdirSync; let attempts = 0, r;
+      fs.mkdirSync = (f, ...args) => {
+        if (f === claim && ++attempts === 1) throw Object.assign(new Error('synthetic transient race'), { code: 'EPERM' });
+        return mkdir(f, ...args);
+      };
+      try { r = await run(x); } finally { fs.mkdirSync = mkdir; }
+      const stateFile = path.join(dir, 'state.json');
+      console.log('A1 R3 transient observed ' + JSON.stringify({ attempts, errors: r.errors,
+        stderr: r.stderr, stateExists: fs.existsSync(stateFile) }));
+      assert(attempts >= 2); assert.deepEqual(r.errors, []); assert.equal(r.stderr, '');
+      assert.equal(r.receipt.displayed, 1);
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.equal(state.consecutiveFailures, 0); assert.equal(state.counts.errors, 0);
+      const rows = fs.readFileSync(path.join(dir, r.receipt.invocation_id + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+      assert(rows.some((row) => row.stage === 'completed' && row.error_codes.length === 0));
+    });
     await check('windows-claim-eight-process-tight-loop', async () => {
       const rounds = [];
       for (const inject of [false, true]) {
@@ -300,9 +355,12 @@ async function round2SelfTest() {
     });
     console.log(`A1 delta self-test ${passed}/${passed + failures.length}`);
     assert.deepEqual(failures, [], 'A1 delta regressions');
+    await require('./test-review-round3.cjs').round3SelfTest();
   } finally { fs.rmSync(t, { recursive: true, force: true }); }
 }
 module.exports = { round2SelfTest };
 if (require.main === module && process.argv[2] === '--worker') {
   worker(process.argv[3], JSON.parse(process.argv[4])).catch((e) => { console.error(e); process.exitCode = 1; process.disconnect(); });
+} else if (require.main === module) {
+  round2SelfTest().catch((e) => { console.error(e); process.exitCode = 1; });
 }

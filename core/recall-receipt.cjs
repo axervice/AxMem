@@ -43,22 +43,62 @@ function sameLock(a, b) { return a.dev === b.dev && a.ino === b.ino && a.mtimeMs
 // Serialize lock-file creation/reclamation/release, not the whole recall. This
 // avoids two stale-lock reclaimers unlinking a successor between stat/unlink.
 // A killed short mutation also expires; neither lock has an infinite lease.
+const FILE_CLAIM = 'axmem-file-claim-v1';
+// Alternate claim for the rare case where directory creation is denied but
+// regular file creation still works. Both claim kinds occupy the SAME path.
+function fileMutateLock(lock, fn) {
+  const claim = lock + '.claim';
+  let fd;
+  try { fd = fs.openSync(claim, 'wx', 0o600); }
+  catch (e) { if (e.code === 'EEXIST') return null; throw e; }
+  try { fs.writeFileSync(fd, FILE_CLAIM); return fn(); }
+  finally {
+    try {
+      const owned = fs.fstatSync(fd);
+      try { if (sameLock(owned, fs.lstatSync(claim))) fs.unlinkSync(claim); }
+      catch (e) { if (e.code !== 'ENOENT') throw e; }
+    } finally { fs.closeSync(fd); }
+  }
+}
 function mutateLock(lock, fn) {
   const claim = lock + '.claim';
-  for (let attempt = 0; attempt < 2; attempt++) {
+  let permissionFailures = 0;
+  for (let attempt = 0; attempt < 2;) {
     try { fs.mkdirSync(claim, { mode: 0o700 }); }
     catch (e) {
-      // Windows may report access/busy rather than EEXIST while another
-      // process removes this directory. Treat these as a live claimant, not
-      // broken accounting; do not inspect/reclaim a claim we did not create.
-      if (['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) return null;
+      if (e.code === 'EBUSY') return null;
+      if (['EPERM', 'EACCES'].includes(e.code)) {
+        // A delete-pending directory can also make lstat fail on Windows.
+        // Only three consecutive failures with BOTH entities verifiably absent
+        // indicate an unavailable claim. Never reclaim an unowned claim here.
+        for (const file of [claim, lock]) {
+          try { fs.lstatSync(file); return null; }
+          catch (statError) {
+            if (['EPERM', 'EACCES', 'EBUSY'].includes(statError.code)) return null;
+            if (statError.code !== 'ENOENT') throw statError;
+          }
+        }
+        if (++permissionFailures < 3) continue; // no sleeps; failure path only
+        throw Object.assign(new Error('state-claim-unavailable'), { code: 'state-claim-unavailable' });
+      }
       if (e.code !== 'EEXIST') throw e;
+      permissionFailures = 0; // An observed claim breaks the consecutive sequence.
+      attempt++;
       try {
         const s = fs.lstatSync(claim);
-        if (!s.isDirectory() || s.isSymbolicLink()) throw new Error('unsafe-lock');
+        if (s.isSymbolicLink() || (!s.isDirectory() && !s.isFile())) throw new Error('unsafe-lock');
+        if (s.isFile()) {
+          // Empty or a marker prefix can be an in-flight or crashed write.
+          if (s.size > Buffer.byteLength(FILE_CLAIM) || !FILE_CLAIM.startsWith(fs.readFileSync(claim, 'utf8'))) throw new Error('unsafe-lock');
+        }
         if (Date.now() - s.mtimeMs <= LOCK_TTL_MS) return null;
-        fs.rmdirSync(claim); continue;
-      } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+        if (s.isFile()) fs.unlinkSync(claim); else fs.rmdirSync(claim);
+        continue;
+      } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        if (['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) return null;
+        throw error;
+      }
     }
     const owned = fs.lstatSync(claim);
     try { return fn(); }
@@ -69,8 +109,16 @@ function mutateLock(lock, fn) {
   }
   return null;
 }
-function acquireLock(lock) {
-  return mutateLock(lock, () => {
+function createLock(lock) {
+  let fd;
+  try { fd = fs.openSync(lock, 'wx', 0o600); }
+  catch (e) { if (e.code === 'EEXIST') return null; throw e; }
+  try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), token: require('node:crypto').randomUUID() })); }
+  catch (e) { fs.closeSync(fd); fs.unlinkSync(lock); throw e; }
+  return fd;
+}
+function acquireLock(lock, fileClaim = false) {
+  return (fileClaim ? fileMutateLock : mutateLock)(lock, () => {
     try {
       const before = fs.lstatSync(lock);
       if (!before.isFile() || before.isSymbolicLink()) throw new Error('unsafe-lock');
@@ -85,16 +133,13 @@ function acquireLock(lock) {
       if (!dead && Date.now() - at <= LOCK_TTL_MS) return null;
       fs.unlinkSync(lock);
     } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    const fd = fs.openSync(lock, 'wx', 0o600);
-    try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), token: require('node:crypto').randomUUID() })); }
-    catch (e) { fs.closeSync(fd); fs.unlinkSync(lock); throw e; }
-    return fd;
+    return createLock(lock);
   });
 }
-function releaseLock(lock, fd) {
+function releaseLock(lock, fd, fileClaim = false) {
   const owned = fs.fstatSync(fd);
   try {
-    mutateLock(lock, () => {
+    (fileClaim ? fileMutateLock : mutateLock)(lock, () => {
       try { if (sameLock(owned, fs.lstatSync(lock))) fs.unlinkSync(lock); }
       catch (e) { if (e.code !== 'ENOENT') throw e; }
     });
@@ -202,11 +247,19 @@ function cleanStore(dir) {
 function openStore(stateRoot, key, invocationId, options = {}) {
   const dir = path.join(stateRoot, 'recall', key);
   const lock = path.join(dir, 'lock');
-  let fd;
+  let fd, claimUnavailable = false;
   for (let attempt = 0; attempt < 2; attempt++) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     try { fd = acquireLock(lock); break; }
     catch (e) {
+      if (e.code === 'state-claim-unavailable' && options.accountClaimFailure) {
+        // Serialize with normal directory claims at the same pathname. If a
+        // rival wins, remain busy; if file creation is denied too, propagate
+        // the failure so the hook can still warn via stdout/stderr.
+        fd = acquireLock(lock, true);
+        claimUnavailable = fd !== null;
+        break;
+      }
       // Inactive-session maintenance can win between mkdir and claim mkdir.
       if (e.code !== 'ENOENT' || attempt === 1) throw e;
     }
@@ -224,7 +277,7 @@ function openStore(stateRoot, key, invocationId, options = {}) {
     } catch { /* Read-only contention must not become state-unavailable. */ }
     return { state: snapshot, dir, busy: true, maintenanceErrors: [], append() {}, save() {}, mark() {}, close() {} };
   }
-  const release = () => releaseLock(lock, fd);
+  const release = () => releaseLock(lock, fd, claimUnavailable);
   const maintenanceErrors = [];
   // Housekeeping is never a source/recall availability gate. Keep failures in
   // the receipt, separate from degraded/error_codes and health failure counts.
@@ -248,7 +301,7 @@ function openStore(stateRoot, key, invocationId, options = {}) {
   const ledger = path.join(dir, invocationId + '.jsonl');
   let pending = '';
   function flush() { if (pending) { fs.appendFileSync(ledger, pending, { mode: 0o600 }); pending = ''; } }
-  return { state, dir, maintenanceErrors,
+  return { state, dir, maintenanceErrors, claimUnavailable,
     append(row) {
       if (options.buffered) pending += JSON.stringify(row) + '\n';
       else fs.appendFileSync(ledger, JSON.stringify(row) + '\n', { mode: 0o600 });
