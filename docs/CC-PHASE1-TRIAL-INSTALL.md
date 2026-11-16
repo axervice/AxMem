@@ -28,7 +28,9 @@ repo 映射不等于钩子只会在这个 repo 启动。**以新会话为准，�
 
 - [ ] 本次根目录固定为 `C:/Users/jax-x/Desktop/AxMem-trees/cc-phase1`，**不是 a2-install，也不是 main**。
   整合者须先把 A2 的 `trial-install.cjs`、`test-trial-install.cjs` 和本清单交付到该树；旧 merge 的 helpers 已导出，无需改行为。
-  如果文件不齐或自测不过，就停下，不要临时改成其他 root 安装。A3 合并后若换 root，先按旧 root/config 回滚，再重新试装，不能直接改记录。
+  如果文件不齐或自测不过，就停下，不要临时改成其他 root 安装。
+  **换 root 后重装：先用旧 root/config 回滚，再使用新的 `--record` 路径，或把旧记录移入回收站，然后才按新 root 安装；不能直接改记录。**
+  **apply 若被中断：先 rollback，确认退线后才可再次 apply；不要用重跑 apply 覆盖原备份链。** 保留原备份及外部笔记供核对。
 - [ ] PMM 的现有 SessionStart／Prompt／Pre／Post／Stop 全部保留，包含现有 Kernel、banner、trigger-recall、write gate、receipt。
   试装只新增下表 3 个 command hook，各占事件末尾一个新组；不添加 session-lamp，不添加旧 Post／Stop 功能。
 
@@ -138,8 +140,9 @@ node "$Root/adapters/claude-code/hook.cjs" --self-test
 node "$Root/adapters/claude-code/test-trial-install.cjs"
 ```
 
-预期：**退出码 0、无 FAIL**；本轮参考 `trial-install self-test 23/23; guard-removal red evidence 23/23`。
-`EXPECTED-RED` 是临时破坏副本的预期失败，不是对真实 settings 做破坏实验。
+预期：**退出码 0、无 FAIL**；本轮参考 `trial-install self-test 37/37; guard-removal red evidence 37/37`，另有 `mutation-harness classification 5/5`。
+`EXPECTED-RED` 必须由同一用例中的 `AssertionError` 捕获缺失约束；普通异常、子进程异常退出／崩溃不算红证据。
+这些都是临时破坏副本的预期失败，不是对真实 settings 做破坏实验。
 
 - [ ] 记下 settings 原始 SHA256（抄到外部验收笔记，关窗口后也要能找回）：
 
@@ -226,14 +229,15 @@ node -e "process.env.AXMEM_CONFIG=process.argv[2]; const c=require(process.argv[
 预期：`config` 为独立 config.json；`memoryRoot` 为 PMM memory；`stateRoot` 为独立 state；`enabled: true`；`kernel_sender: external`；`max_items: 3`。
 任何 `.claude` 下的 stateRoot／非 external 发送者都不能继续。其他宿主继承环境的风险仍按第 1 节处理。
 
-- [ ] 先确认还没接上（**config 必须已存在**，所以这一步在创建配置后）：
+- [ ] 先确认还没接上（本清单在创建配置后核对；status 本身不要求 config/root 仍存在）：
 
 ```powershell
 node "$Root/adapters/claude-code/trial-install.cjs" --settings "$Settings" --root "$Root" --config "$Config" --record "$Record" --status
 ```
 
 预期首次：`0/3 present; counts=0,0,0`、`active=none`、`exists=false; sha256_matches=n/a`，command 行为第 0 节全文。
-工具所有模式都必填 `--config <绝对路径>`，不存在／目录／相对路径或路径含双引号、美元号、反引号、换行会拒绝，零改动（另保守拒绝其他控制字符、% 和 !）。
+工具所有模式都必填 `--root <绝对路径>`、`--config <绝对路径>`，统一转为正斜杠；相对路径或路径含双引号、美元号、反引号、换行会拒绝，零改动（另保守拒绝其他控制字符、% 和 !）。
+**仅 apply／dry-run 检查 config 为已有文件、root 内有 hook.cjs；rollback／status 只规范化这两个路径，不检查它们是否存在**，以便原目录或配置被移动／删除后仍可退线。
 若是已有记录或部分接线，先找负责人核对，不要借本清单接管别人的条目。还须确认没有上一轮的裸 node 接线：
 它与带 config 的命令是不同身份，若两者并存会重复运行；本工具不会猜测并删除旧身份。
 
@@ -253,7 +257,8 @@ node "$Root/adapters/claude-code/trial-install.cjs" --settings "$Settings" --roo
 ```
 
 预期：退出码 0、`added 3 hook(s)`，打印 backup 路径、原 SHA256 和 record 路径；hash 应与外部笔记一致，把 backup 路径也记下来。
-三个事件各追加一组，PMM 原组不动。工具先写原字节备份并校验，再原子写安装记录，再用 `lib/atomic-write.cjs` 原子发布 settings。
+三个事件各追加一组，PMM 原组不动。写任何文件前先检查 settings 的 JSON 结构和语义往返：拒绝重复键（含转义后相同的键）、超出安全整数范围的整数，或 parse/stringify 后不再 deep-equal 的值（如 -0／溢出数），拒绝时不生成备份／记录、不改 settings；dry-run 同样预检。
+检查通过后，工具以 `wx` 独占创建原字节备份并读回校验，再原子写安装记录，再用 `lib/atomic-write.cjs` 原子发布 settings。
 记录含绝对 settings/root/config、备份路径、备份 SHA256、安装后 SHA256、本次实际新增完整命令身份、active 状态。
 第二次 apply 是 no-op，不改备份／记录／mtime；不必为了安装再运行第二次。
 
@@ -283,6 +288,8 @@ Test-Path -LiteralPath "$Root/trial-recall-note.md"
 ```
 
 预期：PMM 原有 banner／Kernel 照旧；AxMem 只有一次 SessionStart 来源／健康状态，并说明 external、不发第二份 Kernel。
+- [ ] **首次验收须确认宿主确实通过 POSIX shell 运行这 3 个 hooks**：出现 SessionStart AxMem 状态行，表示带环境变量前缀的命令生效；若该状态行没有出现，立即回滚，不继续验收。随后按下列 Prompt／PreToolUse 实测核对另两个事件。
+
 不依赖启动窗口的 AXMEM_*；桌面应用的新会话也应读到相同独立配置。旧会话可能要重启才生效或失效，不保证立即切换。
 如果来源不可用／degraded，先回滚；不能把故障解释成“零匹配”。已有 PMM 脚本是否理会 AXMEM_CONFIG 也须实机观察，本次未检查其私有实现。
 
@@ -333,8 +340,15 @@ Get-ChildItem -LiteralPath "$State/recall" -Recurse -File -Filter '*.jsonl' | Fo
 
 ## 4. 回滚（正常验收结束也可随时执行）
 
-- [ ] **回滚那一刻不要有别的程序在改 settings.json**；不用先关掉所有会话。不要删除 config、备份和安装记录。
-  如果窗口已经关闭，重做第 1 节“建立操作变量”；SHA 用外部笔记原值。回滚工具不依赖 AXMEM_* 环境，但必须传原来的 --config，且文件仍须存在。
+- [ ] **回滚那一刻不要有别的程序在改 settings.json**；不用先关掉所有会话。先保留 config、备份和安装记录。
+  如果窗口已经关闭，重做第 1 节“建立操作变量”，再从外部笔记重建 `$BeforeSha`（不要重新对当前 settings 求 hash 来冒充原值）：
+
+```powershell
+& { $v=(Read-Host '粘贴外部笔记中的安装前 SHA256').Trim().ToLowerInvariant(); if ($v -notmatch '^[a-f0-9]{64}$') { throw 'Invalid original SHA256' }; $script:BeforeSha=$v; $BeforeSha }
+```
+
+  回滚工具不依赖 AXMEM_* 环境，仍须传原来的 root/config 路径以匹配身份，**但原 root／hook.cjs 和 config 文件已不存在也能 rollback／status**。
+  若旧 root 已被删，请用一个仍存在、已交付并自测通过的副本来运行 `trial-install.cjs`（替换下面命令的脚本路径），`--root "$Root"`／`--config "$Config"` 参数仍保留旧值；settings、原备份和记录必须可读。
 - [ ] 一步退掉本次接线：
 
 ```powershell
@@ -345,7 +359,8 @@ node "$Root/adapters/claude-code/trial-install.cjs" --settings "$Settings" --roo
 
 1. `exact-restore (backup bytes restored)`：当前 JSON 仍等于“原备份 + 本次实际新增条目”，恢复**原始字节**（含 CRLF、缩进）。
 2. `identity-only (settings changed; ... other edits kept)`：有人做过别的改动，只按本次记录的带 config 完整命令身份移除本次新增条目，保留其他人的改动和原有空组。
-   仅清理本次创建、且现在为空的组／事件数组／顶层 hooks；有新 metadata／其他 hook 的组不会删。
+   **实际移除 0 条时保留 settings 原字节和 mtime，不重排、不清理空组**（例如 apply 在发布前中断，或他人已手工移除条目）。
+   仅在移除 >0 时清理本次创建、且现在为空的组／事件数组／顶层 hooks；有新 metadata／其他 hook 的组不会删。
    若外部制造了多份完全不可区分的空组，工具保守保留，不猜归属；人工核对，不能为了“干净”批量删除其他人的组。
 
 若原来已经有相同身份，本工具不会记作“自己新增”，也不会在回滚时删除它；本清单首次预检 0/3 所以预期全退到 0/3。
@@ -380,12 +395,12 @@ node "$Root/adapters/claude-code/trial-install.cjs" --settings "$Settings" --roo
 - [ ] 可选、可延后清理本次独立 state（仅在第 1 节确认为原来不存在、已退线且确认没有旧会话／在途 hook 再读写它之后）：
 
 ```powershell
-& { if ($State -cne 'C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial/state') { throw 'unexpected state path' }; $i=Get-Item -LiteralPath $State -ErrorAction Stop; if ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'refuse linked state' }; Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($State,[Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin) }
+& { if ($State -cne 'C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial/state') { throw 'unexpected state path' }; $i=Get-Item -LiteralPath $State -ErrorAction Stop; if ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'refuse linked state' }; Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($State,[Microsoft.VisualBasic.FileIO.UIOption]::AllDialogs,[Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin) }
 ```
 
-预期：**这个 state 目录整体移动到 Windows 回收站**。失败就用资源管理器选中准确的 state 文件夹，普通 Delete 移到回收站，再核对。
+预期：**弹出系统确认对话框，核对目标并确认移到 Windows 回收站；取消则保留目录**。若系统提示永久删除，不确认；失败就用资源管理器选中准确的 state 文件夹，普通 Delete 移到回收站，再核对。
 不能确认无读写者就保留它；不要求为清理而现在结束所有工作会话。
-config.json 同样可在确认无读取者后用资源管理器移入回收站；保留 config 则以后仍可运行 status／重复 rollback，移走后这些模式也会因缺 config 拒绝。
+config.json 同样可在确认无读取者后用资源管理器移入回收站；移走后仍可用原 root/config 路径运行 status／重复 rollback，这两个模式不要求原 config 存在。
 **禁止 Shift+Delete、`Remove-Item -Recurse`、`rm -rf` 或任何永久删除**；不要删父目录 Trial，不要删 `~/.claude/memory`、settings、备份或其他 AxMem state。
 如须清除试验生成的 `trial-recall-note.md`，也仅在确认是本次新建、无后续用户编辑后移入回收站，不删除其他仓库文件。
 
@@ -410,14 +425,23 @@ node -e "const fs=require('node:fs'),p=require('node:path'),c=require('node:cryp
 
 ## 6. 本交付的自动化证据（不代表真人验收通过）
 
-- `node adapters/claude-code/test-trial-install.cjs`：退出 0，23/23；每项在临时源码副本中移除对应 guard／约束，再运行同一断言，确认 23/23 EXPECTED-RED。
-  原有 16 项全部保留：dry-run、仅 3 条／保序、二次 no-op、原字节回滚、他人修改保留、坏 JSON、坏 root、缺参、跨组 trim 去重、
-  空容器归属、移动组／他人空组保留、预存身份不接管、备份 hash、原子发布中断、status 只读、先记录再发布。
-  新增 7 项：config 前缀／精确身份／仅 AXMEM_CONFIG 解析及环境覆盖、config 必填、相对路径拒绝、缺文件／目录拒绝、
-  双引号／美元号／反引号／换行拒绝、记录绑定原 config、config 不得与 settings/record 同路径。非法参数四种模式均拒绝且快照零改动。
-  合法文件名中的美元号／反引号也有真实临时文件，不以“文件不存在”代替安全拒绝。
-  这是可重复的 guard-removal mutation 证据，不声称生产实现曾按时间顺序留在一个红的工作树里；不删断言、不放弱旧测试。
-- `node adapters/claude-code/merge-hooks.cjs --self-test`：退出 0、无 FAIL（参考 6/6）；merge 行为未改。
-- `node adapters/claude-code/hook.cjs --self-test`：本工作树退出 0、无 FAIL；A1 收尾／R3 仍需整合，第 1 节计数是整合后的参考值，不冒充本次输出。
-- 本轮只运行上述三条 allow-cmd；未运行 fresh-home shell 测试或其他命令，未做真实安装／真实记忆读取／真机显示与热加载测试，未做 Codex 重签。
+- `node adapters/claude-code/test-trial-install.cjs`：退出 0，**37/37；guard-removal red evidence 37/37**。
+  原有 23 项保留：dry-run、仅 3 条／保序、二次 no-op、原字节回滚、他人修改保留、坏 JSON、坏 root、缺参、跨组 trim 去重、
+  空容器归属、移动组／他人空组保留、预存身份不接管、备份 hash、原子发布中断、status 只读、先记录再发布，
+  以及 config 前缀／精确身份／仅 AXMEM_CONFIG 解析及环境覆盖、config 必填、相对路径拒绝、缺文件／目录拒绝、
+  双引号／美元号／反引号／换行拒绝、记录绑定原 config、config 不得与 settings/record 同路径。
+  原存在性用例按本轮契约区分模式：apply/dry-run 仍拒绝缺失输入；rollback/status 不再 stat root/config，而不是削弱安装检查。
+  本轮新增 14 项：
+  - apply 后删除 root 和 config，status 仍为 3/3、rollback 成功，随后 status 为 0/3；
+  - 9 个补缺 guard：active record 缺一条仍拒绝重装且备份链不变、record 不得声称预存身份、applied_sha256 计划校验、
+    备份读回校验、assertUnchanged（三个写入边界）、备份 wx 碰撞保护、settings 结构校验、record 备份路径绑定、root 美元号／反引号安全检查；
+  - 移除 0 条时 CRLF／缩进／键序／空组／mtime 全保留；大整数、重复键（含嵌套及转义同名）、语义往返丢失各一项零写入检查。
+  合法文件名中的美元号／反引号有真实临时 root/hook 和 config，不以“文件不存在”代替安全拒绝。
+  每项在临时源码副本中移除对应 guard／约束，再运行同一断言，必须捕获 **AssertionError** 才记 EXPECTED-RED；
+  普通异常记 MUTANT-CRASH，启动／超时错误、信号、异常退出码、无正常 CLI refusal 的未捕获子进程异常均不计红证据。
+  构造变异副本／夹具发生的断言也不计。另有 **mutation-harness classification 5/5**：存活、断言失败、普通异常、exit(7)、未捕获子进程异常分类探针。
+  这是可重复的 guard-removal mutation 证据，不声称生产实现曾按时间顺序留在一个红的工作树里；不删除原有用例。
+- `node adapters/claude-code/merge-hooks.cjs --self-test`：退出 0、无 FAIL（6/6）；merge 行为未改。
+- 本轮只运行上述两条 allow-cmd；未运行 hook 自测（本轮未获准），第 1 节 A1 数字仅供未来整合验收，不冒充本次输出。
+  未运行 fresh-home shell 测试或其他命令，未做真实安装／真实记忆读取／真机显示与热加载测试，未做 Codex 重签。
   未读取真实 `~/.claude`／`~/.codex*`／`~/.axmem`，不运行 git；只改允许的三个文件，变更留在工作树未提交。

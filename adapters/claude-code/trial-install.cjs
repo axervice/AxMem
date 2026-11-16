@@ -32,10 +32,13 @@ function parseArgs(argv) {
   if (!path.isAbsolute(out.config)) throw new Error('config must be an absolute path'); // config-absolute-guard
   if (/["$`%!\u0000-\u001f\u007f]/.test(out.config)) throw new Error('config must be a shell-safe path'); // config-shell-guard
   out.config = path.resolve(out.config).replace(/\\/g, '/');
-  if (!fs.statSync(out.config).isFile()) throw new Error('config must be an existing file'); // config-file-guard
-  if (!path.isAbsolute(out.root) || /["$`%!\u0000-\u001f\u007f]/.test(out.root)) throw new Error('root must be an absolute, shell-safe path');
+  if (!path.isAbsolute(out.root) || /["$`%!\u0000-\u001f\u007f]/.test(out.root)) throw new Error('root must be an absolute, shell-safe path'); // root-shell-guard
   out.root = path.resolve(out.root).replace(/\\/g, '/');
-  if (!fs.statSync(path.join(out.root, 'adapters/claude-code/hook.cjs')).isFile()) throw new Error('root has no hook.cjs'); // root-guard
+  // Recovery must work after a checkout/config has been moved or deleted.
+  if (out.mode === 'apply' || out.mode === 'dry-run') { // existence-mode-guard
+    if (!fs.statSync(out.config).isFile()) throw new Error('config must be an existing file'); // config-file-guard
+    if (!fs.statSync(path.join(out.root, 'adapters/claude-code/hook.cjs')).isFile()) throw new Error('root has no hook.cjs'); // root-guard
+  }
   out.settings = path.resolve(out.settings);
   out.record = path.resolve(out.record || out.settings + '.axmem-trial-install.json');
   const configPath = path.resolve(out.config);
@@ -49,6 +52,30 @@ function parseSettings(raw) {
     if (!Array.isArray(groups) || groups.some((g) => !object(g) || !Array.isArray(g.hooks))) throw new Error('hook events must contain groups with hooks arrays');
   }
   return s;
+}
+function assertLosslessSettings(raw, settings) {
+  if (!isDeepStrictEqual(JSON.parse(encode(settings)), settings)) throw new Error('settings JSON semantic round-trip would lose data'); // roundtrip-guard
+  // JSON.parse has already validated the grammar. Tokenize strings as a unit
+  // (including escapes), so braces/numbers inside strings are never inspected.
+  // Decode member names to catch e.g. "name" and "na\\u006de" as duplicates.
+  const stack = [];
+  const tokens = raw.toString('utf8').matchAll(/"(?:[^"\\]|\\[\s\S])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\]:,]|true|false|null/g);
+  for (const [token] of tokens) {
+    const frame = stack.at(-1);
+    if (token === '{') stack.push({ keys: new Set(), key: true });
+    else if (token === '[') stack.push({ keys: null });
+    else if (token === '}' || token === ']') stack.pop();
+    else if (token === ':' && frame?.keys) frame.key = false;
+    else if (token === ',' && frame?.keys) frame.key = true;
+    else if (token[0] === '"' && frame?.keys && frame.key) {
+      const key = JSON.parse(token);
+      if (frame.keys.has(key)) throw new Error('settings JSON contains duplicate keys'); // duplicate-key-guard
+      frame.keys.add(key);
+    } else if (/^-?\d/.test(token)) {
+      const n = Number(token);
+      if (Number.isInteger(n) && !Number.isSafeInteger(n)) throw new Error('settings JSON contains an integer outside the safe integer range'); // safe-integer-guard
+    }
+  }
 }
 function plan(settings, want) {
   const next = clone(settings), added = [], createdGroups = [], createdEvents = [];
@@ -100,6 +127,7 @@ function removeOwned(settings, owned, p) {
       });
     }
   }
+  if (removed === 0) return removed; // No ownership was exercised: do not clean anyone's empty containers.
   for (const { event, template } of p.createdGroups) {
     const groups = settings.hooks?.[event];
     if (!groups) continue;
@@ -147,8 +175,9 @@ function main(argv) {
     } else {
       const removed = removeOwned(settings, owned, p);
       branch = `identity-only (settings changed; removed ${removed}; other edits kept)`;
-      // Avoid formatting-only writes when nothing was removed or cleaned up.
-      target = JSON.stringify(settings) === JSON.stringify(parseSettings(raw)) ? raw : Buffer.from(encode(settings));
+      // Zero removals must preserve the original bytes, including key order,
+      // whitespace and empty groups left by another editor/interrupted apply.
+      target = removed === 0 ? raw : Buffer.from(encode(settings));
     }
     assertUnchanged(opt.settings, raw);
     if (!target.equals(raw)) writeFileAtomicSync(opt.settings, target, { mode: fs.statSync(opt.settings).mode });
@@ -156,6 +185,7 @@ function main(argv) {
     console.log('rollback: ' + branch);
     return;
   }
+  assertLosslessSettings(raw, settings); // Must precede cloning/planning and the first write.
   const p = plan(settings, want);
   if (!p.added.length) { console.log('trial-install: 3/3 already present (no-op; no writes)'); return; }
   if (record?.active) throw new Error('active trial record with missing hooks; rollback first, do not overwrite the original backup');

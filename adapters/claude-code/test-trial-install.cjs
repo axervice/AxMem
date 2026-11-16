@@ -69,8 +69,11 @@ function context(candidate) {
   c.args = (mode) => ['--settings', settings, '--root', root, '--config', config, '--record', record, ...(mode ? ['--' + mode] : [])];
   c.runArgs = (args, preload) => {
     const r = spawnSync(process.execPath, [...(preload ? ['--require', preload] : []), candidate, ...args], { env, cwd: dir, encoding: 'utf8', timeout: 10000 });
-    assert.ifError(r.error);
-    assert.equal(r.signal, null);
+    // Transport failures, signals, unexpected exits and uncaught JS failures
+    // are harness/child crashes, NOT assertion-based red evidence.
+    if (r.error) throw new Error('child launch/timeout failure', { cause: r.error });
+    if (r.signal !== null || ![0, 1].includes(r.status)) throw new Error(`child exited abnormally: status=${r.status}; signal=${r.signal}`);
+    if (r.status === 1 && !r.stderr.startsWith('trial-install refused: ')) throw new Error('child crashed without a CLI refusal: ' + r.stderr);
     return { code: r.status, out: r.stdout, err: r.stderr };
   };
   c.run = (mode) => c.runArgs(c.args(mode));
@@ -182,14 +185,17 @@ const cases = [
     },
   },
   {
-    name: 'missing-or-directory-config-refused-all-modes-zero-writes',
+    name: 'missing-or-directory-config-refused-on-install-recovery-does-not-stat',
     mutate: ["if (!fs.statSync(out.config).isFile()) throw new Error('config must be an existing file'); // config-file-guard", '// removed config file guard'],
     test(c) {
       const before = snapshot(c.dir);
       for (const value of [path.join(c.dir, 'missing config.json'), c.dir]) {
         for (const m of ['dry-run', 'apply', 'rollback', 'status']) {
           const a = c.args(m); a[a.indexOf('--config') + 1] = value;
-          assert.notEqual(c.runArgs(a).code, 0); assert.deepEqual(snapshot(c.dir), before);
+          const r = c.runArgs(a);
+          if (m === 'status') { assert.equal(r.code, 0, r.err); assert.match(r.out, /0\/3 present/); }
+          else { assert.notEqual(r.code, 0); if (m === 'rollback') assert.match(r.err, /no install record/); }
+          assert.deepEqual(snapshot(c.dir), before);
         }
       }
     },
@@ -299,11 +305,16 @@ const cases = [
     test(c) { fs.writeFileSync(c.settings, '{ broken JSON\r\n'); const before = snapshot(c.dir); for (const m of ['dry-run', 'apply', 'rollback', 'status']) { assert.notEqual(c.run(m).code, 0); assert.deepEqual(snapshot(c.dir), before); } },
   },
   {
-    name: 'bad-root-refused-with-zero-changes-all-modes',
+    name: 'bad-root-refused-on-install-recovery-does-not-stat',
     mutate: ["if (!fs.statSync(path.join(out.root, 'adapters/claude-code/hook.cjs')).isFile()) throw new Error('root has no hook.cjs'); // root-guard", '// removed hook existence guard'],
     test(c) {
       const empty = path.join(c.dir, 'empty-root'); fs.mkdirSync(empty); const before = snapshot(c.dir);
-      for (const m of ['dry-run', 'apply', 'rollback', 'status']) { const a = c.args(m); a[a.indexOf('--root') + 1] = empty; assert.notEqual(c.runArgs(a).code, 0); assert.deepEqual(snapshot(c.dir), before); }
+      for (const m of ['dry-run', 'apply', 'rollback', 'status']) {
+        const a = c.args(m); a[a.indexOf('--root') + 1] = empty; const r = c.runArgs(a);
+        if (m === 'status') { assert.equal(r.code, 0, r.err); assert.match(r.out, /0\/3 present/); }
+        else { assert.notEqual(r.code, 0); if (m === 'rollback') assert.match(r.err, /no install record/); }
+        assert.deepEqual(snapshot(c.dir), before);
+      }
     },
   },
   {
@@ -402,7 +413,225 @@ const cases = [
       assert.match(r.err, /injected-before-settings-publish/);
     },
   },
+  {
+    name: 'rollback-and-status-survive-deleted-root-and-config',
+    mutate: ["if (out.mode === 'apply' || out.mode === 'dry-run') { // existence-mode-guard", 'if (true) { // recovery wrongly depends on installation inputs'],
+    test(c) {
+      const original = fs.readFileSync(c.settings); c.ok('apply');
+      fs.rmSync(c.root, { recursive: true }); fs.unlinkSync(c.config);
+      let before = snapshot(c.dir);
+      assert.match(c.ok('status').out, /3\/3 present/); assert.deepEqual(snapshot(c.dir), before);
+      for (const mode of ['apply', 'dry-run']) { assert.notEqual(c.run(mode).code, 0); assert.deepEqual(snapshot(c.dir), before); }
+      assert.match(c.ok('rollback').out, /exact-restore/);
+      assert.ok(fs.readFileSync(c.settings).equals(original));
+      before = snapshot(c.dir); assert.match(c.ok('status').out, /0\/3 present; counts=0,0,0/);
+      c.ok('rollback'); assert.deepEqual(snapshot(c.dir), before);
+    },
+  },
+  {
+    name: 'active-record-missing-one-hook-refuses-with-original-backup-chain-intact',
+    mutate: ["if (record?.active) throw new Error('active trial record with missing hooks; rollback first, do not overwrite the original backup');", '// removed active-record guard'],
+    test(c) {
+      c.ok('apply'); const originalRecord = fs.readFileSync(c.record), r = json(c.record);
+      const edit = json(c.settings); edit.hooks.SessionStart.at(-1).hooks = []; c.set(edit);
+      const before = snapshot(c.dir), backup = fs.readFileSync(r.backup);
+      const result = c.run('apply'); assert.notEqual(result.code, 0); assert.match(result.err, /active trial record.*rollback first/);
+      assert.deepEqual(snapshot(c.dir), before);
+      assert.ok(fs.readFileSync(c.record).equals(originalRecord)); assert.ok(fs.readFileSync(r.backup).equals(backup));
+      c.ok('rollback'); checkCounts(c, 0); // The original chain remains usable.
+    },
+  },
+  {
+    name: 'record-claiming-preexisting-owned-hook-refused',
+    mutate: ["if (owned.some((w) => matches(before, w))) throw new Error('record claims a pre-existing hook');", '// removed pre-existing claim guard'],
+    test(c) {
+      c.ok('apply'); const r = json(c.record), applied = fs.readFileSync(c.settings);
+      // Keep both hashes and the reconstructed plan valid: only this guard
+      // prevents the record from claiming identities already in its backup.
+      fs.writeFileSync(r.backup, applied); r.backup_sha256 = sha(applied); fs.writeFileSync(c.record, JSON.stringify(r));
+      const before = snapshot(c.dir), result = c.run('rollback');
+      assert.notEqual(result.code, 0); assert.match(result.err, /record claims a pre-existing hook/); assert.deepEqual(snapshot(c.dir), before);
+    },
+  },
+  {
+    name: 'record-applied-sha-must-match-backup-plan',
+    mutate: ["if (sha256(encode(p.next)) !== record.applied_sha256) throw new Error('record/backup plan mismatch');", '// removed applied plan SHA guard'],
+    test(c) {
+      c.ok('apply'); const r = json(c.record); r.applied_sha256 = '0'.repeat(64); fs.writeFileSync(c.record, JSON.stringify(r));
+      const before = snapshot(c.dir), result = c.run('rollback');
+      assert.notEqual(result.code, 0); assert.match(result.err, /record\/backup plan mismatch/); assert.deepEqual(snapshot(c.dir), before);
+    },
+  },
+  {
+    name: 'backup-readback-must-verify-before-journal-or-publish',
+    mutate: ["if (sha256(fs.readFileSync(backup)) !== nextRecord.backup_sha256) throw new Error('backup verification failed');", '// removed backup read-back guard'],
+    test(c) {
+      const raw = fs.readFileSync(c.settings);
+      const preload = probe(c, 'readback', `const read = fs.readFileSync;
+fs.readFileSync = function(file) {
+  if (String(file).startsWith(${JSON.stringify(c.settings + '.axmem-trial-backup-')})) return Buffer.from('{}');
+  return read.apply(this, arguments);
+};`);
+      const r = c.runArgs(c.args('apply'), preload);
+      assert.notEqual(r.code, 0); assert.match(r.err, /backup verification failed/);
+      assert.ok(fs.readFileSync(c.settings).equals(raw)); assert.equal(fs.existsSync(c.record), false);
+      const backups = fs.readdirSync(c.dir).filter((f) => f.includes('.axmem-trial-backup-'));
+      assert.equal(backups.length, 1); assert.ok(fs.readFileSync(path.join(c.dir, backups[0])).equals(raw));
+    },
+  },
+  {
+    name: 'assertUnchanged-protects-both-apply-boundaries-and-rollback',
+    mutate: ["if (!fs.readFileSync(file).equals(raw)) throw new Error('settings changed during operation; stop other writers and retry');", '// removed settings concurrency guard'],
+    test(c) {
+      const foreign = '{"otherWriter":true,"hooks":{}}\r\n';
+      const edit = `fs.writeFileSync(${JSON.stringify(c.settings)}, ${JSON.stringify(foreign)});`;
+      for (const boundary of ['before-backup', 'after-journal', 'rollback']) {
+        c.set();
+        if (boundary === 'rollback') c.ok('apply');
+        const recordBefore = fs.existsSync(c.record) ? fs.readFileSync(c.record) : null;
+        const body = boundary === 'before-backup' ? `const stat = fs.statSync; let fired = false;
+fs.statSync = function(file) { if (!fired && file === ${JSON.stringify(path.dirname(c.record))}) { fired = true; ${edit} } return stat.apply(this, arguments); };`
+          : boundary === 'after-journal' ? `const rename = fs.renameSync;
+fs.renameSync = function(a,b) { const result = rename.apply(this, arguments); if (b === ${JSON.stringify(c.record)}) { ${edit} } return result; };`
+            : `const read = fs.readFileSync;
+fs.readFileSync = function(file) { const result = read.apply(this, arguments); if (file === ${JSON.stringify(json(c.record).backup)}) { ${edit} } return result; };`;
+        const preload = probe(c, boundary, body);
+        const r = c.runArgs(c.args(boundary === 'rollback' ? 'rollback' : 'apply'), preload);
+        assert.notEqual(r.code, 0, boundary); assert.match(r.err, /settings changed during operation/);
+        assert.equal(fs.readFileSync(c.settings, 'utf8'), foreign, 'never overwrite a concurrent writer');
+        if (boundary === 'before-backup') {
+          assert.equal(fs.existsSync(c.record), false);
+          assert.equal(fs.readdirSync(c.dir).filter((f) => f.includes('.axmem-trial-backup-')).length, 0);
+        } else if (boundary === 'rollback') assert.ok(fs.readFileSync(c.record).equals(recordBefore));
+        else assert.equal(json(c.record).active, true, 'published journal is recoverable');
+        // Recover after the journal boundary before the next install cycle.
+        if (fs.existsSync(c.record) && json(c.record).active) c.ok('rollback');
+      }
+    },
+  },
+  {
+    name: 'backup-wx-refuses-collision-without-clobbering-existing-file',
+    mutate: ["{ flag: 'wx', mode: fs.statSync(opt.settings).mode }", "{ flag: 'w', mode: fs.statSync(opt.settings).mode }"],
+    test(c) {
+      const raw = fs.readFileSync(c.settings), sentinel = 'existing backup must survive';
+      const preload = probe(c, 'collision', `const write = fs.writeFileSync;
+fs.writeFileSync = function(file) {
+  if (String(file).startsWith(${JSON.stringify(c.settings + '.axmem-trial-backup-')})) write.call(this, file, ${JSON.stringify(sentinel)}, { flag: 'wx' });
+  return write.apply(this, arguments);
+};`);
+      const r = c.runArgs(c.args('apply'), preload); assert.notEqual(r.code, 0); assert.match(r.err, /EEXIST/);
+      assert.ok(fs.readFileSync(c.settings).equals(raw)); assert.equal(fs.existsSync(c.record), false);
+      const backups = fs.readdirSync(c.dir).filter((f) => f.includes('.axmem-trial-backup-'));
+      assert.equal(backups.length, 1); assert.equal(fs.readFileSync(path.join(c.dir, backups[0]), 'utf8'), sentinel);
+    },
+  },
+  {
+    name: 'parseSettings-rejects-invalid-object-event-and-group-structures',
+    mutate: ["  if (!object(s) || (Object.hasOwn(s, 'hooks') && !object(s.hooks))) throw new Error('settings/hooks must be objects');\n  for (const groups of Object.values(s.hooks || {})) {\n    if (!Array.isArray(groups) || groups.some((g) => !object(g) || !Array.isArray(g.hooks))) throw new Error('hook events must contain groups with hooks arrays');\n  }", '  // removed settings structure validation'],
+    test(c) {
+      for (const invalid of [[], null, 42, { hooks: [] }, { hooks: null }, { hooks: { SessionStart: {} } }, { hooks: { SessionStart: [null] } }, { hooks: { SessionStart: [{}] } }]) {
+        c.set(invalid); const before = snapshot(c.dir);
+        for (const mode of ['apply', 'dry-run', 'status', 'rollback']) {
+          const r = c.run(mode); assert.notEqual(r.code, 0); assert.match(r.err, /settings\/hooks must be objects|hook events must contain groups/);
+          assert.deepEqual(snapshot(c.dir), before);
+        }
+      }
+    },
+  },
+  {
+    name: 'record-backup-bound-to-settings-sibling-prefix',
+    mutate: ["typeof record.backup !== 'string' || path.dirname(record.backup) !== path.dirname(opt.settings) ||\n      !record.backup.startsWith(opt.settings + '.axmem-trial-backup-') ||", "typeof record.backup !== 'string' ||"],
+    test(c) {
+      c.ok('apply'); const r = json(c.record), bytes = fs.readFileSync(r.backup);
+      for (const backup of [path.join(c.dir, 'unbound.json'), path.join(c.settings + '.axmem-trial-backup-container', 'nested.json')]) {
+        fs.mkdirSync(path.dirname(backup), { recursive: true }); fs.writeFileSync(backup, bytes);
+        fs.writeFileSync(c.record, JSON.stringify({ ...r, backup })); const before = snapshot(c.dir);
+        for (const mode of ['status', 'rollback', 'dry-run', 'apply']) {
+          const result = c.run(mode); assert.notEqual(result.code, 0); assert.match(result.err, /invalid\/conflicting install record/);
+          assert.deepEqual(snapshot(c.dir), before);
+        }
+      }
+    },
+  },
+  {
+    name: 'root-dollar-and-backtick-refused-even-when-hook-exists',
+    mutate: ['if (!path.isAbsolute(out.root) || /["$`%!\\u0000-\\u001f\\u007f]/.test(out.root))', 'if (!path.isAbsolute(out.root))'],
+    test(c) {
+      for (const ch of ['$', '`']) {
+        const root = path.join(c.dir, 'unsafe' + ch + 'root');
+        fs.mkdirSync(path.join(root, 'adapters/claude-code'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'adapters/claude-code/hook.cjs'), '// never executed');
+        const before = snapshot(c.dir);
+        for (const mode of ['apply', 'dry-run', 'status', 'rollback']) {
+          const a = c.args(mode); a[a.indexOf('--root') + 1] = root;
+          const r = c.runArgs(a); assert.notEqual(r.code, 0); assert.match(r.err, /root must be an absolute, shell-safe path/);
+          assert.deepEqual(snapshot(c.dir), before);
+        }
+      }
+    },
+  },
+  {
+    name: 'zero-removal-identity-rollback-preserves-all-bytes-and-empty-containers',
+    mutate: ['target = removed === 0 ? raw : Buffer.from(encode(settings));', 'target = Buffer.from(encode(settings)); // removed zero-removal byte guard'],
+    test(c) {
+      for (const initial of [fixture(), { x: 1 }, { hooks: {}, x: 1 }]) {
+        c.set(initial); c.ok('apply'); const edited = json(c.settings);
+        for (const w of c.want) edited.hooks[w.event].at(-1).hooks = [];
+        edited.otherEdit = { z: 9, a: 3 }; c.set(edited);
+        const raw = fs.readFileSync(c.settings), mtime = fs.statSync(c.settings).mtimeMs;
+        assert.match(c.ok('rollback').out, /identity-only.*removed 0/);
+        assert.ok(fs.readFileSync(c.settings).equals(raw), 'zero removals must not reformat or clean up empty groups');
+        assert.equal(fs.statSync(c.settings).mtimeMs, mtime); assert.equal(json(c.record).active, false);
+        assert.match(c.ok('status').out, /0\/3 present/);
+      }
+    },
+  },
+  {
+    name: 'unsafe-large-integers-refused-before-any-write',
+    mutate: ["if (Number.isInteger(n) && !Number.isSafeInteger(n)) throw new Error('settings JSON contains an integer outside the safe integer range'); // safe-integer-guard", '// removed safe integer guard'],
+    test(c) {
+      for (const value of ['9007199254740993', '-9007199254740993', '9.007199254740993e15']) {
+        fs.writeFileSync(c.settings, '{"unrelated":{"large":' + value + '},"hooks":{}}\r\n');
+        const before = snapshot(c.dir);
+        for (const mode of ['apply', 'dry-run']) {
+          const r = c.run(mode); assert.notEqual(r.code, 0); assert.match(r.err, /safe integer range/); assert.deepEqual(snapshot(c.dir), before);
+        }
+      }
+      // Numeric-looking text is not a number; the exact boundary is safe.
+      fs.writeFileSync(c.settings, '{"n":9007199254740991,"text":"9007199254740993"}'); c.ok('apply'); c.ok('rollback');
+    },
+  },
+  {
+    name: 'duplicate-keys-including-escaped-nested-names-refused-before-any-write',
+    mutate: ["if (frame.keys.has(key)) throw new Error('settings JSON contains duplicate keys'); // duplicate-key-guard", '// removed duplicate key guard'],
+    test(c) {
+      for (const raw of ['{"same":1,"same":2}', '{"unrelated":[{"name":1,"na\\u006de":2}]}', '{"hooks":{},"hooks":{}}']) {
+        fs.writeFileSync(c.settings, raw); const before = snapshot(c.dir);
+        for (const mode of ['apply', 'dry-run']) {
+          const r = c.run(mode); assert.notEqual(r.code, 0); assert.match(r.err, /duplicate keys/); assert.deepEqual(snapshot(c.dir), before);
+        }
+      }
+      fs.writeFileSync(c.settings, '{"one":{"name":1},"two":[{"name":2}],"text":"{ \\\"name\\\": 9007199254740993 }"}');
+      c.ok('apply'); c.ok('rollback'); // Same names in different objects/quoted JSON are legal.
+    },
+  },
+  {
+    name: 'semantic-roundtrip-loss-refused-before-any-write',
+    mutate: ["if (!isDeepStrictEqual(JSON.parse(encode(settings)), settings)) throw new Error('settings JSON semantic round-trip would lose data'); // roundtrip-guard", '// removed semantic round-trip guard'],
+    test(c) {
+      for (const value of ['-0', '1e400']) {
+        fs.writeFileSync(c.settings, '{"unrelated":' + value + ',"hooks":{}}'); const before = snapshot(c.dir);
+        for (const mode of ['apply', 'dry-run']) {
+          const r = c.run(mode); assert.notEqual(r.code, 0); assert.match(r.err, /semantic round-trip/); assert.deepEqual(snapshot(c.dir), before);
+        }
+      }
+    },
+  },
 ];
+function probe(c, name, body) {
+  const file = path.join(c.dir, name + '-probe.cjs');
+  fs.writeFileSync(file, "const fs = require('node:fs');\n" + body + '\n'); return file;
+}
 function mutantFile(testCase, index) {
   const [from, to] = testCase.mutate;
   assert.equal(source.split(from).length, 2, 'mutation must match exactly one guard: ' + testCase.name);
@@ -411,18 +640,34 @@ function mutantFile(testCase, index) {
     .replace("require('../../lib/atomic-write.cjs')", `require(${JSON.stringify(path.resolve(__dirname, '../../lib/atomic-write.cjs'))})`);
   const f = path.join(T, 'mutant-' + index + '.cjs'); fs.writeFileSync(f, mutated); return f;
 }
-let green = 0, red = 0;
+function mutationOutcome(run) {
+  try { run(); return { kind: 'survived' }; }
+  catch (error) { return { kind: error instanceof assert.AssertionError ? 'assertion' : 'crash', error }; }
+}
+let green = 0, red = 0, harnessOK = false;
 try {
+  // Prove that an ordinary exception, an abnormal child exit, and an
+  // uncaught child exception cannot be mistaken for an assertion kill.
+  const c = context(tool);
+  assert.equal(mutationOutcome(() => {}).kind, 'survived');
+  assert.equal(mutationOutcome(() => assert.fail('intentional assertion probe')).kind, 'assertion');
+  assert.equal(mutationOutcome(() => { throw new Error('intentional harness crash'); }).kind, 'crash');
+  assert.equal(mutationOutcome(() => c.runArgs(c.args('status'), probe(c, 'exit', 'process.exit(7);'))).kind, 'crash');
+  assert.equal(mutationOutcome(() => c.runArgs(c.args('status'), probe(c, 'uncaught', "throw new Error('intentional child crash');"))).kind, 'crash');
+  harnessOK = true; console.log('mutation-harness classification 5/5 (assertion != crash/abnormal exit)');
   for (const [i, t] of cases.entries()) {
     try { t.test(context(tool)); green++; console.log('  ok   ' + t.name); }
     catch (e) { console.error('  FAIL ' + t.name + '\n' + e.stack); }
     try {
-      let caught;
-      try { t.test(context(mutantFile(t, i))); } catch (e) { caught = e; }
-      assert.ok(caught instanceof assert.AssertionError, 'mutant must fail a real assertion, not a harness/require error');
-      red++; console.log('  EXPECTED-RED guard removed: ' + t.name + ' [' + caught.message.split('\n')[0] + ']');
+      // Mutation construction and fixture setup are outside the evidence
+      // capture: even an AssertionError there is not a test killing a mutant.
+      const mutant = context(mutantFile(t, i));
+      const outcome = mutationOutcome(() => t.test(mutant));
+      if (outcome.kind === 'crash') throw new Error('MUTANT-CRASH (not red evidence)', { cause: outcome.error });
+      assert.equal(outcome.kind, 'assertion', 'mutant survived: no assertion caught the missing guard');
+      red++; console.log('  EXPECTED-RED guard removed: ' + t.name + ' [AssertionError: ' + outcome.error.message.split('\n')[0] + ']');
     } catch (e) { console.error('  FAIL mutation ' + t.name + '\n' + e.stack); }
   }
   console.log(`trial-install self-test ${green}/${cases.length}; guard-removal red evidence ${red}/${cases.length}`);
-  if (green !== cases.length || red !== cases.length) process.exitCode = 1;
+  if (!harnessOK || green !== cases.length || red !== cases.length) process.exitCode = 1;
 } finally { fs.rmSync(T, { recursive: true, force: true }); }
