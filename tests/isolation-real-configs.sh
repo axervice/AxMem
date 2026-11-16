@@ -98,7 +98,13 @@ cat > "$AXMEM_CONFIG" <<EOF
 }}
 EOF
 
-node "$ROOT/adapters/claude-code/merge-hooks.cjs" --settings "$cc_target" >/dev/null 2>&1
+# Apply the exported merge policy only; no installer CLI execution in tests.
+node -e '
+  const fs = require("fs"), m = require(process.argv[1]);
+  const s = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+  m.applyWant(s, m.buildWant(process.argv[3]));
+  fs.writeFileSync(process.argv[2], JSON.stringify(s));
+' "$ROOT/adapters/claude-code/merge-hooks.cjs" "$cc_target" "$ROOT"
 bash "$ROOT/adapters/codex/wire.sh" "$codex_target" >/dev/null 2>&1
 node "$ROOT/adapters/hermes/wire.cjs" --config "$hermes_target" >/dev/null 2>&1
 bash "$ROOT/adapters/generic/wire.sh" "$generic_target" >/dev/null 2>&1

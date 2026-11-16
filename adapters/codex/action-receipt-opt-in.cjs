@@ -11,6 +11,7 @@ const EXPECTED_BASE = [
   'adapters/codex/pre-tool-recall.cjs',
   'adapters/codex/recall-context.cjs',
   'adapters/codex/recall-selector.cjs',
+  'core/memory-source.cjs',
   'guards/pmm-core.cjs',
   'guards/pmm-trigger-glob.cjs',
   'guards/pmm-trigger-recall.cjs',

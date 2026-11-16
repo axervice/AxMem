@@ -131,6 +131,72 @@ Stages: `event` (opportunity, with matched=N) · `injected` ·
 `opened`/`followed` are DERIVED offline (join with retrieval logs) — runtime
 never fabricates them, and no stage may be collapsed into a vague "hit".
 
+## Claude Code phase-1 recall compatibility (read side only)
+
+This does **not** migrate memory or change existing write-gate / manifest v1
+judgments above. The new event channel reads the mature fence-aware PMM parser:
+header trust (`[trust:observed|derived|user-ratified]`, absent = undeclared),
+real unfenced Supersedes fields, extended path globs, cmd triggers, and
+`<!-- trigger: none; 理由=<nonempty reason> -->` are supported. An entirely
+absent trigger still permits task retrieval. Unknown trust is excluded with a
+diagnostic, not silently converted into ratification. Legacy body-position
+trust is not promoted into header trust. Handwritten Index sections are
+compatible, but Index-only arrows cannot prove redirects. Ambiguous components
+and unsafe boundaries are excluded; unrelated safe entries remain available.
+No existing user file is rewritten to reconcile these parser contracts.
+
+Unlike the older injection guidance above, **this CC channel can emit whole
+live bodies** from decisions/lessons/standinginstructions, at most 3 per dynamic
+push. Archive entries serve only as verified redirect origins, never current
+rules. Classes are not automatically expanded by the new channel. Kernel is
+the explicitly declared `### Kernel` section, with a separately configured
+single sender and budget; it is not a promotion of arbitrary standing entries.
+Hashes of whole displayed blocks cover LF-normalized complete text (only the
+terminal newline is normalized away); sourceFileSha256 binds original bytes.
+
+### Delivery receipts (independent schema `axmem.cc.recall.v1`)
+
+Append-only JSONL under `AXMEM_STATE_DIR/recall/<scope hash>/`; this is **not**
+the `receipts/spool-*.tsv` user-choice receipt system and not Codex exactKeys v1.
+
+- Correlation: adapter / installation_version / machine, event_id,
+  invocation_id, full session_id and hash, actor_id and hash (null if unknown),
+  optional parent_actor_id / prompt_id / turn_id, task_id, context_epoch,
+  tool_use_id / action_id. Missing session uses an invocation-local scope,
+  never a shared nosess bucket. Missing actor disables cross-call task reuse.
+- Action: phase, tool, verified repo/rel, path_status, action_input_hash,
+  identity_missing. No prompt or command plaintext in the ledger.
+- Selection: snapshot_id, selection_method, query_hash/effective_length,
+  matched/selected, per-item reason/score/trigger_id, suppression_reason.
+- Lesson pointers: lesson_id/rule_id/class_id, original/resolved tag and live
+  head, sourceRoot/file/line/endLine, date/trust, sourceFileSha256,
+  fullEntrySha256/displayedTextSha256, whole/omitted plus omission_reason.
+- Transport: delivery_id, exact stdout payload_hash/bytes, separate
+  context_hash/context_bytes, displayed/omitted, stdout_result, hook_result,
+  elapsed_ms and error_codes. `prepared` precedes output; `emitted` follows a
+  successful stdout callback. Prepared-only is not delivery. Pointer-only
+  legacy Post output is not a full lesson delivery.
+- Outcome placeholders: decision_id, allow/warn/deny vocabulary (phase 1
+  issues no deny), predicate/version, post_outcome, evidence_ref/hash,
+  incident_id, label/provenance. Unknown stays null/unknown.
+  A matching Post adds observed-unverified and a response hash, **not** an
+  assertion of tool success or recurrence. `hostConfirmed=unknown` throughout.
+
+Read states independently: received → source-ready → selected → prepared →
+emitted; final no-match/unsupported/suppressed/omitted/unavailable/
+emission-failed are not interchangeable. A successful empty query result is
+not retrieval failure. A budget omission never becomes an emitted whole body.
+Stdout and disk are not atomic: late receipt/health failures go to stderr, and
+no orphan prepared row may be counted as a delivered body.
+
+The same scope's state.json stores basic invocation/query/source/delivery/error
+counts, lastSuccessfulRecallAt (completed query, including genuine no-match),
+lastDeliveryAt, and consecutiveFailures. Every failed invocation increments
+once, not once per internal exception. When storage itself is unavailable the
+current warning reports the failure but cannot promise a persistent count.
+No independent watchdog, recurrence predicate or retention policy ships in
+this phase. See the [adapter README](../adapters/claude-code/README.md).
+
 ## Versioning
 
 `config.json` carries `$schema_version` (this document = 1). Any breaking

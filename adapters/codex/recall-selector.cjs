@@ -2,7 +2,6 @@
 
 // Read-only lexical selector. The manifest CLI owns PMM syntax and replacement
 // parsing; this module binds its metadata back to unchanged source bytes.
-const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -16,9 +15,7 @@ const { compileTriggerPath, testTriggerPath, MAX_CANDIDATE_PATH_LEN } =
 
 const MANIFEST = path.resolve(__dirname, '../../core/manifest.cjs');
 const REPO = path.resolve(__dirname, '../..');
-const FILES = Object.freeze(['decisions.md', 'lessons.md', 'standinginstructions.md',
-  'classes.md', 'decisions-archive.md', 'lessons-archive.md', 'standinginstructions-archive.md']);
-const REQUIRED = new Set(FILES.slice(0, 3));
+const { FILES, REQUIRED, SelectorError, readSources, sameSources } = require('../../core/memory-source.cjs');
 const FILE_SET = new Set(FILES);
 const TRUST = new Set(['observed', 'derived', 'user-ratified', null]);
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
@@ -28,75 +25,10 @@ const MAX_ENTRIES = 5000;
 const MANIFEST_TIMEOUT_MS = 5000;
 const TAG = /^[a-z][a-z0-9-]*:[A-Za-z0-9._-]+$/;
 
-class SelectorError extends Error {
-  constructor(reason) { super(reason); this.reason = reason; }
-}
 function fail(reason) { throw new SelectorError(reason); }
 function sha(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
 function result(status, reason, items = [], warnings = []) { return { status, reason, items, warnings }; }
 function tagIn(text) { return typeof text === 'string' && TAG.test(text); }
-
-function localMemoryRoot(memoryRoot, platform) {
-  if (typeof memoryRoot !== 'string' || !memoryRoot || /[\u0000-\u001f\u007f]/.test(memoryRoot))
-    return false;
-  const slashedRoot = memoryRoot.replace(/\\/g, '/');
-  // Do this before any fs call. UNC and Win32 device namespaces may cross a
-  // network boundary even when path.isAbsolute considers them valid paths.
-  if (slashedRoot.startsWith('//') || /^\/(?:\?\?|Device)\//i.test(slashedRoot) ||
-      /^[A-Za-z][A-Za-z0-9+.-]*:/.test(slashedRoot) && !/^[A-Za-z]:\/(?!\/)/.test(slashedRoot))
-    return false;
-  return platform === 'win32' ? /^[A-Za-z]:\/(?!\/)/.test(slashedRoot) :
-    !memoryRoot.includes('\\') && path.posix.isAbsolute(memoryRoot);
-}
-function readSources(memoryRoot) {
-  if (!localMemoryRoot(memoryRoot, process.platform)) fail('invalid-input');
-  let rootStat, root;
-  try {
-    rootStat = fs.lstatSync(memoryRoot);
-    root = fs.realpathSync(memoryRoot);
-  } catch { fail('source-unavailable'); }
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) fail('source-unsafe');
-  const files = new Map();
-  let total = 0;
-  for (const name of FILES) {
-    const file = path.join(root, name);
-    let before;
-    try { before = fs.lstatSync(file); }
-    catch (error) {
-      if (error && error.code === 'ENOENT') {
-        if (REQUIRED.has(name)) fail('missing-required-source');
-        continue;
-      }
-      fail('source-unavailable');
-    }
-    if (!before.isFile() || before.isSymbolicLink()) fail('source-unsafe');
-    let real;
-    try { real = fs.realpathSync(file); } catch { fail('source-unavailable'); }
-    const rel = path.relative(root, real);
-    if (rel !== name || rel.startsWith('..') || path.isAbsolute(rel)) fail('source-unsafe');
-    if (before.size > MAX_FILE_BYTES) fail('source-too-large');
-    let bytes, after;
-    try { bytes = fs.readFileSync(file); after = fs.lstatSync(file); }
-    catch { fail('source-unavailable'); }
-    if (!after.isFile() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino ||
-        before.size !== after.size || bytes.length !== after.size) fail('source-changed');
-    total += bytes.length;
-    if (total > MAX_TOTAL_BYTES) fail('source-too-large');
-    files.set(name, { hash: sha(bytes), size: bytes.length, dev: after.dev, ino: after.ino,
-      bytes, lines: bytes.toString('utf8').split(/\r?\n/) });
-  }
-  return { root, rootDev: rootStat.dev, rootIno: rootStat.ino, files };
-}
-function sameSources(a, b) {
-  if (a.root !== b.root || a.rootDev !== b.rootDev || a.rootIno !== b.rootIno ||
-      a.files.size !== b.files.size) return false;
-  for (const [name, file] of a.files) {
-    const other = b.files.get(name);
-    if (!other || other.hash !== file.hash || other.size !== file.size ||
-        other.dev !== file.dev || other.ino !== file.ino) return false;
-  }
-  return true;
-}
 
 function manifestEnv(root) {
   // All paths are explicit, including config and state, so prelude never falls
@@ -804,3 +736,9 @@ async function recall(options = {}) {
 }
 
 module.exports = { recall, validateReceipt };
+// Internal bridge for the phase-1 shared event selector. Keep the existing
+// Codex API and its citation-only callers unchanged; do not duplicate ranking.
+Object.defineProperty(module.exports, '_shared', { value: {
+  graphOf, select, selectByAction, selectByCitations, verifiedSourceGraph,
+  normalizeActionContext, tokenize, topicalQueryTerms, searchableProse,
+} });

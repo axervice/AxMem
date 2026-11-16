@@ -49,6 +49,7 @@ fresh_home() {
   # env vars a spawned node process reads back) is consistent.
   T="$(cygpath -m "$T" 2>/dev/null || printf '%s' "$T")"
   mkdir -p "$T/home"
+  export HOME="$T/home" USERPROFILE="$T/home" PMM_HOME="$T/home"
   export AXMEM_HOME="$T/home" AXMEM_MEMORY_DIR="$T/home/memory" AXMEM_STATE_DIR="$T/home/state" AXMEM_CONFIG="$T/home/config.json"
   bash "$ROOT/bin/axmem" init >/dev/null 2>&1
 }
@@ -73,7 +74,16 @@ EOF
   target="$T/settings.json"
   echo '{}' > "$target"
   write_config "$T" "\"claude_code\":{\"enabled\":true,\"settings_json\":\"$target\"}"
-  node "$ROOT/adapters/claude-code/merge-hooks.cjs" --settings "$target" >/dev/null 2>&1
+  # Exercise the real idempotent merge policy, but never invoke the installer
+  # CLI in this task's tests (not even against synthetic settings).
+  node -e '
+    const fs = require("fs"), m = require(process.argv[1]);
+    const s = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+    const want = m.buildWant(process.argv[3]);
+    m.applyWant(s, want);
+    if (m.applyWant(s, want).addedCount !== 0) process.exit(1);
+    fs.writeFileSync(process.argv[2], JSON.stringify(s));
+  ' "$ROOT/adapters/claude-code/merge-hooks.cjs" "$target" "$ROOT"
   node -e "
     const m = require(process.argv[1]);
     const rows = m.verifyWiring(process.argv[2]);

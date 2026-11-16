@@ -4,6 +4,13 @@ Raw prompt receipt capture was removed on 2026-09-30 by Jax: AxMem should rememb
 
 ## Read-only memory recall candidate
 
+Claude Code phase 1 reuses this selector's ranking primitives through an internal,
+non-enumerable bridge; bounded source IO now lives in `core/memory-source.cjs`.
+The public `recall` / `validateReceipt` exports and automatic Codex
+**explicit-citation-only** prompt policy are unchanged. The default-off ACK
+candidate's verified source closure includes the new source module (14 files);
+validation manifests must pin that actual dependency too. No ACK gate was enabled.
+
 `recall-selector.cjs` exports `recall({memoryRoot, query, limit, maxChars})`. It reads only the explicit PMM root and returns bounded, source-bound lexical excerpts with tag, file, line, excerpt SHA256, and trust metadata. It reuses the bundled MiniSearch implementation and the existing manifest parser for PMM format and supersession. An `ok` result is historical reference, not an instruction or new authorization; the current user's decision takes priority. `no-match` is not proof that no relevant memory exists. The selector does not write PMM, capture prompts, read transcripts, or call a network service. Its isolated synthetic receipt is 35/35.
 
 `recall-context.cjs` is the synchronous JSON-stdin command-hook bridge for `SessionStart`, `UserPromptSubmit`, and `SubagentStart`. It emits bounded `hookSpecificOutput.additionalContext`. SessionStart supplies a memory-entry reminder and health status; UserPromptSubmit uses the prompt only in process memory for retrieval; SubagentStart states only the event-body boundary and requires the dispatcher to use `fork_turns: "none"` with a filtered task package. Its synthetic receipt is 31/31. See `recall-hooks.example.json` for a three-event **placeholder** configuration. Each hook retains an absolute-node `command` example and has a Windows `commandWindows` override using bare `node` plus quoted absolute script and memory-root placeholders; Node on `PATH` is an installation prerequisite. The example is not an installer and JSON validation does not prove shell execution.

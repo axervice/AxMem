@@ -28,6 +28,35 @@ let input = '';
 try { input = fs.readFileSync(0, 'utf8'); } catch { process.exit(0); }
 let data = {};
 try { data = JSON.parse(input); } catch { tlog('error', { note: 'bad-json' }); process.exit(0); }
+// Phase-1 compatibility only: retain the legacy Post selector, but never
+// repeat a full, source-version-bound reminder emitted for this tool_use_id.
+let preDelivered = new Set(), postWarning = '', postOutputWritten = false;
+if (FORMAT === 'claude-code' && data.hook_event_name === 'PostToolUse') {
+  try {
+    const runtime = ctx.resolveRuntimeConfig();
+    require('./memory-source.cjs').readSources(runtime.memoryRoot);
+    preDelivered = require('./recall-receipt.cjs').suppressPost(data, runtime);
+  } catch (e) {
+    postWarning = '[AxMem recall: degraded] Post 来源/去重状态不可用；不是没有匹配，工作继续。';
+    console.error(postWarning);
+    let store;
+    try {
+      const rc = require('./recall-receipt.cjs');
+      const id = require('crypto').randomUUID();
+      store = rc.openStore(require('path').resolve(require('path').dirname(require('path').resolve(ctx.AXMEM_CONFIG)), ctx.STATE_DIR), rc.identity(data, id).key, id);
+      require('./recall-health.cjs').recordInvocation(store.state, { startedAt: new Date().toISOString(),
+        errors: ['post-source-or-state-failed'], sourceReady: false, queryRan: false, matched: 0, displayed: 0, omitted: 0 });
+      store.append({ schema: 'axmem.cc.recall.v1', adapter: 'claude-code', event: 'PostToolUse', stage: 'unavailable',
+        action_id: rc.actionId(data), error_codes: ['post-source-or-state-failed'], hostConfirmed: 'unknown' });
+      store.save();
+    } catch { console.error('[AxMem recall: degraded] Post 失败计数无法持久化；本次失败=1。'); }
+    finally { try { store?.close(); } catch { /* already visibly degraded */ } }
+  }
+  process.on('exit', () => {
+    if (postWarning && !postOutputWritten) process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+      hookEventName: 'PostToolUse', additionalContext: postWarning } }));
+  });
+}
 const tool = data.tool_name || '';
 if (!TOOLS.has(tool)) process.exit(0);
 const session = String(data.session_id || 'nosess').replace(/[^A-Za-z0-9-]/g, '').slice(0, 16);
@@ -128,7 +157,7 @@ const redirected = [];
   }
 }
 const fresh = [], sup = [];
-for (const m of redirected) (seen.has(m.tag) ? sup : fresh).push(m);
+for (const m of redirected) (seen.has(m.tag) || preDelivered.has(m.tag) ? sup : fresh).push(m);
 for (const m of sup) tlog('suppressed-seen', { session, tool, repo: hit.repoId, rel: hit.rel, tag: m.tag });
 const inject = fresh.slice(0, 3);
 for (const m of fresh.slice(3)) tlog('suppressed-cap', { session, tool, repo: hit.repoId, rel: hit.rel, tag: m.tag });
@@ -142,7 +171,7 @@ for (const m of inject) {
   for (const ltRaw of (entryLinks.get(m.tag) || [])) {
     if (inject.length + linked.length >= 3) break;
     const lt = head(ltRaw); // linked memories obey supersession too
-    if (already.has(lt) || seen.has(lt)) continue;
+    if (already.has(lt) || seen.has(lt) || preDelivered.has(lt)) continue;
     already.add(lt);
     const lTitle = tagTitle.get(lt) || '(defined outside the three live files)';
     const dV = String(m.title || '').slice(0, 10), dL = String(lTitle).slice(0, 10);
@@ -161,7 +190,7 @@ for (const m of inject) {
   const mem = (classMembers.get(m.tag) || []).slice().sort((a, b) => String(tagTitle.get(b) || '').localeCompare(String(tagTitle.get(a) || '')));
   for (const t of mem) {
     if (inject.length + linked.length >= 3) break;
-    if (already.has(t) || seen.has(t)) continue;
+    if (already.has(t) || seen.has(t) || preDelivered.has(t)) continue;
     already.add(t);
     linked.push({ tag: t, title: tagTitle.get(t) || '', via: m.tag, age: '', from: null, cls: true });
   }
@@ -183,7 +212,29 @@ const body = 'axmem recall (pilot; related to the file just edited: ' + hit.rel 
   inject.map(m => '- [' + m.tag + '] ' + m.title + (m.from ? ' (supersedes [' + m.from + '], head pushed)' : '') + clsNote(m.tag)).join('\n') +
   (linked.length ? '\n' + linked.map(l => (l.cls ? '  ↳ same class' : '  -> linked' + (l.age ? ' (' + l.age + ')' : '')) + ' [' + l.tag + '] ' + l.title + (l.from ? ' (supersedes [' + l.from + '])' : '')).join('\n') : '');
 if (FORMAT === 'claude-code') {
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: body } }));
+  let payload = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: (postWarning ? postWarning + '\n' : '') + body } });
+  let complete;
+  if (data.hook_event_name === 'PostToolUse') {
+    try {
+      const runtime = ctx.resolveRuntimeConfig();
+      complete = require('./recall-receipt.cjs').prepareLegacyPost(data,
+        { ...ctx, MEMORY_DIR: runtime.memoryRoot, STATE_DIR: runtime.stateRoot }, payload,
+        inject.concat(linked).map((m) => m.tag), !!postWarning);
+    } catch {
+      const warning = '[AxMem recall: degraded] Post 回执准备失败；本次失败=1，持久计数未知；工作继续。';
+      console.error(warning);
+      payload = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: warning + '\n' + (postWarning ? postWarning + '\n' : '') + body } });
+    }
+  }
+  postOutputWritten = true;
+  let settled = false;
+  const end = (error) => {
+    if (settled) return; settled = true;
+    if (error) console.error('[AxMem recall: degraded] Post stdout 失败；未确认送达。');
+    complete?.(error);
+  };
+  process.stdout.on('error', end);
+  process.stdout.write(payload, end);
 } else {
   process.stdout.write(body + '\n');
 }

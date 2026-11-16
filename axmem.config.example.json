@@ -10,7 +10,20 @@
     { "id": "my-app", "roots": ["~/projects/my-app"] }
   ],
   "adapters": {
-    "claude_code": { "enabled": true, "settings_json": "~/.claude/settings.json" },
+    "claude_code": {
+      "enabled": true,
+      "settings_json": "~/.claude/settings.json",
+      "recall": {
+        "mode": "remind-only",
+        "on_unavailable": "warn-and-continue",
+        "max_items": 3,
+        "max_bytes": 4096,
+        "min_topic_terms": 2,
+        "kernel_sender": "axmem",
+        "kernel_max_bytes": 4096,
+        "$comment": "Local lexical reminders only; never deny. Unavailable sources warn and continue. kernel_sender: axmem | external | off (choose one sender)."
+      }
+    },
     "codex": { "enabled": false, "agents_md": "~/.codex/AGENTS.md" },
     "hermes": { "enabled": false, "config_yaml": "", "$comment": "memory_md is RETIRED (P1 D1, 2026-09-16) — AxMem never reads/writes Hermes MEMORY.md/USER.md/SOUL.md (single-writer rule). config_yaml is Hermes's own cli-config.yaml. Leave EMPTY (not '~/.hermes/config.yaml') — unlike codex/claude-code, Hermes's real home is platform- AND env-var-dependent (HERMES_HOME, else %LOCALAPPDATA%\\hermes on native Windows, else ~/.hermes — see adapters/hermes/wire.cjs's defaultHermesHome()); a hardcoded '~/...' example value here would silently override that logic and target the wrong file the moment `axmem init` copies this file verbatim into a real config.json. Set this explicitly only if your Hermes install's config.yaml is somewhere non-standard." },
     "generic": { "enabled": true, "instruction_file": "", "$comment": "path to the target agent's own instruction file — wire.sh appends a marker-fenced section there. Empty = none configured; enforcement=convention always (D4)." }

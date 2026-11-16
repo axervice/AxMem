@@ -13,6 +13,18 @@
 文件,而是围绕它们加上确定性的检查机制。完整的功能表、架构图、安装/自测/隔离纪律
 说明请见英文版 [README.md](README.md)(本仓库以英文为主,长期维护也在英文版进行)。
 
+## Claude Code 动手前召回（阶段 1）
+
+新增 SessionStart 来源健康／声明的 Kernel、UserPromptSubmit 本地多词检索（覆盖无 trigger 规则）、
+PreToolUse 的 Edit/Write/MultiEdit 与保守 Bash 子集提醒。默认最多 3 条完整教训；不确定少推，
+故障可见后继续，**不新增任何拦截**。同动作、同来源版本的完整 Pre 送达会抑制旧 Post 重推。
+结构化回执和基础健康计数位于 `AXMEM_STATE_DIR/recall/`，不保存 prompt 原文。
+Codex 自动 prompt 仍是明确 tag 引用召回，未改成词法自动推送。
+
+只验证过临时 HOME 下的合成事件，**未在真实 Claude Code 客户端验证**；不含后续阶段的
+独立巡检、复发统计或入口物理合并。配置、settings 接线及边界见
+[Claude Code 适配器说明](adapters/claude-code/README.md)。
+
 ## 核心支柱(摘要)
 
 - **写入纪律闸门**:原子条目、索引↔条目一致、孤儿检测、体积上限(带 `[sole-record]`

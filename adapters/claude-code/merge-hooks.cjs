@@ -15,7 +15,6 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const ctx = require('../../lib/prelude.cjs');
 const { writeFileAtomicSync } = require('../../lib/atomic-write.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').replace(/\\/g, '/');
@@ -33,6 +32,9 @@ function buildWant(root) {
     { event: 'PostToolUse', matcher: 'AskUserQuestion', command: `${RCPT} from-hook || exit 0` },
     { event: 'Stop', matcher: null, command: `${RCPT} stop-check` },
     { event: 'SessionStart', matcher: null, command: `${RCPT} session-lamp` },
+    { event: 'SessionStart', matcher: null, command: `node "${root}/adapters/claude-code/hook.cjs"` },
+    { event: 'UserPromptSubmit', matcher: null, command: `node "${root}/adapters/claude-code/hook.cjs"` },
+    { event: 'PreToolUse', matcher: 'Edit|Write|MultiEdit|Bash', command: `node "${root}/adapters/claude-code/hook.cjs"` },
   ];
 }
 
@@ -106,6 +108,7 @@ function verifyWiring(settingsPath, root) {
 
 function recordLifecycleTargets(settingsPath, origRaw, newRaw, addedTargets) {
   try {
+    const ctx = require('../../lib/prelude.cjs');
     const lm = require('../../lifecycle/install-manifest.cjs');
     const stateDir = process.env.AXMEM_STATE_DIR || ctx.STATE_DIR;
     const preSha = lm.sha256Text(origRaw);
@@ -126,6 +129,7 @@ function recordLifecycleTargets(settingsPath, origRaw, newRaw, addedTargets) {
 }
 
 function main(argv) {
+  const ctx = require('../../lib/prelude.cjs');
   const dry = argv.includes('--dry-run');
   const si = argv.indexOf('--settings');
   const SETTINGS = si >= 0 ? argv[si + 1] : ctx.cfgGet('adapters.claude_code.settings_json', ctx.HOME_DIR + '/.claude/settings.json');
@@ -179,6 +183,12 @@ module.exports = { buildWant, applyWant, countIdentityMatches, verifyWiring, nor
 // and dedup-count sanity.
 // ---------------------------------------------------------------------------
 function selfTest() {
+  const savedEnv = { ...process.env };
+  const home = fs.mkdtempSync(path.join(require('os').tmpdir(), 'axmem-cc-merge-home-'));
+  Object.assign(process.env, { HOME: home, USERPROFILE: home, PMM_HOME: home, AXMEM_HOME: home,
+    AXMEM_MEMORY_DIR: path.join(home, 'memory'), AXMEM_STATE_DIR: path.join(home, 'state'),
+    AXMEM_CONFIG: path.join(home, 'config.json') });
+  fs.writeFileSync(process.env.AXMEM_CONFIG, '{}');
   let ok = 0;
   const results = [];
   function check(name, cond) { if (cond) { ok++; results.push(`  ok   ${name}`); } else { results.push(`  FAIL ${name}`); } }
@@ -242,6 +252,9 @@ function selfTest() {
         Stop: [{ hooks: [{ type: 'command', command: want[3].command }] }],
       },
     };
+    // The original five identities above are deliberately reordered; add the
+    // three phase-1 identities before checking idempotency of the whole set.
+    applyWant(settings, want.slice(5));
     const r = applyWant(settings, want);
     check('4 JSON reordered but semantically identical: recognized as already fully wired', r.addedCount === 0);
   }
@@ -291,6 +304,9 @@ function selfTest() {
 
   console.log(results.join('\n'));
   console.log(`claude-code merge-hooks self-test ${ok}/6`);
+  for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+  Object.assign(process.env, savedEnv);
+  fs.rmSync(home, { recursive: true, force: true });
   return ok === 6 ? 0 : 1;
 }
 

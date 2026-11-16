@@ -78,12 +78,15 @@ rm -rf "$T1"
 # overrides it with AXMEM_CODEX_RAW_DIR. The RED half demonstrates the
 # hazard this arm actually guards (a resolver that DID fall back to
 # XDG_CONFIG_HOME), so the absence is a deliberate, tested property.
-if grep -Rqs --include='*.sh' --include='*.cjs' -- "XDG_CONFIG_HOME" "$ROOT/lib" "$ROOT/adapters" "$ROOT/lifecycle"; then
-  arm2a=1  # found a config-home reference -> bad
+# One literal write-only assignment explicitly isolates the manifest child;
+# that is not a runtime config read. Keep every other reference forbidden.
+if grep -Rhs --include='*.sh' --include='*.cjs' -- "XDG_CONFIG_HOME" "$ROOT/lib" "$ROOT/adapters" "$ROOT/lifecycle" |
+  grep -vE '^[[:space:]]*XDG_CONFIG_HOME: isolated, XDG_STATE_HOME: isolated, XDG_DATA_HOME: isolated,[[:space:]]*$' >/dev/null; then
+  arm2a=1
 else
-  arm2a=0  # no config-home reference -> good
+  arm2a=0
 fi
-check "2a (GREEN) no AxMem source file (lib/adapters/lifecycle) references XDG_CONFIG_HOME at all" "$arm2a"
+check "2a (GREEN) no runtime XDG_CONFIG_HOME reference except the exact isolated-child environment assignment" "$arm2a"
 
 # RED demo (not a defect — a hypothetical mistake this arm guards against):
 # a resolver shaped like `path.join(process.env.XDG_CONFIG_HOME || os.homedir(), '.axmem')`

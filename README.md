@@ -14,6 +14,21 @@ useless. AxMem is a Claude Code–native, local-first, git-auditable **memory
 governance layer** that solves both with machinery instead of more prose. It
 doesn't replace your memory files — it puts deterministic checks around them:
 
+## Claude Code pre-action recall (phase 1)
+
+The Claude Code adapter now declares SessionStart source health / declared Kernel,
+UserPromptSubmit local multiword recall (including rules without triggers), and
+PreToolUse reminders for Edit/Write/MultiEdit and a conservative subset of Bash.
+At most three whole lessons; low-confidence matches stay quiet. Failures warn and
+continue, never become a new deny. Version-bound full Pre deliveries suppress the
+same action's legacy Post reminder. New JSONL delivery receipts and basic health
+counters live under `AXMEM_STATE_DIR/recall/`; prompts are not persisted.
+
+This increment is tested only with isolated synthetic hook inputs, **not a real
+Claude Code client**. It does not add a watchdog or recurrence reporting. Codex's
+automatic prompt channel remains **explicit-citation-only**.
+See [adapter setup, defaults, receipts and limitations](adapters/claude-code/README.md).
+
 ## Architecture (text diagram)
 
 ```

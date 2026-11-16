@@ -16,6 +16,7 @@ const paths=[
  'adapters/codex/pre-tool-recall.cjs',
  'adapters/codex/recall-context.cjs',
  'adapters/codex/recall-selector.cjs',
+ 'core/memory-source.cjs',
  'guards/pmm-core.cjs','guards/pmm-trigger-glob.cjs',
  'guards/pmm-trigger-recall.cjs','guards/pmm-recall-ledger.cjs',
  'guards/pmm-recall-policy.cjs','guards/vendor/minisearch/index.cjs',
@@ -28,7 +29,7 @@ let serial=0,childCalls=0,childRC=null,childMs=null;
 let temp=null,alias=null;
 async function test(id,fn){
  try{await fn();checks.push({id,ok:true});}
- catch(e){checks.push({id,ok:false,errorClass:e&&e.name||'Unknown'});}
+ catch(e){checks.push({id,ok:false,errorClass:e&&e.name||'Unknown',error:String(e?.message||'').slice(0,1000)});}
 }
 function expectCode(result,code){
  assert.equal(result.code,code);
@@ -108,16 +109,19 @@ async function main(){
   fs.writeFileSync(file,JSON.stringify(modified));
   return [file,fileSha(file)];
  };
- await test('closure-exact-13-and-R-gate-state-identities',()=>{
-  assert.equal(paths.length,13);
+ await test('closure-exact-14-and-R-gate-state-identities',()=>{
+  assert.equal(paths.length,14);
   assert.deepEqual(manifest.files.map(x=>x.path),paths);
   for(const x of manifest.files){
    assert(x.bytes>0&&x.bytes<=200000);
    assert.equal(fileSha(path.join(W,x.path)),x.sha256);
   }
-  assert.equal(fileSha(path.join(__dirname,'action-receipt-gate.cjs')),
+  // Reference source identities use LF; raw checkout bytes (including CRLF)
+  // remain pinned and checked independently by the manifest loop above.
+  const sourceSha=name=>sha(fs.readFileSync(path.join(__dirname,name),'utf8').replace(/\r\n/g,'\n'));
+  assert.equal(sourceSha('action-receipt-gate.cjs'),
    'e1261ea51c3212ab395dcfdd2c11aedee952dc3863bc27815ca76bf6ba084a4c');
-  assert.equal(fileSha(path.join(__dirname,'action-receipt-state.cjs')),
+  assert.equal(sourceSha('action-receipt-state.cjs'),
    'b66cc4294ef161d74649e43ef5c46066fbaf1f19716a84e3946090d277fc1ceb');
  });
  await test('default-off-stdin-policy-spoof-parity-no-state',async()=>{

@@ -349,6 +349,7 @@ case "${1:-}" in
       _have_git=1
       _git_status_prev="$(git -C "$ROOT" status --porcelain 2>/dev/null)"
     fi
+    _suite_started=$SECONDS
     echo "axmem selftest: discovering component self-tests under core/ lib/ adapters/ lifecycle/ tests/ ..."
     while IFS= read -r _f; do
       [ -n "$_f" ] || continue
@@ -433,12 +434,15 @@ case "${1:-}" in
       fi
     done < <(
       for _d in core lib adapters lifecycle tests; do
-        [ -d "$ROOT/$_d" ] && find "$ROOT/$_d" -type f \( -name '*.sh' -o -name '*.cjs' \)
+        # Corpus files are test DATA (often partial legacy scripts), not
+        # executable components. Their owning suites remain in discovery.
+        [ -d "$ROOT/$_d" ] && find "$ROOT/$_d" -path "$ROOT/tests/fixtures" -prune -o -type f \( -name '*.sh' -o -name '*.cjs' \) -print
       done | sort
     )
     if [ "$_have_git" -eq 1 ] && [ "$rc" -eq 0 ]; then
       echo "  ok   repo-cleanliness: git status --porcelain unchanged after every one of the $count component runs (checked per-component, not just start/end)"
     fi
+    echo "axmem selftest elapsed: $((SECONDS - _suite_started))s"
     # [codex(gf) HIGH #2, 2026-09-17] Never prints "N/N passed" — a reader
     # skimming only the last line must see all 3 states, not a single
     # combined ratio a SKIP-heavy run could inflate to look fully green.

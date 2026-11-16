@@ -58,6 +58,22 @@ hash_before="$(find "$FAKE_HOME" -type f -exec sha256sum {} + 2>/dev/null | sort
 CHILD_TMPROOT="$(mktemp -d)"
 CHILD_TMPROOT="$(cygpath -m "$CHILD_TMPROOT" 2>/dev/null || printf '%s' "$CHILD_TMPROOT")"
 
+# Use an exact copy of the real dispatcher with inert dependencies. Testing
+# the isolation guard must not recursively launch the entire repository suite:
+# timeout on MSYS cannot reliably reap native grandchildren of a killed bash.
+SCHED_ROOT="$(mktemp -d)"
+SCHED_HOME="$SCHED_ROOT/home"
+mkdir -p "$SCHED_ROOT/bin" "$SCHED_ROOT/lib" "$SCHED_ROOT/lifecycle" "$SCHED_ROOT/adapters" "$SCHED_HOME"
+cp "$ROOT/bin/axmem" "$SCHED_ROOT/bin/axmem"
+cat > "$SCHED_ROOT/lib/prelude.sh" <<'EOF'
+axmem_cfg() { printf '%s' "$2"; }
+: "${AXMEM_STATE_DIR:=$HOME/state}"
+mkdir -p "$AXMEM_STATE_DIR"
+EOF
+cat > "$SCHED_ROOT/lifecycle/restore.cjs" <<'EOF'
+process.exit(0);
+EOF
+
 # Simulate a bare, forgot-to-isolate invocation: a cleared environment
 # (env -i) with ONLY PATH plus HOME/USERPROFILE pointed at the fake
 # stand-in (and the separate TMPDIR/TEMP/TMP root above, so the guard's own
@@ -72,7 +88,7 @@ CHILD_TMPROOT="$(cygpath -m "$CHILD_TMPROOT" 2>/dev/null || printf '%s' "$CHILD_
 out_file="$(mktemp)"
 env -i PATH="$PATH" HOME="$FAKE_HOME" USERPROFILE="$FAKE_HOME" \
   TMPDIR="$CHILD_TMPROOT" TEMP="$CHILD_TMPROOT" TMP="$CHILD_TMPROOT" \
-  timeout 5 bash "$ROOT/bin/axmem" selftest >"$out_file" 2>&1
+  timeout -k 2 15 bash "$SCHED_ROOT/bin/axmem" selftest >"$out_file" 2>&1
 out="$(cat "$out_file")"
 rm -f "$out_file"
 
@@ -91,18 +107,7 @@ rm -rf "$FAKE_HOME" "$CHILD_TMPROOT"
 # is only a regression guard for the pre-fix behavior, which waited forever
 # after sending TERM. Build a tiny scheduler-only root so this proof exercises
 # bin/axmem's component loop without recursively running the whole repository.
-SCHED_ROOT="$(mktemp -d)"
-SCHED_HOME="$SCHED_ROOT/home"
-mkdir -p "$SCHED_ROOT/bin" "$SCHED_ROOT/lib" "$SCHED_ROOT/lifecycle" "$SCHED_ROOT/adapters" "$SCHED_HOME"
-cp "$ROOT/bin/axmem" "$SCHED_ROOT/bin/axmem"
-cat > "$SCHED_ROOT/lib/prelude.sh" <<'EOF'
-axmem_cfg() { printf '%s' "$2"; }
-: "${AXMEM_STATE_DIR:=$HOME/state}"
-mkdir -p "$AXMEM_STATE_DIR"
-EOF
-cat > "$SCHED_ROOT/lifecycle/restore.cjs" <<'EOF'
-process.exit(0);
-EOF
+# Reuse the scheduler-only copy from the isolation smoke test above.
 cat > "$SCHED_ROOT/adapters/000-ignore-term.sh" <<'EOF'
 #!/usr/bin/env bash
 # --self-test
