@@ -29,13 +29,14 @@ function readJSON(file, fallback) {
 }
 const LOCK_TTL_MS = 30000, RETAIN_FILES = 128, RETAIN_MS = 7 * 86400000;
 function emptyState() {
-  return { epoch: 0, taskId: null, candidates: [], seen: [], lastSuccessfulRecallAt: null, consecutiveFailures: 0, counts: {} };
+  return { epoch: 0, taskId: null, candidates: [], seen: [], fileSeen: [], lastSuccessfulRecallAt: null, consecutiveFailures: 0, counts: {} };
 }
 function validState(state) {
   return state && Number.isInteger(state.epoch) && state.epoch >= 0 &&
     (state.taskId === null || typeof state.taskId === 'string') &&
     Array.isArray(state.candidates) && state.candidates.every((p) => p && typeof p.tag === 'string' && typeof p.hash === 'string') &&
     Array.isArray(state.seen) && state.seen.every((s) => typeof s === 'string') &&
+    (!Object.hasOwn(state, 'fileSeen') || Array.isArray(state.fileSeen) && state.fileSeen.every((s) => typeof s === 'string')) &&
     Number.isInteger(state.consecutiveFailures) && state.consecutiveFailures >= 0 &&
     state.counts && typeof state.counts === 'object' && !Array.isArray(state.counts);
 }
@@ -249,7 +250,7 @@ function openStore(stateRoot, key, invocationId, options = {}) {
     let snapshot = emptyState();
     try {
       const current = readJSON(path.join(dir, 'state.json'), snapshot);
-      if (validState(current)) snapshot = current;
+      if (validState(current)) { snapshot = current; if (!Object.hasOwn(snapshot, 'fileSeen')) snapshot.fileSeen = []; }
     } catch { /* Read-only contention must not become state-unavailable. */ }
     return { state: snapshot, dir, busy: true, maintenanceErrors: [], append() {}, save() {}, mark() {}, close() {} };
   }
@@ -273,6 +274,7 @@ function openStore(stateRoot, key, invocationId, options = {}) {
     try { oversized = fs.statSync(stateFile).size > 256 * 1024; } catch (e) { if (e.code !== 'ENOENT') throw e; }
     state = oversized ? emptyState() : readJSON(stateFile, emptyState());
     if (!validState(state)) throw new Error('state-invalid');
+    if (!Object.hasOwn(state, 'fileSeen')) state.fileSeen = [];
   } catch (e) { release(); throw e; }
   const ledger = path.join(dir, invocationId + '.jsonl');
   let pending = '';

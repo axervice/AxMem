@@ -43,7 +43,8 @@ command 依赖 PATH 上的 Node；输出沿用本仓库的
 - **PreToolUse**：只考虑明确工具／repo／路径的 action trigger、简单命令的 cmd trigger、明确 tag 引用和本 prompt 已建立的任务候选。
   **不做词法（模糊）检索，不加载／构建 topic index**，不凭路径／命令的主题相似度推送记忆；UserPromptSubmit 的词法检索另按上述静默规则执行。
   这是为降低逐次动手前延迟，按负责人 2026-11-16 的裁定实施；仅 Pre 回执记录 `lexical_skipped: true`，不计为已运行词法查询。
-  prompt 已推不等于 Pre 永久免推；同一 tool_use_id 的同版本重复 Pre 可以抑制，新的动作可再推。
+  prompt 已推不等于 Pre 免推；同一动作的同版本重复 Pre 可以抑制。
+  Edit/Write/MultiEdit 额外按 session/actor、context epoch、规范化绝对文件路径和条目正文版本去重：完整送达后同文件不重复提醒，跨 prompt 保留；正文变化或 SessionStart（含 compact）可再推，最多保留最近 500 个键。Bash 仍只按动作去重。
   Edit、Write、MultiEdit 支持单个 file_path；相对路径必须有 cwd，路径别名不冒充已证明的仓库目标。
   Bash 只识别**裸可执行名＋简单字面参数**，可匹配成熟解析器的 cmd trigger；
   引号、管道、重定向、变量展开、包装 shell、cwd 复合语法均报告 unknown，

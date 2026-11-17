@@ -11,6 +11,7 @@ const ROOT = path.resolve(__dirname, '../..');
 async function selfTest() {
   await require('./test-prompt-quiet.cjs').promptQuietSelfTest();
   await require('./test-opt1-pre.cjs').opt1SelfTest();
+  await require('./test-file-cooldown.cjs').fileCooldownSelfTest();
   await require('./test-review-round2.cjs').round2SelfTest();
   await require('./test-review.cjs').reviewSelfTest();
   const t = fs.mkdtempSync(path.join(os.tmpdir(), 'axmem-cc-hook-'));
@@ -121,6 +122,7 @@ async function selfTest() {
     });
     for (const tool of ['Edit', 'Write', 'MultiEdit']) {
       await check(`Pre ${tool} normal: exact action reminder before tool, prompt does not silence it`, async () => {
+        await run(input('SessionStart'));
         await run(input('UserPromptSubmit', { prompt: '测试失败脚本' }));
         const r = await run(pre(tool, { file_path: path.join(repo, 'script.sh'), content: 'new', old_string: 'x', new_string: 'y' }));
         assert.deepEqual(r.errors, []); assert(r.receipt.items.some((p) => p.tag === 'demo:script' && p.reason === 'action-trigger'));
@@ -159,13 +161,18 @@ async function selfTest() {
       const r = await run(pre('Bash', { command: 'npm test' }));
       assert(r.receipt.items.some((p) => p.tag === 'demo:hidden' && p.reason === 'task-candidate'));
     });
-    await check('Pre boundary: replay same action suppresses, a new action can resend', async () => {
+    await check('Pre boundary: replay same action suppresses; new action on same file is cooled until a new context', async () => {
+      await run(input('SessionStart'));
       const x = pre('Write', { file_path: path.join(repo, 'script.sh') });
       const first = await run(x), again = await run(x);
       assert(first.receipt.displayed > 0); assert.equal(again.receipt.displayed, 0); assert(again.receipt.suppression_reason);
+      const cooled = await run(pre('Write', x.tool_input));
+      assert.equal(cooled.receipt.displayed, 0); assert.equal(cooled.receipt.suppression_reason, 'same-file-entry-emitted');
+      await run(input('SessionStart'));
       assert((await run(pre('Write', x.tool_input))).receipt.displayed > 0);
     });
     await check('Pre fault: stdout failure leaves prepared orphan, no emitted or suppression marker', async () => {
+      await run(input('SessionStart'));
       const x = pre('Write', { file_path: path.join(repo, 'script.sh') });
       const r = await run(x, { write: async () => { throw new Error('broken stdout'); } });
       assert(r.errors.includes('emission-failed'));

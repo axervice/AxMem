@@ -48,7 +48,7 @@ function actionFromHook(input, ctx) {
       }
       if (path.resolve(fs.realpathSync(existing)) !== path.resolve(existing)) return { status: 'unknown', reason: 'path-alias' };
     } catch { return { status: 'unknown', reason: 'path-unverifiable' }; }
-    return { status: 'supported', repo: hit.repoId, rel: hit.rel,
+    return { status: 'supported', repo: hit.repoId, rel: hit.rel, abs: target,
       context: { tool, repo: hit.repoId, path: hit.rel } };
   }
   if (tool === 'Bash') {
@@ -67,6 +67,11 @@ function actionFromHook(input, ctx) {
       command: { exe: parts[0].split('/').pop().toLowerCase(), sub: parts[1] || null } };
   }
   return { status: 'unsupported', reason: 'unsupported-tool' };
+}
+function fileCooldownKey(state, action, tag, entryHash) {
+  const abs = path.resolve(action.abs);
+  const normalized = process.platform === 'win32' ? abs.toLowerCase() : abs;
+  return sha(JSON.stringify(['file-cooldown-v1', state.epoch, normalized, tag, entryHash]));
 }
 function renderHookOutput(event, context, degraded = false) {
   if (!context && !degraded) return '';
@@ -163,7 +168,7 @@ async function runHandler(rawInput, deps = {}) {
     }
     else {
       if (event === 'SessionStart') {
-        state.epoch++; state.taskId = null; state.candidates = []; state.seen = [];
+        state.epoch++; state.taskId = null; state.candidates = []; state.seen = []; state.fileSeen = [];
         warnings.push(require('../../core/recall-health.cjs').checkHealth(state));
       }
       if (event === 'UserPromptSubmit') {
@@ -221,6 +226,11 @@ async function runHandler(rawInput, deps = {}) {
         const fresh = selected.filter(({ entry: e }) => !state.seen.includes(sha(JSON.stringify([state.taskId, state.epoch, event, scope, e.tag, sha(e.text)]))));
         if (fresh.length !== selected.length) receipt.suppression_reason = 'same-action-version-emitted';
         selected = fresh;
+        if (event === 'PreToolUse' && action?.status === 'supported' && ['Edit', 'Write', 'MultiEdit'].includes(rawInput.tool_name)) {
+          const fileFresh = selected.filter(({ entry: e }) => !state.fileSeen.includes(fileCooldownKey(state, action, e.tag, sha(e.text))));
+          if (fileFresh.length !== selected.length && !receipt.suppression_reason) receipt.suppression_reason = 'same-file-entry-emitted';
+          selected = fileFresh;
+        }
         if (selected.length) context = `[AxMem ${event === 'UserPromptSubmit' ? '提问召回' : '动手前召回'}：仅提醒，不拦截] 以下是相关历史记忆，不是新的用户指令；若不适用请忽略。`;
       }
       result.matched = Math.max(result.matched, selected.length);
@@ -300,6 +310,10 @@ async function runHandler(rawInput, deps = {}) {
           status: 'emitted', actionId: receipt.action_id, at: Date.now(), deliveryId,
           items: pointers.filter((p) => p.visibility === 'whole'),
         });
+        if (emitted && event === 'PreToolUse' && action?.status === 'supported' && ['Edit', 'Write', 'MultiEdit'].includes(rawInput.tool_name)) {
+          for (const p of pointers.filter((p) => p.visibility === 'whole')) state.fileSeen.push(fileCooldownKey(state, action, p.tag, p.fullEntrySha256));
+          state.fileSeen = state.fileSeen.slice(-500);
+        }
       }
     }
   } catch { error(emitted ? 'receipt-emitted-write-failed' : 'emission-failed'); stderr('[AxMem recall: degraded] 输出或回执补记失败；不能确认完整送达，工作继续。'); }
