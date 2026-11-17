@@ -11,7 +11,7 @@
 | 4c. `settings.json` 的 `hooks.PreToolUse` 末尾追加 1 组，matcher=`Edit\|Write\|MultiEdit\|Bash` | 同一份自动备份；原 PMM 各组不动 | status 的第 3 个 count=1；真实工具前验收 | 同上；status 应退回 0/3 |
 | 5. 验收／退线：只读回执；试验文件仅允许在 `trial-scratch/` 新建 | 保留 backup、`Trial/install-record.json` 和外部 hash 笔记 | 三件小任务、耗时、PMM 不重复；退线后新会话复查 | 第 4 节 `--rollback`；代执行时跳过 scratch 清理 |
 
-> 冻结 root = `C:/Users/jax-x/Desktop/AxMem-trees/trial-root`；scratch = `C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch`；`Trial` = `C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial`；settings = `C:/Users/jax-x/.claude/settings.json`。
+> 冻结 root = `C:/Users/jax-x/Desktop/AxMem-trees/trial-root-2`；scratch = `C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch`；`Trial` = `C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial`；settings = `C:/Users/jax-x/.claude/settings.json`。
 > 同一 root/config 身份的 status 顺序是安装前 **0/3** → apply 后 **3/3** → rollback 后 **0/3**；验收文件只在 scratch，不在冻结 root。
 > 这是待执行的清单，不是已经安装的记录。本次只交付工具和临时夹具测试，未读写真实用户目录。Jax **明确同意后**，由 lead 代他执行第 1、2、4 节，只有需要时才执行第 5 节；Jax 自己在新会话做第 3 节三件真实小任务，以及其他确实需要他在场的步骤。
 > 下列命令使用 **Windows PowerShell 5.1 或 PowerShell 7**；不是 Git Bash。
@@ -40,7 +40,7 @@ repo 映射不等于钩子只会在这个 repo 启动。**以新会话为准，�
 
 ## 0. 固定范围，先看懂再打勾
 
-- [ ] 本次根目录固定为 `C:/Users/jax-x/Desktop/AxMem-trees/trial-root`，是 detached checkout 的冻结树；内容等于单一 commit `<TRIAL_COMMIT>`（主会话冻结时填入 commit hash）。试验期间任何人不得修改此树或切换分支。
+- [ ] 本次根目录固定为 `C:/Users/jax-x/Desktop/AxMem-trees/trial-root-2`，是 detached checkout 的冻结树；内容等于单一 commit `<TRIAL_COMMIT>`（主会话冻结时填入 commit hash）。试验期间任何人不得修改此树或切换分支。
   如果交付文件不齐或自测不过，就停下，不要临时改树或改成其他 root 安装。
   **升级必须按「回滚 → 新树 → 重新安装」：先用旧 root/config 回滚，再使用新的 `--record` 路径，或把旧记录移入回收站，然后才按新 root 安装；不能直接改记录。**
   **apply 若被中断：先 rollback，确认退线后才可再次 apply；不要用重跑 apply 覆盖原备份链。** 保留原备份及外部笔记供核对。
@@ -50,7 +50,7 @@ repo 映射不等于钩子只会在这个 repo 启动。**以新会话为准，�
 三个组里的 **command 全文完全相同**（这是 settings 的字符串值，不是让 PowerShell 直接执行的语法）：
 
 ```text
-AXMEM_CONFIG="C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial/config.json" node "C:/Users/jax-x/Desktop/AxMem-trees/trial-root/adapters/claude-code/hook.cjs"
+AXMEM_CONFIG="C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial/config.json" node "C:/Users/jax-x/Desktop/AxMem-trees/trial-root-2/adapters/claude-code/hook.cjs"
 ```
 
 | event | matcher | command |
@@ -97,7 +97,7 @@ Claude Code 的钩子命令经 POSIX shell 执行，前置赋值仅作用于本�
 - [ ] 建立操作变量：
 
 ```powershell
-& { $script:Root='C:/Users/jax-x/Desktop/AxMem-trees/trial-root'; $script:Scratch='C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch'; $script:Settings='C:/Users/jax-x/.claude/settings.json'; $script:Trial='C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial'; $script:Config="$Trial/config.json"; $script:State="$Trial/state"; $script:Record="$Trial/install-record.json"; $Root; $Scratch; $Trial }
+& { $script:Root='C:/Users/jax-x/Desktop/AxMem-trees/trial-root-2'; $script:Scratch='C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch'; $script:Settings='C:/Users/jax-x/.claude/settings.json'; $script:Trial='C:/Users/jax-x/AppData/Local/AxMem/cc-phase1-trial'; $script:Config="$Trial/config.json"; $script:State="$Trial/state"; $script:Record="$Trial/install-record.json"; $Root; $Scratch; $Trial }
 ```
 
 预期：打印冻结 root、scratch 和独立 Trial 目录。后续命令使用这些普通 PowerShell 变量。
