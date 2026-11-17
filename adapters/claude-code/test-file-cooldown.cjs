@@ -133,6 +133,30 @@ async function fileCooldownSelfTest() {
       assert(omitted.errors.includes('all-selected-omitted')); assert.equal(omitted.receipt.items[0].visibility, 'omitted');
       assert.deepEqual(stateFor(y).fileSeen, []); delivered(await run(pre('omitted')));
     });
+    await check('mixed whole and omitted: only the shown entry is cooled', async () => {
+      const trigger = '<!-- trigger: tool=Edit|Write|MultiEdit; repo=demo; path=src/* -->';
+      const smallTag = 'demo:small', bigTag = 'demo:big';
+      const budgetRuntime = { ...runtime, options: { ...runtime.options, max_bytes: 1400 } };
+      try {
+        fs.writeFileSync(lessonFile, block(smallTag, 'Small reminder', `Keep this short.\n${trigger}`) +
+          block(bigTag, 'Big reminder', `${'Large body. '.repeat(400)}\n${trigger}`));
+        const first = pre('mixed');
+        const shown = await run(first, { runtime: budgetRuntime });
+        assert.equal(shown.receipt.items.length, 2);
+        assert.equal(shown.receipt.items.find((p) => p.tag === smallTag)?.visibility, 'whole');
+        assert.equal(shown.receipt.items.find((p) => p.tag === bigTag)?.visibility, 'omitted');
+        assert.equal(stateFor(first).fileSeen.length, 1);
+        const next = pre('mixed', 'Edit', first.tool_input);
+        assert.notEqual(next.tool_use_id, first.tool_use_id);
+        const again = await rawRun(next, { runtime: budgetRuntime });
+        assert(!again.receipt.items.some((p) => p.tag === smallTag));
+        assert(!again.stdout.includes(smallTag));
+        assert.equal(again.receipt.items.length, 1);
+        assert.equal(again.receipt.items[0].tag, bigTag);
+        assert.equal(again.receipt.items[0].visibility, 'omitted');
+        assert.deepEqual(again.errors, ['all-selected-omitted']);
+      } finally { fs.writeFileSync(lessonFile, lessons()); }
+    });
     await check('500-key cap and busy legacy snapshot', async () => {
       const x = pre('cap'); writeState(x, { ...legacyState(), fileSeen: Array.from({ length: 500 }, (_, i) => String(i)) });
       delivered(await run(x));
