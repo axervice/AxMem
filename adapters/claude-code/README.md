@@ -33,12 +33,15 @@ command 依赖 PATH 上的 Node；输出沿用本仓库的
   歧义或超预算显式说明，不把其他条目自动提升成 Kernel。Kernel 的身份是
   `section-declared`：证明来自该段，不伪造单条用户批准／阅读证明。
   startup/resume/compact 都建立新 epoch，允许重新发送。
-- **UserPromptSubmit**：本地 MiniSearch 多词／中文二元词检索，覆盖 decisions、lessons、
-  standinginstructions 的 live 条目，包括完全没有 trigger 和显式 trigger-none 的规则。
-  引用可以沿真实 Supersedes 边跳到 live head。仅有 Index 箭头不当作边的证明。
-  “继续”、空泛英文等不硬推。prompt 原文只在进程内使用；状态仅保留任务 hash、候选 tag／正文 hash。
+- **UserPromptSubmit**：本地 MiniSearch 检索 decisions、lessons、standinginstructions 的 live 条目。
+  词法支持按不同来源词计数：跨词中文二元片段、泛词、路径中的 ASCII 片段和高文档频率词不计；默认至少两个不同词才提醒。
+  `trigger: none; 理由=一次性…/历史…` 的条目不参与词法检索，其他 trigger-none 仍可检索。
+  纯 task-notification、cross-session-message、system-reminder 包装消息不触发词法检索；夹有人写文字则照常检索。
+  `prompt_lexical` 可设 `off` 停用 prompt 词法；`topic_max_df` 控制词项的最大文档频率。
+  明确 tag 引用不受这些静默规则限制，可沿真实 Supersedes 边跳到 live head；Index 箭头不当作边的证明。
+  回执记录 `prompt_machine_only` 和 `prompt_lexical`。prompt 原文只在进程内使用；状态仅保留任务 hash、候选 tag／正文 hash。
 - **PreToolUse**：只考虑明确工具／repo／路径的 action trigger、简单命令的 cmd trigger、明确 tag 引用和本 prompt 已建立的任务候选。
-  **不做词法（模糊）检索，不加载／构建 topic index**，不凭路径／命令的主题相似度推送记忆；UserPromptSubmit 的词法检索不变。
+  **不做词法（模糊）检索，不加载／构建 topic index**，不凭路径／命令的主题相似度推送记忆；UserPromptSubmit 的词法检索另按上述静默规则执行。
   这是为降低逐次动手前延迟，按负责人 2026-11-16 的裁定实施；仅 Pre 回执记录 `lexical_skipped: true`，不计为已运行词法查询。
   prompt 已推不等于 Pre 永久免推；同一 tool_use_id 的同版本重复 Pre 可以抑制，新的动作可再推。
   Edit、Write、MultiEdit 支持单个 file_path；相对路径必须有 cwd，路径别名不冒充已证明的仓库目标。
@@ -66,14 +69,17 @@ command 依赖 PATH 上的 Node；输出沿用本仓库的
     "max_items": 3,
     "max_bytes": 4096,
     "min_topic_terms": 2,
+    "prompt_lexical": "on",
+    "topic_max_df": 15,
     "kernel_sender": "axmem",
     "kernel_max_bytes": 4096
   }
 }
 ```
 
-动态最多 3 条，可下调；UserPromptSubmit 默认至少两个有效主题 token 支撑词法提醒，明确引用／精确 trigger 不受此阈值限制。
-分数记录为主题 token 支撑数，不冒充语义概率。预算按 UTF-8 additionalContext 字节计，整条放不下
+动态最多 3 条，可下调；UserPromptSubmit 默认至少两个不同来源词支撑词法提醒，明确引用／精确 trigger 不受此阈值限制。
+`prompt_lexical` 默认 `on`，可设 `off`；`topic_max_df` 默认 15，允许 1..1000 的整数。无效值按配置故障提示。
+分数记录为来源词支撑数，不冒充语义概率。预算按 UTF-8 additionalContext 字节计，整条放不下
 就标 omitted 并给定位，不截掉例外／否定后当完整送达。Kernel 独立预算，超限告警。
 `kernel_sender` 可为 `axmem`、`external`、`off`；后两者不由本 hook 发送 Kernel。
 `mode` / `on_unavailable` 显式记录产品策略；阶段 1 只接受上述提醒／继续组合，其他值会可见降级，绝不借此启用新闸。
@@ -112,7 +118,7 @@ tool_use_id 的动作关联仍可使用。子代理继承关系未验证，不�
 
 ## 验证边界
 
-`node adapters/claude-code/hook.cjs --self-test`：临时 HOME／记忆／state／settings，40 个场景；
+`node adapters/claude-code/hook.cjs --self-test`：临时 HOME／记忆／state／settings，含 prompt 静默回归及原有 hook 场景；
 共享模块各有小型组件自测，由现有 `bin/axmem selftest` 发现。
 覆盖三个新增事件、Edit/Write/MultiEdit/Bash 正／反／故障分支、Post 兼容、完整预算、
 索引失败、来源变化、身份隔离、stdout 失败、状态失败、精确 payload 回执等。

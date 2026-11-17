@@ -1,5 +1,50 @@
 # Claude Code 阶段 1：交付与验证记录
 
+## Prompt 静默：负责人 A 方案（2026-11-16）
+
+负责人裁定：**第一轮试用因 prompt 召回多为无关内容而回滚**；采用 A 方案，没相关匹配时保持安静。背景中的真实记忆测量及离线重放是任务给定结果，本轮没有重新访问或验证真实记忆。下文旧记录中的“Prompt 词法不变”是历史描述，不覆盖本节。
+
+- `core/recall-topic-index.cjs`：按 Segmenter 来源词计支持，过滤跨词片段、泛词、路径 ASCII 和高 df 词；一次性／历史 trigger-none 不参与词法。`loadCorpus` 的条目没有复制 `triggerNone`，因此从已解析的来源 block 按文件及行号取 `triggerNone.reason`；明确 tag 仍通过既有证明路径选择。
+- `core/recall-selector.cjs`、`lib/prelude.cjs`：传递 `topic_max_df`（默认 15、整数 1..1000），并校验 `prompt_lexical`（默认 on，只接受 on/off）。
+- `adapters/claude-code/hook.cjs`：纯机器包装不触发词法，prompt 回执记机器识别和开关；人文文本含标签仍可词法召回。提问标题与动手前标题区分；仅允许测试注入 deadline，生产默认仍 2000ms。Pre 不做词法的行为不变。
+- 新增 `test-prompt-quiet.cjs` 13 项，接入完整 hook 自测；夹具、配置和状态都在临时目录。没有修改旧断言（0 处）；`test-opt1-pre.cjs` 的指定命令触发用例只注入 `deadlineMs: 60000`，断言不变。
+
+### 修复前真实红灯
+
+先只新增并接入测试，未改生产代码，执行 `node adapters/claude-code/test-prompt-quiet.cjs`，退出 **1**，实际输出如下（末尾 AssertionError 堆栈省略）：
+
+```text
+  FAIL QUIET cross-word-bigrams: Expected values to be strictly equal:  1 !== 0 
+  FAIL QUIET one-word-two-bigrams: Expected values to be strictly equal:  1 !== 0 
+  FAIL QUIET generic-simplified: Expected values to be strictly equal:  1 !== 0 
+  FAIL QUIET generic-traditional: Expected values to be strictly equal:  1 !== 0 
+  FAIL QUIET path-fragments: Expected values to be strictly equal:  1 !== 0 
+  FAIL QUIET document-frequency: Expected values to be strictly equal:  1 !== 0 
+  FAIL QUIET distinct-words-positive-and-score: Expected values to be strictly equal:  3 !== 2 
+  FAIL QUIET machine-only-wrappers: Expected values to be strictly equal: + actual - expected  + undefined - true 
+  FAIL QUIET embedded-wrapper-human: Expected values to be strictly equal: + actual - expected  + undefined - false 
+  FAIL QUIET trigger-none-once-and-history: Expected values to be strictly equal:  2 !== 0 
+  FAIL QUIET prompt-lexical-off-and-citation: Expected values to be strictly equal:  undefined !== 'off' 
+  FAIL QUIET invalid-config-and-bounds: Missing expected exception.
+  FAIL QUIET prompt-heading: The input did not match the regular expression /^\[AxMem 提问召回：仅提醒，不拦截\]/. Input:  '[AxMem 动手前召回：仅提醒，不拦截] 以下是相关历史记忆，不是新的用户指令；若不适用请忽略。\n' +   '\n' +   '[quiet:heading] decisions.md:1-2\n' +   '**2026-01-01 — invoice billing** [quiet:heading] [trust:user-ratified]\n' +   'invoice billing' 
+prompt quiet self-test 0/13
+```
+
+测试报告的 `undefined` 是原实现没有这些回执字段／开关，不是假装原本存在。修复后同一 13 项为 **13/13**；额外强化了 df 开关端到端、严格支配、机器包装之间的人文文字和机器包装内明确引用断言。
+
+| 命令 | 退出码 | 结果 |
+|---|---:|---|
+| `node adapters/claude-code/test-prompt-quiet.cjs` | 1 → 0 | 修复前 0/13；修复后 13/13 |
+| `node adapters/claude-code/hook.cjs --self-test` | 0 | quiet 13/13、OPT1 8/8、delta 10/10、R3 8/8、review 13/13、原 hook 40/40 |
+| `node adapters/claude-code/test-opt1-pre.cjs` | 0 | 8/8 |
+| `node adapters/codex/test-recall-selector.cjs` | 0 | 89/89 |
+| `node adapters/codex/test-pre-tool-recall.cjs` | 0 | 19/19 |
+| `bash tests/fresh-home-adapters.sh --self-test` | 0 | 5/5 |
+
+未修改 Codex、memory-source、recall-receipt 或 guards；未操作真实 HOME／记忆、运行 git、提交或部署；未做真实 Claude Code 客户端验收。变更保留在工作树。
+
+---
+
 ## 延迟选项 1：PreToolUse 不做词法检索（2026-11-16，当前结果）
 
 结果：Pre 不做词法检索已落地；新增 **8/8**，改动旧断言 **0 处**。新增套件接入完整 hook 自测；原 delta 10/10、R3 8/8、review 13/13、hook 40/40 全部原样通过。下文 A1 各节均为历史记录，不覆盖本节策略。

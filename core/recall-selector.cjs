@@ -5,7 +5,7 @@
 const engine = require('../adapters/codex/recall-selector.cjs')._shared;
 const { REQUIRED, sha } = require('./memory-source.cjs');
 const { proveCorpus, citations, actionHits } = require('./recall-source-proof.cjs');
-function selectForEvent(corpus, { query = '', action = null, candidateIds = [], maxItems = 3, minTopicTerms = 2, lexical = true, checkDeadline, cacheDir } = {}) {
+function selectForEvent(corpus, { query = '', action = null, candidateIds = [], maxItems = 3, minTopicTerms = 2, topicMaxDf = 15, lexical = true, checkDeadline, cacheDir } = {}) {
   const { entries } = corpus;
   checkDeadline?.();
   const graph = engine.graphOf(entries, { heads: {}, report: [] });
@@ -71,7 +71,7 @@ function selectForEvent(corpus, { query = '', action = null, candidateIds = [], 
   // the topic index. Prompt callers retain lexical search by default.
   if (lexical && query.trim()) {
     checkDeadline?.();
-    const selected = require('./recall-topic-index.cjs').selectTopics(corpus, graph, query.slice(0, 8192), cacheDir, checkDeadline);
+    const selected = require('./recall-topic-index.cjs').selectTopics(corpus, graph, query.slice(0, 8192), cacheDir, checkDeadline, { maxDf: topicMaxDf, minWords: minTopicTerms });
     checkDeadline?.();
     queryRan = true;
     for (const { entry: e, support } of selected) {

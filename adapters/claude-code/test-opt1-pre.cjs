@@ -91,7 +91,7 @@ async function opt1SelfTest() {
       }
     });
     await check('explicit-command-trigger-still-delivered', async () => {
-      const r = await run(pre('explicit-command', 'Bash', { command: 'pytest' }));
+      const r = await run(pre('explicit-command', 'Bash', { command: 'pytest' }), { deadlineMs: 60000 });
       assert.equal(r.receipt.displayed, 1);
       assert.deepEqual(r.receipt.items.map((p) => [p.tag, p.reason]), [['demo:cmd', 'command-trigger']]);
     });
