@@ -1,3 +1,4 @@
+// selftest discovery: bin/axmem runs this file as `node <file> --self-test` (argv is ignored; the suite always runs).
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
 const {runPreToolUse,actionFromHook}=require('./pre-tool-recall.cjs');

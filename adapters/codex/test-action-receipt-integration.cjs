@@ -1,3 +1,4 @@
+// selftest discovery: bin/axmem runs this file as `node <file> --self-test` (argv is ignored; the suite always runs).
 'use strict';
 // S1 F1 isolated candidate: synthetic PMM, source-shaped hook events, no native/provider calls.
 const assert=require('node:assert/strict');
