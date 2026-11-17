@@ -232,6 +232,8 @@ $text = @'
         "max_items": 3,
         "max_bytes": 4096,
         "min_topic_terms": 2,
+        "topic_max_df": 12,
+        "prompt_lexical": "on",
         "kernel_sender": "external",
         "kernel_max_bytes": 4096
       }
@@ -245,7 +247,9 @@ if (Test-Path -LiteralPath $Config) { throw 'Refuse to overwrite existing config
 }
 ```
 
-预期：`config written (UTF-8 no BOM)`。记忆中的显式路径触发依赖 `home`／`axervice-booking`／`axmem` 这些 repo ID 和真实 root，因此必须使用此映射，包括 HOME 根。
+预期：`config written (UTF-8 no BOM)`。
+**第二轮(11-16 起)**:`prompt_lexical` 是提问时模糊检索的开关(`on`/`off`),误报超线时只把它改成 `"off"` 即可(不用重新冻结、不用回滚;显式 tag 引用与动手前触发器不受影响);`topic_max_df: 12` 是实测取值(只统计在记忆里出现不超过 12 条的稀有词)。第一轮留下的 `config.json` 已存在时,上面的命令会拒绝覆盖:由 lead 手工在原文件 `recall` 段加入这两行,再跑下面的解析验证。
+记忆中的显式路径触发依赖 `home`／`axervice-booking`／`axmem` 这些 repo ID 和真实 root，因此必须使用此映射，包括 HOME 根。
 嵌套 root 按最具体的 repo 解析；主会话已测得：`Desktop/AxMem/...` → `axmem`，`D:/AI/axervice-booking/...` → `axervice-booking`，home 目录下其他位置 → `home`（更具体的已配置 root 优先）。scratch 也在 `AxMem-trees` 下，解析为 `axmem`。
 
 - [ ] 验证实际配置解析结果（仅给这一个 Node 子进程传入 AXMEM_CONFIG；不修改窗口环境、不读记忆正文、不创建 store）：
@@ -299,46 +303,30 @@ node "$Root/adapters/claude-code/trial-install.cjs" --settings "$Settings" --roo
 预期：`3/3 present; counts=1,1,1`、`active=true`、`exists=true; sha256_matches=true`，command 行包含明确 config 路径。
 `counts` 不是全 1 表示已有重复／缺项，不能把“3/3 present”单独当成功。status 只核对接线／备份，不证明宿主已加载或输出已送达。
 
-## 3. 新会话里的三件真实小任务
+## 3. 新会话里的三件真实小任务(Jax 照着做)
 
-- [ ] 先确保试验文件 `C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch/trial-recall-note.md` 没被占用：
+说明:AxMem 的提醒是**注入给 Claude 的**,界面上不一定显示;所以每件都让 Claude 自己把收到的提醒念出来。开场状态行同理,由 lead 跑日报确认(见下)。
+桌面应用的新会话通常开在隔离工作树里,所以**不需要也不要**切到固定目录;第 2 件写的是当前会话自己的工作目录。
 
+开一个**全新**会话(不是接着旧会话),依次说:
+
+1. 「你这次开场有没有收到 AxMem 的状态行?原样念给我。」
+   - 应该看到:类似 `[AxMem recall: ok] 本地记忆来源可用(约 784 条)……Kernel 发送者=external;AxMem 未重复发送`。
+   - 没看到:钩子没跑起来 → 当场回滚(第 4 节)。
+2. 「公平报表里所有员工的偏差都是同一个正号,这是不是说明系统性偏袒?先别动手,告诉我你刚收到了哪几条 AxMem 提问召回。」
+   - 应该看到:标题是「AxMem 提问召回」,最多 3 条、和问题相关(用新代码对真实记忆实测会推 `process:conserved-metric-signs-must-mix`)。
+   - 一条都没有:提问召回过于安静,记下来,不用回滚;看到但明显不相关:记为误报(lead 用日报统计,超线就把 `prompt_lexical` 拨成 off)。
+3. 「在你家目录跑一下 git remote -v,跑之前收到了哪条 AxMem 动手前召回?」
+   - 应该看到:命令照常跑完,Claude 说跑之前收到 `tooling:failed-cd-semicolon-destructive-git-hits-home-repo`。
+   - 没看到:动手前召回没生效 → 记下来;命令被挡住或报错 → 当场回滚。
+
+三件做完由 lead 跑一次只读日报:
 ```powershell
-Test-Path -LiteralPath "$Scratch/trial-recall-note.md"
+node D:/AI/axervice-booking-archive/axmem/trial-monitor/trial-report.cjs
 ```
+应该看到今天 SessionStart / UserPromptSubmit / PreToolUse 都有调用,失败 0、超过 2 秒 0。日报也是"开场状态行确实送达"的旁证(SessionStart 行 completed)。
 
-预期：`False`；若 True，停下核对，不能覆盖用户文件。
-
-- [ ] Jax 在 scratch 启动**全新** Claude Code 会话（不是 resume，不是在旧会话里输入测试；也可从其他平常入口以 scratch 为工作目录开全新会话）：
-
-```powershell
-& { Set-Location -LiteralPath $Scratch; claude }
-```
-
-预期：PMM 原有 banner／Kernel 照旧；AxMem 只有一次 SessionStart 来源／健康状态，并说明 external、不发第二份 Kernel。
-- [ ] **首次验收须确认宿主确实通过 POSIX shell 运行这 3 个 hooks**：出现 SessionStart AxMem 状态行，表示带环境变量前缀的命令生效；若该状态行没有出现，立即回滚，不继续验收。随后按下列 Prompt／PreToolUse 实测核对另两个事件。
-
-不依赖启动窗口的 AXMEM_*；桌面应用的新会话也应读到相同独立配置。旧会话可能要重启才生效或失效，不保证立即切换。
-如果来源不可用／degraded，先回滚；不能把故障解释成“零匹配”。已有 PMM 脚本是否理会 AXMEM_CONFIG 也须实机观察，本次未检查其私有实现。
-
-以下是发给 Claude 的三条任务，不是 PowerShell 命令。用真实现有记忆来判断相关性，不新造规则、不改真实 memory。
-
-- [ ] **纯问答**：`这个项目对 Markdown 文档格式有什么约定？只回答，不调用工具。`
-  如果这不是你已有记忆中的真实主题，改问一个你能判断是否相关的真实小问题（可带一个已知真实 tag）。
-  看 UserPromptSubmit 的召回：相关才出现，**动态正文最多 3 条**，有 tag／文件／行号，提醒不变成新命令，不重复 PMM banner。
-  如果本来没有匹配，应当安静，无“本地查询完成”一类刷屏；SessionStart 一次性心跳不算每轮刷屏。
-- [ ] **改一个小文件**：`在 C:/Users/jax-x/Desktop/AxMem-trees/trial-scratch/trial-recall-note.md 新建文件，只写一行 phase-1 recall trial，不改其他文件。`
-  看真实 Write／Edit 调用前是否出现适用的 `[AxMem 动手前召回：仅提醒，不拦截]`，不是执行后才补一句。
-  没有适用规则时保持安静；有时最多 3 条，整条展示或明确 omitted，不把截断规则当完整正文。
-  观察 PMM 原有 Post trigger-recall：不能在工具后再把刚才同一规则重复刷一遍；旧写闸／receipt 不能丢失或变成两套。
-- [ ] **跑一条 Bash 命令**：`在当前工作目录用 Bash 运行 node --version，只运行这一条，不用管道、引号、重定向、变量或 cd 组合。`
-  看 PreToolUse 召回是否在 Bash 之前、是否相关／最多 3 条、命令是否正常完成、PMM 的 Bash hooks 是否仍正常。
-  简单 Bash 才在阶段 1 的已支持范围；shell 包装器／复合语法会在回执中记 unknown，不该刷提示。
-
-三项都要记录：Claude Code 版本、时间、是否命中、工具前／后顺序、是否重复、对应 receipt 的 invocation_id。
-**三项全无命中不能证明“有命中时 Pre 确实送达”**。若遇到这种情况，用已知真实 tag／已知适用路径替换相应任务再验，
-不要编造“看到了提醒”；仍无法触发就记验收未完成并回滚。
-Prompt 已提醒后，Pre 对本次真实动作仍可再提醒；这是阶段口径，不等于 PMM 在 Post 又重复正文。
+第二轮的裁判:试装期间新出现的真实提示中,不该命中的(≥10 条)误报 ≤20%;超线 lead 直接把 `prompt_lexical` 改成 `"off"`,不回滚整个试装。
 
 ### 在哪里看耗时和失败
 
