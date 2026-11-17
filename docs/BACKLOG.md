@@ -39,6 +39,17 @@ with the extraction ledger. Order = priority.
    off by default, secrets via OS keychain, retrieved content injected as
    data-not-instructions, isolated review queue for any automated write.
 
+## Claude Code phase-1 trial carry-overs (2026-11-16; evidence in `D:/AI/axervice-booking-archive/axmem/` subdirectories)
+Not in this round; status lives in `C:/Users/jax-x/Desktop/AxMem-trees/STATUS.md`.
+- **Bash pre-action triggers nearly idle (A4)**: the whitelist only covers ~1.2% of real Bash calls (3 of 254); relaxing to quoted args + `cd && one command` only gets 5.1%; 67% contain pipes/redirects/multiple segments. Fix: per-segment bash parse to get each segment's executable + skip git global options (`-C <dir>`/`-c k=v`). Pre-file-edit path triggers are unaffected. (`opt1-cost/bash-shape*.cjs`)
+- **Prompt recall semantic rerank (A4)**: lexical rules alone can't reach "hit ≥75% and false positives ≤10%" (control set: current 7/13 hit, 2/20 false positive); prompts with embedded operating instructions or that talk about AxMem itself still slip through. Switch: `recall.prompt_lexical`. (`recall-quality/`)
+- **Why the noise pair got matched widely**: in the pre-option-1 replay, `xiaod:api-migration` and `process:session-scratchpad-is-wiped-on-reboot` were pushed to dozens of unrelated commands; the prompt side still uses lexical search, so the retrieval-side cause needs follow-up.
+- **13 dropped pre-action items after option 1**: 2 relevant (`cold-email:warmup-cap`←`send_emails.py`, `cao-pipeline:whatsapp-dialog-blocks-send`←`cao_pipeline.py`), 2 weakly relevant, 9 irrelevant. The 2 relevant ones can be recovered by giving their memory entries path triggers (memory-store governance, the lead's call).
+- **`OPT1 explicit-command-trigger-still-delivered` wall-clock sensitive**: now injectable via `deps.deadlineMs` (639f707); real hardware under high load may still exceed 2 seconds on a single recall (trial red line; daily report "over 2 seconds").
+- **`cleanSessions`' `continue` in finally swallows exceptions from the try block** (only when release also reports `ENOENT`/`state-claim-unavailable`): record it first, then decide.
+- **Persistent write denial + a leftover stale lock is still silent**: while a lock exists it is treated as busy, so expiry is never evaluated.
+- **ax-api receipts don't record cache hits**: use `node D:/AI/pmm-work/cache-ledger.cjs <run dir>` to recompute from the transcript instead.
+
 ## Non-goals (empirically closed)
 - Autonomous memory rewriting / reflection loops (confabulation; killed by audit).
 - Agent-decides-what-to-remember discovery (90% FP; killed).
